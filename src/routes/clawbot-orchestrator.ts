@@ -68,7 +68,7 @@ export async function clawbotOrchestrator(c: Context) {
 
       let body: { data?: { summary?: unknown }; summary?: unknown; error?: string } = {};
       try {
-        body = await response.json();
+        body = (await response.json()) as typeof body;
       } catch {
         body = { error: 'Failed to parse response' };
       }
