@@ -17,6 +17,7 @@ import { scraperDataCleanup } from './routes/scraper-data-cleanup.js';
 import { venueReviewPrompts } from './routes/venue-review-prompts.js';
 import { venueGameAlerts } from './routes/venue-game-alerts.js';
 import { licenseReminders } from './routes/license-reminders.js';
+import { scraperWatchdog } from './routes/scraper-watchdog.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -65,6 +66,8 @@ app.get('/cron/venue-game-alerts', venueGameAlerts);
 app.post('/cron/venue-game-alerts', venueGameAlerts);
 app.get('/cron/license-reminders', licenseReminders);
 app.post('/cron/license-reminders', licenseReminders);
+app.get('/cron/scraper-watchdog', scraperWatchdog);
+app.post('/cron/scraper-watchdog', scraperWatchdog);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
