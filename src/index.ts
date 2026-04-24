@@ -23,6 +23,8 @@ import { unionRakeback } from './routes/union-rakeback.js';
 import { autoSettlementDistribute } from './routes/auto-settlement-distribute.js';
 import { autoSettlement } from './routes/auto-settlement.js';
 import { deployErrorPoll } from './routes/deploy-error-poll.js';
+import { videoLibraryScraper } from './routes/video-library-scraper.js';
+import { videoLibraryPurge } from './routes/video-library-purge.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -83,6 +85,10 @@ app.get('/cron/auto-settlement', autoSettlement);
 app.post('/cron/auto-settlement', autoSettlement);
 app.get('/cron/deploy-error-poll', deployErrorPoll);
 app.post('/cron/deploy-error-poll', deployErrorPoll);
+app.get('/cron/video-library-scraper', videoLibraryScraper);
+app.post('/cron/video-library-scraper', videoLibraryScraper);
+app.get('/cron/video-library-purge', videoLibraryPurge);
+app.post('/cron/video-library-purge', videoLibraryPurge);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
