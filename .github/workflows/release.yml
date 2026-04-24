@@ -1,0 +1,78 @@
+name: Release — Build & Publish Docker Image
+
+# Triggered manually or on version tags. Builds the container image,
+# tags it with the git SHA and 'latest', pushes to GitHub Container Registry.
+# The Hetzner VM then pulls 'latest' via a webhook-triggered docker compose pull/up.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (defaults to short-SHA)'
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build and push container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image tags
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          CUSTOM_TAG="${{ inputs.tag }}"
+          IMG="ghcr.io/smarter-poker/smarter-poker-workers"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tags=$IMG:${{ github.ref_name }},$IMG:latest" >> $GITHUB_OUTPUT
+          elif [ -n "$CUSTOM_TAG" ]; then
+            echo "tags=$IMG:$CUSTOM_TAG,$IMG:sha-$SHORT_SHA" >> $GITHUB_OUTPUT
+          else
+            echo "tags=$IMG:sha-$SHORT_SHA,$IMG:latest" >> $GITHUB_OUTPUT
+          fi
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            GIT_SHA=${{ steps.meta.outputs.short_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### Image published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tags: \`${{ steps.meta.outputs.tags }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Next: trigger deploy on Hetzner workers VM — run \`bash scripts/deploy-workers.sh\` from Dan's Mac." >> $GITHUB_STEP_SUMMARY

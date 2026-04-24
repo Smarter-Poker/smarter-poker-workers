@@ -1,0 +1,40 @@
+{
+  "name": "smarter-poker-workers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scheduled job workers service — Hono service dispatched by Open Claw, hardened under Phase 2B.1 scaffold.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc --noEmit && esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.mjs --banner:js=\"import{createRequire as __r}from'module';const require=__r(import.meta.url);\"",
+    "start": "node dist/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@sentry/node": "^8.40.0",
+    "@supabase/supabase-js": "^2.103.3",
+    "hono": "^4.6.10",
+    "posthog-node": "^4.18.0",
+    "resend": "^6.12.0",
+    "rss-parser": "^3.13.0",
+    "twilio": "^5.12.0",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@typescript-eslint/eslint-plugin": "^8.15.0",
+    "@typescript-eslint/parser": "^8.15.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.15.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.5"
+  }
+}

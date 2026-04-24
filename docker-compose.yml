@@ -1,0 +1,48 @@
+# docker-compose.yml — runs on the Hetzner CPX21 workers VM.
+# Source of truth for how the container is deployed.
+#
+# Env file at /opt/workers/.env (0600, owned by workers:workers)
+# must contain:
+#   CRON_SECRET=<shared with Open Claw>
+#   SUPABASE_URL=<same as World Hub>
+#   SUPABASE_SERVICE_ROLE_KEY=<same as World Hub>
+#   SENTRY_DSN=<workers-scoped DSN>
+#   ALLOWED_CRON_IPS=178.104.160.250,127.0.0.1
+#   RESEND_API_KEY=<if jobs send email>
+#   TWILIO_ACCOUNT_SID=<if jobs send SMS>
+#   TWILIO_AUTH_TOKEN=
+#   POSTHOG_API_KEY=<if jobs emit events>
+services:
+  workers:
+    image: ghcr.io/smarter-poker/smarter-poker-workers:latest
+    container_name: smarter-poker-workers
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only — external traffic must come through Caddy / nginx
+      # reverse proxy with proper TLS, IP allowlist at the edge, and rate limiting.
+      - "127.0.0.1:8081:8081"
+    env_file:
+      - /opt/workers/.env
+    environment:
+      NODE_ENV: production
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "7"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.5"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true

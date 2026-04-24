@@ -1,0 +1,62 @@
+/**
+ * smarter-poker-workers
+ * Hono service dispatched by Open Claw on Hetzner.
+ *
+ * Phase 2B.1 SCAFFOLD — ships with ONE endpoint only: GET /health.
+ * Future phases (2B.2) port cron handlers from pages/api/cron/*.js
+ * in the World Hub repo into src/routes/*.ts here, wave by wave.
+ */
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import * as Sentry from '@sentry/node';
+import { requireCronSecret, ipAllowlist } from './middleware/auth.js';
+import { health } from './routes/health.js';
+
+// ─── Sentry — fire-and-forget error reporting ──────────────────────────────
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV ?? 'production',
+    tracesSampleRate: 0.1,
+    release: process.env.GIT_SHA ?? 'dev',
+  });
+}
+
+// ─── App ────────────────────────────────────────────────────────────────────
+const app = new Hono();
+
+// Public healthcheck — no auth, no IP allowlist. Needed by Open Claw + monitors.
+app.get('/health', health);
+app.get('/', (c) => c.text('smarter-poker-workers — GET /health for liveness'));
+
+// All other routes are scheduled-job endpoints.
+// MUST go through both middlewares: Bearer token + IP allowlist.
+// As of 2B.1 scaffold, there are zero endpoints here. Phase 2B.2 adds them.
+app.use('/cron/*', ipAllowlist);
+app.use('/cron/*', requireCronSecret);
+
+// Placeholder — proves the middleware pipeline is reachable.
+app.get('/cron/_scaffold-ping', (c) =>
+  c.json({ ok: true, message: 'If you see this authed, the auth chain works.' }),
+);
+
+// ─── Error boundary ─────────────────────────────────────────────────────────
+app.onError((err, c) => {
+  console.error('[workers] unhandled error:', err);
+  Sentry.captureException(err);
+  return c.json({ error: 'internal' }, 500);
+});
+
+// ─── Server start ───────────────────────────────────────────────────────────
+const port = Number.parseInt(process.env.PORT ?? '8081', 10);
+serve({ fetch: app.fetch, port, hostname: '0.0.0.0' }, (info) => {
+  console.log(`[workers] listening on :${info.port}`);
+});
+
+// Graceful shutdown for Docker.
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    console.log(`[workers] received ${sig}, flushing Sentry and exiting`);
+    Sentry.close(2000).then(() => process.exit(0));
+  });
+}

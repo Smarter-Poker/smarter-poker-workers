@@ -1,0 +1,28 @@
+# deps
+node_modules/
+npm-debug.log*
+
+# build
+dist/
+*.tsbuildinfo
+
+# env — NEVER commit
+.env
+.env.local
+.env.*.local
+.env.production
+.env.production.local
+
+# runtime
+*.log
+logs/
+coverage/
+.vitest-cache/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# OS
+Thumbs.db
