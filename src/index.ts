@@ -18,6 +18,7 @@ import { venueReviewPrompts } from './routes/venue-review-prompts.js';
 import { venueGameAlerts } from './routes/venue-game-alerts.js';
 import { licenseReminders } from './routes/license-reminders.js';
 import { scraperWatchdog } from './routes/scraper-watchdog.js';
+import { clawbotOrchestrator } from './routes/clawbot-orchestrator.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -68,6 +69,8 @@ app.get('/cron/license-reminders', licenseReminders);
 app.post('/cron/license-reminders', licenseReminders);
 app.get('/cron/scraper-watchdog', scraperWatchdog);
 app.post('/cron/scraper-watchdog', scraperWatchdog);
+app.get('/cron/clawbot-orchestrator', clawbotOrchestrator);
+app.post('/cron/clawbot-orchestrator', clawbotOrchestrator);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
