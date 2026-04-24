@@ -31,6 +31,7 @@ import { contentHealthCheck } from './routes/content-health-check.js';
 import { dailyChallenges } from './routes/daily-challenges.js';
 import { pokernewsVideos } from './routes/pokernews-videos.js';
 import { triviaPvpCleanup } from './routes/trivia-pvp-cleanup.js';
+import { triviaDailyGenerator } from './routes/trivia-daily-generator.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -106,6 +107,8 @@ app.get('/cron/pokernews-videos', pokernewsVideos);
 app.post('/cron/pokernews-videos', pokernewsVideos);
 app.get('/cron/trivia-pvp-cleanup', triviaPvpCleanup);
 app.post('/cron/trivia-pvp-cleanup', triviaPvpCleanup);
+app.get('/cron/trivia-daily-generator', triviaDailyGenerator);
+app.post('/cron/trivia-daily-generator', triviaDailyGenerator);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
