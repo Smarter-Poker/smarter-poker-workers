@@ -27,6 +27,10 @@ import { videoLibraryScraper } from './routes/video-library-scraper.js';
 import { videoLibraryPurge } from './routes/video-library-purge.js';
 import { purgeIdempotencyKeys } from './routes/purge-idempotency-keys.js';
 import { refreshVenueJson } from './routes/refresh-venue-json.js';
+import { contentHealthCheck } from './routes/content-health-check.js';
+import { dailyChallenges } from './routes/daily-challenges.js';
+import { pokernewsVideos } from './routes/pokernews-videos.js';
+import { triviaPvpCleanup } from './routes/trivia-pvp-cleanup.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -94,6 +98,14 @@ app.post('/cron/video-library-purge', videoLibraryPurge);
 app.get('/cron/purge-idempotency-keys', purgeIdempotencyKeys);
 app.post('/cron/purge-idempotency-keys', purgeIdempotencyKeys);
 app.get('/cron/refresh-venue-json', refreshVenueJson);
+app.get('/cron/content-health-check', contentHealthCheck);
+app.post('/cron/content-health-check', contentHealthCheck);
+app.get('/cron/daily-challenges', dailyChallenges);
+app.post('/cron/daily-challenges', dailyChallenges);
+app.get('/cron/pokernews-videos', pokernewsVideos);
+app.post('/cron/pokernews-videos', pokernewsVideos);
+app.get('/cron/trivia-pvp-cleanup', triviaPvpCleanup);
+app.post('/cron/trivia-pvp-cleanup', triviaPvpCleanup);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
