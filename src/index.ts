@@ -14,6 +14,7 @@ import { health } from './routes/health.js';
 import { videoLibraryViews } from './routes/video-library-views.js';
 import { videoLibraryBackfill } from './routes/video-library-backfill.js';
 import { scraperDataCleanup } from './routes/scraper-data-cleanup.js';
+import { venueReviewPrompts } from './routes/venue-review-prompts.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -56,6 +57,8 @@ app.get('/cron/video-library-backfill', videoLibraryBackfill);
 app.post('/cron/video-library-backfill', videoLibraryBackfill);
 app.get('/cron/scraper-data-cleanup', scraperDataCleanup);
 app.post('/cron/scraper-data-cleanup', scraperDataCleanup);
+app.get('/cron/venue-review-prompts', venueReviewPrompts);
+app.post('/cron/venue-review-prompts', venueReviewPrompts);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
