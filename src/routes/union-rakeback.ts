@@ -137,16 +137,18 @@ export async function unionRakeback(c: Context) {
 
         if (unionClubs.length === 0) {
           if (claimId) {
-            await supabase.rpc('fn_finalize_settlement_period', {
-              p_id: claimId,
-              p_status: 'settled',
-              p_clubs_affected: 0,
-              p_players_affected: 0,
-              p_total_rake: rakeBalance,
-              p_total_rakeback: 0,
-              p_summary: { note: 'no union_clubs rows' },
-              p_error_detail: null,
-            }).catch(() => {});
+            try {
+              await supabase.rpc('fn_finalize_settlement_period', {
+                p_id: claimId,
+                p_status: 'settled',
+                p_clubs_affected: 0,
+                p_players_affected: 0,
+                p_total_rake: rakeBalance,
+                p_total_rakeback: 0,
+                p_summary: { note: 'no union_clubs rows' },
+                p_error_detail: null,
+              });
+            } catch { /* best-effort — ignore */ }
           }
           results.unions_skipped++;
           continue;
@@ -163,16 +165,18 @@ export async function unionRakeback(c: Context) {
 
         if (clubs.length === 0) {
           if (claimId) {
-            await supabase.rpc('fn_finalize_settlement_period', {
-              p_id: claimId,
-              p_status: 'settled',
-              p_clubs_affected: 0,
-              p_players_affected: 0,
-              p_total_rake: rakeBalance,
-              p_total_rakeback: 0,
-              p_summary: { note: 'no auto_settlement_enabled clubs' },
-              p_error_detail: null,
-            }).catch(() => {});
+            try {
+              await supabase.rpc('fn_finalize_settlement_period', {
+                p_id: claimId,
+                p_status: 'settled',
+                p_clubs_affected: 0,
+                p_players_affected: 0,
+                p_total_rake: rakeBalance,
+                p_total_rakeback: 0,
+                p_summary: { note: 'no auto_settlement_enabled clubs' },
+                p_error_detail: null,
+              });
+            } catch { /* best-effort — ignore */ }
           }
           results.unions_skipped++;
           continue;
@@ -255,31 +259,29 @@ export async function unionRakeback(c: Context) {
               `Union ${union.id} debit error: ${debitErr instanceof Error ? debitErr.message : String(debitErr)}`,
             );
           }
-        }
-
-        // Finalize the claim
-        if (claimId) {
-          await supabase.rpc('fn_finalize_settlement_period', {
-            p_id: claimId,
-            p_status: 'settled',
-            p_clubs_affected: distributions.length,
-            p_players_affected: 0,
-            p_total_rake: rakeBalance,
-            p_total_rakeback: totalDistributed,
-            p_summary: {
-              union_name: union.name,
-              distributions: distributions.map((d) => ({
-                club_id: d.club.id,
-                club_name: d.club.name,
-                amount: d.amount,
-              })),
-            },
-            p_error_detail: null,
-          }).catch((e: unknown) => {
+          try {
+            await supabase.rpc('fn_finalize_settlement_period', {
+              p_id: claimId,
+              p_status: 'settled',
+              p_clubs_affected: distributions.length,
+              p_players_affected: 0,
+              p_total_rake: rakeBalance,
+              p_total_rakeback: totalDistributed,
+              p_summary: {
+                union_name: union.name,
+                distributions: distributions.map((d) => ({
+                  club_id: d.club.id,
+                  club_name: d.club.name,
+                  amount: d.amount,
+                })),
+              },
+              p_error_detail: null,
+            });
+          } catch (e) {
             results.errors.push(
-              `Union ${union.id} finalize error: ${e instanceof Error ? e.message : String(e)}`,
-            );
-          });
+                          `Union ${union.id} finalize error: ${e instanceof Error ? e.message : String(e)}`,
+                        );
+          }
         }
 
         results.unions_processed++;
@@ -290,16 +292,18 @@ export async function unionRakeback(c: Context) {
         results.unions_skipped++;
         // Best-effort: mark claim as failed so future replay can proceed
         if (claimId) {
-          await supabase.rpc('fn_finalize_settlement_period', {
-            p_id: claimId,
-            p_status: 'failed',
-            p_clubs_affected: 0,
-            p_players_affected: 0,
-            p_total_rake: 0,
-            p_total_rakeback: 0,
-            p_summary: {},
-            p_error_detail: msg,
-          }).catch(() => {});
+          try {
+            await supabase.rpc('fn_finalize_settlement_period', {
+              p_id: claimId,
+              p_status: 'failed',
+              p_clubs_affected: 0,
+              p_players_affected: 0,
+              p_total_rake: 0,
+              p_total_rakeback: 0,
+              p_summary: {},
+              p_error_detail: msg,
+            });
+          } catch { /* best-effort — ignore */ }
         }
       }
     }
