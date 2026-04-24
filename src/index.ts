@@ -25,6 +25,8 @@ import { autoSettlement } from './routes/auto-settlement.js';
 import { deployErrorPoll } from './routes/deploy-error-poll.js';
 import { videoLibraryScraper } from './routes/video-library-scraper.js';
 import { videoLibraryPurge } from './routes/video-library-purge.js';
+import { purgeIdempotencyKeys } from './routes/purge-idempotency-keys.js';
+import { refreshVenueJson } from './routes/refresh-venue-json.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -89,6 +91,9 @@ app.get('/cron/video-library-scraper', videoLibraryScraper);
 app.post('/cron/video-library-scraper', videoLibraryScraper);
 app.get('/cron/video-library-purge', videoLibraryPurge);
 app.post('/cron/video-library-purge', videoLibraryPurge);
+app.get('/cron/purge-idempotency-keys', purgeIdempotencyKeys);
+app.post('/cron/purge-idempotency-keys', purgeIdempotencyKeys);
+app.get('/cron/refresh-venue-json', refreshVenueJson);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
