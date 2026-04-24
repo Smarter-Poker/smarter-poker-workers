@@ -11,6 +11,7 @@ import { serve } from '@hono/node-server';
 import * as Sentry from '@sentry/node';
 import { requireCronSecret, ipAllowlist } from './middleware/auth.js';
 import { health } from './routes/health.js';
+import { videoLibraryViews } from './routes/video-library-views.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -35,10 +36,20 @@ app.get('/', (c) => c.text('smarter-poker-workers — GET /health for liveness')
 app.use('/cron/*', ipAllowlist);
 app.use('/cron/*', requireCronSecret);
 
-// Placeholder — proves the middleware pipeline is reachable.
+// Keep the scaffold ping — makes middleware chain testable without relying
+// on real cron handlers being live.
 app.get('/cron/_scaffold-ping', (c) =>
   c.json({ ok: true, message: 'If you see this authed, the auth chain works.' }),
 );
+
+// ─── Phase 2B.2 — ported cron handlers ─────────────────────────────────────
+// Each one must have: (a) a monolith source file referenced in its doc comment,
+// (b) a unit test, (c) a README entry documenting the Open Claw URL swap.
+// Handler is the SAME function for GET (status) and POST (report ingest);
+// query string `?report=1` distinguishes the modes.
+
+app.get('/cron/video-library-views', videoLibraryViews);
+app.post('/cron/video-library-views', videoLibraryViews);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
