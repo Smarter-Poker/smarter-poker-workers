@@ -230,8 +230,9 @@ export async function scraperWatchdog(c: Context) {
       }
 
       const rows = (data ?? []) as Array<{ scrape_timestamp: string }>;
-      const lastScrape = rows.length > 0 ? new Date(rows[0].scrape_timestamp) : new Date(0);
-      const minutesAgo = rows.length > 0 ? Math.round((now.getTime() - lastScrape.getTime()) / 60000) : 999;
+      const firstRow = rows[0];
+      const lastScrape = firstRow ? new Date(firstRow.scrape_timestamp) : new Date(0);
+      const minutesAgo = firstRow ? Math.round((now.getTime() - lastScrape.getTime()) / 60000) : 999;
       const safeCount = count ?? 0;
       results.sources[source] = { status: 'ok', minutes_ago: minutesAgo, count: safeCount };
 
