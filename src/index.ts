@@ -21,6 +21,7 @@ import { scraperWatchdog } from './routes/scraper-watchdog.js';
 import { clawbotOrchestrator } from './routes/clawbot-orchestrator.js';
 import { unionRakeback } from './routes/union-rakeback.js';
 import { autoSettlementDistribute } from './routes/auto-settlement-distribute.js';
+import { autoSettlement } from './routes/auto-settlement.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -77,6 +78,8 @@ app.get('/cron/union-rakeback', unionRakeback);
 app.post('/cron/union-rakeback', unionRakeback);
 app.get('/cron/auto-settlement-distribute', autoSettlementDistribute);
 app.post('/cron/auto-settlement-distribute', autoSettlementDistribute);
+app.get('/cron/auto-settlement', autoSettlement);
+app.post('/cron/auto-settlement', autoSettlement);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
