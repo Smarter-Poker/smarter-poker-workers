@@ -48,6 +48,7 @@ import { trainingDailyReport } from './routes/training-daily-report.js';
 import { freerollQualificationSync } from './routes/freeroll-qualification-sync.js';
 import { collusionScan } from './routes/collusion-scan.js';
 import { triviaTournaments } from './routes/trivia-tournaments.js';
+import { triviaTournamentRounds } from './routes/trivia-tournament-rounds.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -157,6 +158,8 @@ app.get('/cron/collusion-scan', collusionScan);
 app.post('/cron/collusion-scan', collusionScan);
 app.get('/cron/trivia-tournaments', triviaTournaments);
 app.post('/cron/trivia-tournaments', triviaTournaments);
+app.get('/cron/trivia-tournament-rounds', triviaTournamentRounds);
+app.post('/cron/trivia-tournament-rounds', triviaTournamentRounds);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
