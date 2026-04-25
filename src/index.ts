@@ -36,6 +36,7 @@ import { trainingDailyChallenge } from './routes/training-daily-challenge.js';
 import { hardStop } from './routes/hard-stop.js';
 import { scrapeSportsClips } from './routes/scrape-sports-clips.js';
 import { memoryMatrixDailyChallenge } from './routes/memory-matrix-daily-challenge.js';
+import { pokerNews } from './routes/poker-news.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -121,6 +122,8 @@ app.get('/cron/scrape-sports-clips', scrapeSportsClips);
 app.post('/cron/scrape-sports-clips', scrapeSportsClips);
 app.get('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.post('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
+app.get('/cron/poker-news', pokerNews);
+app.post('/cron/poker-news', pokerNews);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
