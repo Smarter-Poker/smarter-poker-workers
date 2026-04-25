@@ -49,6 +49,7 @@ import { freerollQualificationSync } from './routes/freeroll-qualification-sync.
 import { collusionScan } from './routes/collusion-scan.js';
 import { triviaTournaments } from './routes/trivia-tournaments.js';
 import { triviaTournamentRounds } from './routes/trivia-tournament-rounds.js';
+import { horsesSocialFriends } from './routes/horses-social-friends.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -160,6 +161,8 @@ app.get('/cron/trivia-tournaments', triviaTournaments);
 app.post('/cron/trivia-tournaments', triviaTournaments);
 app.get('/cron/trivia-tournament-rounds', triviaTournamentRounds);
 app.post('/cron/trivia-tournament-rounds', triviaTournamentRounds);
+app.get('/cron/horses-social-friends', horsesSocialFriends);
+app.post('/cron/horses-social-friends', horsesSocialFriends);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
