@@ -45,6 +45,7 @@ import { vipStatusCheck } from './routes/vip-status-check.js';
 import { vipDiamondStipend } from './routes/vip-diamond-stipend.js';
 import { commanderDailyAggregate } from './routes/commander-daily-aggregate.js';
 import { trainingDailyReport } from './routes/training-daily-report.js';
+import { freerollQualificationSync } from './routes/freeroll-qualification-sync.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -148,6 +149,8 @@ app.get('/cron/commander-daily-aggregate', commanderDailyAggregate);
 app.post('/cron/commander-daily-aggregate', commanderDailyAggregate);
 app.get('/cron/training-daily-report', trainingDailyReport);
 app.post('/cron/training-daily-report', trainingDailyReport);
+app.get('/cron/freeroll-qualification-sync', freerollQualificationSync);
+app.post('/cron/freeroll-qualification-sync', freerollQualificationSync);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
