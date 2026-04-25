@@ -144,6 +144,7 @@ export async function trainingDailyChallenge(c: Context) {
         game_id: selectedGameId,
         level,
         required_accuracy: 80,
+        bonus_xp_multiplier: 2.0,
         bonus_diamonds: 50,
         community_scenario: communityScenario,
       })
