@@ -32,6 +32,7 @@ import { dailyChallenges } from './routes/daily-challenges.js';
 import { pokernewsVideos } from './routes/pokernews-videos.js';
 import { triviaPvpCleanup } from './routes/trivia-pvp-cleanup.js';
 import { triviaDailyGenerator } from './routes/trivia-daily-generator.js';
+import { trainingDailyChallenge } from './routes/training-daily-challenge.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -109,6 +110,8 @@ app.get('/cron/trivia-pvp-cleanup', triviaPvpCleanup);
 app.post('/cron/trivia-pvp-cleanup', triviaPvpCleanup);
 app.get('/cron/trivia-daily-generator', triviaDailyGenerator);
 app.post('/cron/trivia-daily-generator', triviaDailyGenerator);
+app.get('/cron/training-daily-challenge', trainingDailyChallenge);
+app.post('/cron/training-daily-challenge', trainingDailyChallenge);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {

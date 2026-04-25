@@ -2,7 +2,7 @@
   "name": "smarter-poker-workers",
   "version": "0.1.0",
   "private": true,
-  "description": "Scheduled job workers service — Hono service dispatched by Open Claw, hardened under Phase 2B.1 scaffold.",
+  "description": "Scheduled job workers service \u2014 Hono service dispatched by Open Claw, hardened under Phase 2B.1 scaffold.",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
@@ -25,7 +25,8 @@
     "resend": "^6.12.0",
     "rss-parser": "^3.13.0",
     "twilio": "^5.12.0",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "openai": "^4.77.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
