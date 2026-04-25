@@ -34,6 +34,7 @@ import { triviaPvpCleanup } from './routes/trivia-pvp-cleanup.js';
 import { triviaDailyGenerator } from './routes/trivia-daily-generator.js';
 import { trainingDailyChallenge } from './routes/training-daily-challenge.js';
 import { hardStop } from './routes/hard-stop.js';
+import { scrapeSportsClips } from './routes/scrape-sports-clips.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -115,6 +116,8 @@ app.get('/cron/training-daily-challenge', trainingDailyChallenge);
 app.post('/cron/training-daily-challenge', trainingDailyChallenge);
 app.get('/cron/hard-stop', hardStop);
 app.post('/cron/hard-stop', hardStop);
+app.get('/cron/scrape-sports-clips', scrapeSportsClips);
+app.post('/cron/scrape-sports-clips', scrapeSportsClips);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
