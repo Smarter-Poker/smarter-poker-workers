@@ -40,6 +40,9 @@ import { pokerNews } from './routes/poker-news.js';
 import { venueTournaments } from './routes/venue-tournaments.js';
 import { scrapeCharitySchedules } from './routes/scrape-charity-schedules.js';
 import { newsScraper } from './routes/news-scraper.js';
+import { ledgerReconcile } from './routes/ledger-reconcile.js';
+import { vipStatusCheck } from './routes/vip-status-check.js';
+import { vipDiamondStipend } from './routes/vip-diamond-stipend.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -133,6 +136,12 @@ app.get('/cron/scrape-charity-schedules', scrapeCharitySchedules);
 app.post('/cron/scrape-charity-schedules', scrapeCharitySchedules);
 app.get('/cron/news-scraper', newsScraper);
 app.post('/cron/news-scraper', newsScraper);
+app.get('/cron/ledger-reconcile', ledgerReconcile);
+app.post('/cron/ledger-reconcile', ledgerReconcile);
+app.get('/cron/vip-status-check', vipStatusCheck);
+app.post('/cron/vip-status-check', vipStatusCheck);
+app.get('/cron/vip-diamond-stipend', vipDiamondStipend);
+app.post('/cron/vip-diamond-stipend', vipDiamondStipend);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
