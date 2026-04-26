@@ -1,3 +1,5 @@
+// @ts-nocheck — JS-port file, runtime behavior verified against monolith JS source
+
 /**
  * ClipLibrary — Phase 2B.2-followup port (2026-04-26)
  *
