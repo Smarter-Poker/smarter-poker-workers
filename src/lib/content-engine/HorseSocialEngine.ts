@@ -37,12 +37,9 @@
 
 import { getSupabase } from '../supabase.js';
 import { shouldHorseBeActive, getHorseActivityRate, isHorseActiveHour, isHorseActiveHourTZ, applyWritingStyle } from './HorseScheduler.js';
-config({ path: '../../../.env.local' });
 
 // Lazy-init Supabase client (RAT-AUTH-NUCLEAR compliant)
 // Prevents "supabaseKey is required" crash when env vars aren't yet available at module load
-    return _supabase;
-}
 // Helper function to send PWA push notifications to real users for social interactions
 async function sendSocialPush(targetId, horseIds, title, message, urlString) {
     if (!targetId || horseIds.includes(targetId)) return; // Do not push to other horses
