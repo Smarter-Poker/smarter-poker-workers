@@ -696,19 +696,20 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
                         user_id: friend.profile_id,
                         actor_id: horse.profile_id,
                         type: 'mention',
+                        title: horse.name,           // NOT NULL — was missing, caused silent insert fail
                         reference_id: post.id,
                         message: `mentioned you in a comment`
                     });
 
                     // Trigger push notification to mentioned user
-                    await sendSocialPush(friend.profile_id, horseIds, 'New Mention', `${horse.name} mentioned you in a comment.`, `/hub/social-feed?post_id=${post.id}`);
+                    await sendSocialPush(friend.profile_id, horseIds, 'New Mention', `${horse.name} mentioned you in a comment.`, `/hub/social-media?post_id=${post.id}`);
                 }
             }
         }
 
         if (!error) {
             // Trigger push notification to the post author
-            await sendSocialPush(post.author_id, horseIds, 'New Comment', `${horse.name} commented on your post: "${comment}"`, `/hub/social-feed?post_id=${post.id}`);
+            await sendSocialPush(post.author_id, horseIds, 'New Comment', `${horse.name} commented on your post: "${comment}"`, `/hub/social-media?post_id=${post.id}`);
 
             const author = allHorses.find(h => h.profile_id === post.author_id);
             console.debug(`   ${horse.name} → ${author?.name || 'User'}'s post: "${comment}"`);
@@ -837,7 +838,7 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
             if (!error) {
                 // Trigger push notification to post author
                 const reactionEmoji = reaction === 'love' ? '❤️' : reaction === 'fire' ? '🔥' : reaction === 'wow' ? '😲' : reaction === 'haha' ? '😂' : '👍';
-                await sendSocialPush(post.author_id, horseIds, `New Reaction`, `${horse.name} reacted ${reactionEmoji} to your post.`, `/hub/social-feed?post_id=${post.id}`);
+                await sendSocialPush(post.author_id, horseIds, `New Reaction`, `${horse.name} reacted ${reactionEmoji} to your post.`, `/hub/social-media?post_id=${post.id}`);
 
                 console.debug(`   ${horse.name} liked a post ❤️`);
                 liked++;
@@ -974,7 +975,7 @@ export async function replyToComments(maxReplies = 15) {
 
         if (!error) {
             // Trigger push notification to the original comment author
-            await sendSocialPush(comment.author_id, horseIds, 'New Reply', `${horse.name} replied to your comment: "${replyText}"`, `/hub/social-feed?post_id=${comment.post_id}`);
+            await sendSocialPush(comment.author_id, horseIds, 'New Reply', `${horse.name} replied to your comment: "${replyText}"`, `/hub/social-media?post_id=${comment.post_id}`);
 
             console.debug(`   ${horse.name} replied: "${replyText}"`);
             replied++;
