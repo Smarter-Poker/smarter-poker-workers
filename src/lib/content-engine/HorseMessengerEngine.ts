@@ -194,13 +194,4 @@ export async function processDirectMessages() {
     console.debug(`   Sent ${repliesSent} automated responses.`);
 }
 
-// Allow running standalone
-if (import.meta.url === `file://${process.argv[1]}`) {
-    processDirectMessages()
-        .then(() => process.exit(0))
-        .catch(e => {
-            console.warn('Fatal execution error:', e);
-            process.exit(1);
-        });
-}
 
