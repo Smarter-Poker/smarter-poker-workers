@@ -42,9 +42,6 @@ function getSupabase() {
  */
 
 
-import Parser from 'rss-parser';
-
-
 
 
 // Validate YouTube video actually exists AND is embeddable before posting
@@ -137,8 +134,8 @@ async function postVideoClip(horse, assignedSources, horseIndex, clipType = 'spo
 
     if (clipType === 'poker') {
         // Use ClipLibrary for poker clips
-        if (!clipLibraryLoaded || typeof getRandomClip !== 'function') {
-            console.warn(`   ClipLibrary not loaded for poker clips`);
+        if (typeof getRandomClip !== 'function') {
+            console.warn(`   getRandomClip not available for poker clips`);
             return { success: false, error: 'ClipLibrary not available' };
         }
 
@@ -427,19 +424,19 @@ async function pagesHandler(req: any, res: any) {
       }
 
   } catch (err) {
-      try { reportApiError(err, req); } catch (_sentryErr) { console.warn('[App] Handled exception:', _sentryErr?.message || _sentryErr); }
+      try { console.warn('[horse-by-index] cron error:', err?.message || err); } catch (_) {}
     console.warn('[API Error]', err);
     if (!res.headersSent) return res.status(500).json({ success: false, error: err.message || 'Internal server error' });
   }
 }
 
 
-// ─── Hono adapter ────────────────────────────────────────────────────────
+// ─── Hono adapters ───────────────────────────────────────────────────────
 import type { Context } from 'hono';
 
+/** Single-horse handler: GET /cron/horse/:horseIndex */
 export async function horseByIndex(c: Context) {
   const horseIndex = c.req.param('horseIndex');
-  // Build a faux req/res for the ported handler
   let statusCode = 200;
   let payload: unknown = null;
   const fauxReq = {
@@ -451,17 +448,100 @@ export async function horseByIndex(c: Context) {
     query: { horseIndex },
   };
   const fauxRes = {
-    status(code: number) {
-      statusCode = code;
-      return fauxRes;
-    },
-    json(body: unknown) {
-      payload = body;
-      return fauxRes;
-    },
+    status(code: number) { statusCode = code; return fauxRes; },
+    json(body: unknown) { payload = body; return fauxRes; },
     setHeader() {},
     headersSent: false,
   };
   await pagesHandler(fauxReq, fauxRes);
   return c.json(payload as any, statusCode as any);
+}
+
+/**
+ * Batch handler: GET /cron/horse-batch/:horseIndex
+ *
+ * Each batch covers 10 horses (matching the original monolith logic):
+ *   batchIndex 0 → horses 0-9
+ *   batchIndex 1 → horses 10-19
+ *   ...
+ *   batchIndex 9 → horses 90-99
+ *
+ * The old single-horse passthrough (horseIndex === batchIndex) was a
+ * regression: only 1 of 10 horses per batch was posting. This restores
+ * the 10x throughput of the original [batchIndex].js handler.
+ */
+export async function horseBatch(c: Context) {
+  const batchParam = c.req.param('horseIndex'); // route param name matches registered route
+  const batch = parseInt(batchParam ?? '', 10);
+
+  if (isNaN(batch) || batch < 0 || batch > 9) {
+    return c.json({ error: 'batchIndex must be 0-9' }, 400);
+  }
+
+  const startIndex = batch * 10;
+  const endIndex = startIndex + 9;
+  const results: unknown[] = [];
+
+  try {
+    // Fetch all horses once for the batch
+    const { data: horses, error: horseError } = await getSupabase()
+      .from('content_authors')
+      .select('*')
+      .eq('is_active', true)
+      .not('profile_id', 'is', null)
+      .order('profile_id')
+      .limit(100);
+
+    if (horseError || !horses?.length) {
+      return c.json({ success: false, error: 'No horses found' });
+    }
+
+    // Process each horse in the batch sequentially with a small delay
+    for (let i = startIndex; i <= endIndex && i < horses.length; i++) {
+      const horse = horses[i];
+      if (!horse) continue;
+
+      try {
+        let statusCode = 200;
+        let payload: unknown = null;
+        const fauxReq = {
+          method: c.req.method,
+          headers: {
+            authorization: c.req.header('authorization') ?? '',
+            'x-cron-secret': c.req.header('x-cron-secret') ?? '',
+          },
+          // Override horses fetch in pagesHandler: pass exact horseIndex
+          query: { horseIndex: String(i) },
+        };
+        const fauxRes = {
+          status(code: number) { statusCode = code; return fauxRes; },
+          json(body: unknown) { payload = body; return fauxRes; },
+          setHeader() {},
+          headersSent: false,
+        };
+        await pagesHandler(fauxReq, fauxRes);
+        results.push(payload);
+      } catch (err: any) {
+        console.warn(`[horse-batch/${batch}] horse ${i} error:`, err?.message || err);
+        results.push({ horse: horse?.name, index: i, success: false, error: err?.message });
+      }
+
+      // Small delay between horses to avoid DB + YouTube API rate limits
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const successCount = results.filter((r: any) => r?.success).length;
+    return c.json({
+      success: true,
+      batch,
+      horsesRange: `${startIndex}-${endIndex}`,
+      processed: results.length,
+      succeeded: successCount,
+      failed: results.length - successCount,
+      results,
+    });
+  } catch (err: any) {
+    console.warn(`[horse-batch/${batch}] fatal:`, err?.message || err);
+    return c.json({ success: false, error: err?.message }, 500);
+  }
 }
