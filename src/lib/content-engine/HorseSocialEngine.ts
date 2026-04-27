@@ -715,9 +715,12 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
             commented++;
             
             // Sync denormalized comment_count on social_posts (fire-and-forget)
-            getSupabase().rpc('increment_post_count', { p_post_id: post.id, p_field: 'comment_count' }).catch(() => {
-                getSupabase().from('social_posts').select('comment_count').eq('id', post.id).maybeSingle().then(({ data: p }) => {
-                    if (p) getSupabase().from('social_posts').update({ comment_count: (p.comment_count || 0) + 1 }).eq('id', post.id);
+            // NOTE: Wrap in Promise.resolve() — Supabase v2 PostgrestBuilder is a thenable
+            // but not a native Promise; calling .catch() directly on it throws TypeError
+            // in newer Supabase versions.
+            void Promise.resolve(getSupabase().rpc('increment_post_count', { p_post_id: post.id, p_field: 'comment_count' })).catch(() => {
+                void getSupabase().from('social_posts').select('comment_count').eq('id', post.id).maybeSingle().then(({ data: p }) => {
+                    if (p) void getSupabase().from('social_posts').update({ comment_count: (p.comment_count || 0) + 1 }).eq('id', post.id);
                 }).catch(e => console.warn('[App] Handled promise rejection:', e?.message || e));
             });
 
@@ -840,9 +843,10 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
                 liked++;
                 
                 // Sync denormalized like_count on social_posts (fire-and-forget)
-                getSupabase().rpc('increment_post_count', { p_post_id: post.id, p_field: 'like_count' }).catch(() => {
-                    getSupabase().from('social_posts').select('like_count').eq('id', post.id).maybeSingle().then(({ data: p }) => {
-                        if (p) getSupabase().from('social_posts').update({ like_count: (p.like_count || 0) + 1 }).eq('id', post.id);
+                // NOTE: Wrap in Promise.resolve() — see comment on increment_post_count above.
+                void Promise.resolve(getSupabase().rpc('increment_post_count', { p_post_id: post.id, p_field: 'like_count' })).catch(() => {
+                    void getSupabase().from('social_posts').select('like_count').eq('id', post.id).maybeSingle().then(({ data: p }) => {
+                        if (p) void getSupabase().from('social_posts').update({ like_count: (p.like_count || 0) + 1 }).eq('id', post.id);
                     }).catch(e => console.warn('[App] Handled promise rejection:', e?.message || e));
                 });
             }
@@ -976,9 +980,10 @@ export async function replyToComments(maxReplies = 15) {
             replied++;
             
             // Sync denormalized comment_count on social_posts (fire-and-forget)
-            getSupabase().rpc('increment_post_count', { p_post_id: comment.post_id, p_field: 'comment_count' }).catch(() => {
-                getSupabase().from('social_posts').select('comment_count').eq('id', comment.post_id).maybeSingle().then(({ data: p }) => {
-                    if (p) getSupabase().from('social_posts').update({ comment_count: (p.comment_count || 0) + 1 }).eq('id', comment.post_id);
+            // NOTE: Wrap in Promise.resolve() — see comment on increment_post_count above.
+            void Promise.resolve(getSupabase().rpc('increment_post_count', { p_post_id: comment.post_id, p_field: 'comment_count' })).catch(() => {
+                void getSupabase().from('social_posts').select('comment_count').eq('id', comment.post_id).maybeSingle().then(({ data: p }) => {
+                    if (p) void getSupabase().from('social_posts').update({ comment_count: (p.comment_count || 0) + 1 }).eq('id', comment.post_id);
                 }).catch(e => console.warn('[App] Handled promise rejection:', e?.message || e));
             });
 
