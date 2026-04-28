@@ -825,12 +825,18 @@ function sanitizeHorseOutput(text) {
     .replace(/  +/g, ' ')      // collapse double spaces
     .trim();
   // RULE 1: First letter ALWAYS capitalized — cell phone auto-cap standard.
-  // Applies as a final safety net regardless of archetype or style roll.
   if (out.length > 0 && out[0] !== out[0].toUpperCase()) {
     out = out[0].toUpperCase() + out.slice(1);
   }
+  // Restore poker/sports acronyms lowercased by applyStyle() all_lower archetype.
+  // e.g. 'icm' → 'ICM', 'wsop' → 'WSOP', 'gto' → 'GTO', 'nba' → 'NBA'
+  const ACRONYMS = ['ICM', 'GTO', 'WSOP', 'EV', 'MTT', 'SNG', 'NLH', 'PLO', 'BTN', 'UTG', 'NBA', 'NFL', 'MLB', 'NHL', 'UFC', 'MMA', 'ESPN', 'MVP', 'NGL'];
+  for (const acr of ACRONYMS) {
+    out = out.replace(new RegExp(`\\b${acr.toLowerCase()}\\b`, 'gi'), acr);
+  }
   return out;
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC API
