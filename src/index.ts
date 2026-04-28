@@ -55,6 +55,11 @@ import { triviaTournaments } from './routes/trivia-tournaments.js';
 import { triviaTournamentRounds } from './routes/trivia-tournament-rounds.js';
 import { horsesSocialFriends } from './routes/horses-social-friends.js';
 import { tourScheduleScraperHandler } from './routes/tour-schedule-scraper.js';
+// Phase X4 — settlement-chain detectors (every 5 / 1 min)
+import { bbjDetect } from './routes/bbj-detect.js';
+import { tournamentBountyDetect } from './routes/tournament-bounty-detect.js';
+import { playerStatsRefresh } from './routes/player-stats-refresh.js';
+import { rakebackPeriodSettle } from './routes/rakeback-period-settle.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -180,6 +185,16 @@ app.get('/cron/horse-batch/:horseIndex', horseBatch);
 app.post('/cron/horse-batch/:horseIndex', horseBatch);
 app.get('/cron/tour-schedule-scraper', tourScheduleScraperHandler);
 app.post('/cron/tour-schedule-scraper', tourScheduleScraperHandler);
+
+// ─── Phase X4 — settlement-chain detectors (closes P0-A5/D2/H1) ────────────
+app.get('/cron/bbj-detect', bbjDetect);
+app.post('/cron/bbj-detect', bbjDetect);
+app.get('/cron/tournament-bounty-detect', tournamentBountyDetect);
+app.post('/cron/tournament-bounty-detect', tournamentBountyDetect);
+app.get('/cron/player-stats-refresh', playerStatsRefresh);
+app.post('/cron/player-stats-refresh', playerStatsRefresh);
+app.get('/cron/rakeback-period-settle', rakebackPeriodSettle);
+app.post('/cron/rakeback-period-settle', rakebackPeriodSettle);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {

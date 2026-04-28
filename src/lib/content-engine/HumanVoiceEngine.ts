@@ -262,17 +262,22 @@ function nextPickOffset(profileId) {
 
 function pickFromPool(pool, profileId, salt = 0) {
   const h = getHorseHash(profileId);
-  // Rotate seed every 4 hours + monotonic per-call counter to guarantee variance
+  // FIX 2026-04-28: Added Math.random() * 1000 to prevent batch-concurrent horses
+  // (same timeBucket, same callN offset) from picking the same pool entry.
+  // Duplicate posts like two horses both writing "The timing on that call was completely
+  // different" back-to-back were caused by deterministic hash collision between horses
+  // with close profile ID hashes. Per-call random spread eliminates same-batch duplicates.
   const timeBucket = Math.floor(Date.now() / (1000 * 60 * 60 * 4));
   const callN = nextPickOffset(profileId);
-  const base = (h + timeBucket + salt + callN) % pool.length;
+  const randSpread = Math.floor(Math.random() * 1000);
+  const base = (h + timeBucket + salt + callN + randSpread) % pool.length;
   // Try every candidate in order, skip recently used
   for (let i = 0; i < pool.length; i++) {
     const candidate = pool[(base + i) % pool.length];
     if (!isRecentlyUsed(profileId, candidate)) return candidate;
   }
   // All used — rotate by callN to avoid always returning pool[0]
-  return pool[callN % pool.length];
+  return pool[(callN + randSpread) % pool.length];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -282,178 +287,232 @@ function pickFromPool(pool, profileId, salt = 0) {
 const POST_CAPTIONS = {
 
   massive_pot: [
-    // Short
-    'stacks went in the middle fast', 'big money in the middle right there', 'pot got out of hand quickly', 'two big hands run into each other',
-    'chips all went in preflop', 'monster pot decided everything', 'all the chips got it in', 'massive pot that changed the session',
-    // Medium
-    'that pot got huge incredibly fast', 'not sure who I am rooting for', 'someone night just changed completely',
-    'chips were moving fast in that one', 'both players had a read, or thought they did',
-    'pot size changes the math on everything', 'the swings in this game are real',
-    'the money went in fast on that one', 'when both players feel good about it',
-    'all the chips are in the middle now', 'this is why people watch poker live',
-    // Longer
-    'that is a lot of money in the middle for one hand', 'looked calm at the table, was not calm',
-    'both ran it like they knew something the other did not', 'nobody blinked, respect all around.',
-    'the stacks got deep enough that everything after the flop was interesting',
-    'this hand changed the whole trajectory of the session entirely',
-    'getting it all in pre is one thing, this was completely different',
-    'sometimes you just know going into it that it is going to be big',
+    // Real people reacting to a huge pot — punchy, surprised, invested
+    'nah the pot size changed everything right there',
+    'both of them felt it, you could see it',
+    'I would have passed out at that bet sizing',
+    'someone walked out of there either thrilled or sick',
+    'chips went in fast and nobody hesitated',
+    'when the stacks are deep the game gets interesting',
+    'the variance in this game hits different at those stakes',
+    'all in and I genuinely had no idea who had it',
+    'two players both thinking they have the best hand',
+    'one of those pots that decides the whole session',
+    'couldn\'t have scripted that one any better honestly',
+    'the money was already in before I even processed it',
+    'this is literally why I love watching poker live',
+    'nobody at that table was breathing normally after that',
+    'that pot alone would change my month if I won it',
+    'the kind of hand you remember at 3am for years',
+    'once the money goes in there is nothing left to do',
+    'I have been in a pot that size exactly once in my life',
   ],
 
   bluff: [
-    // Short (expanded to 6+)
-    'pure stones, no cards needed at all', 'zero cards but full commitment all the way', 'had nothing and bet it anyway',
-    'ran it anyway and it actually worked',
-    // Medium
-    'he had nothing and bet it big anyway', 'that bluff had no business working at all',
-    'cold as ice the whole time at that table', 'the nerve to pull that off in that spot',
-    'the river bet was the whole entire story', 'they bought the story completely and completely',
-    // Longer
-    'that sizing was a statement, not a question at all', 'did not flinch once during the whole hand',
-    'bluff worked, should it have, probably not.', 'put a story together and they believed every word',
-    'pure aggression, zero cards, and full commitment throughout',
+    // Reacting to a bold bluff — respect, disbelief, humor
+    'nah he had absolutely nothing and still bet it',
+    'no cards, no fear, all in on a story',
+    'the nerve on that bet is genuinely unreal to me',
+    'I would have mucked three streets earlier honestly',
+    'he built the whole hand around a lie and it landed',
+    'stone cold, never even flinched at that table',
+    'villain folded the winner and the bluffer just sat there',
+    'you can\'t teach that kind of composure at all',
+    'if I try that exact play it gets snapped off immediately',
+    'the bet sizing on the river was a whole statement',
+    'went for it with nothing and walked away with everything',
+    'I\'ve seen some ballsy plays but that one is up there',
+    'the story he told over five streets was actually cohesive',
+    'folded every time someone bets like that, and I would again',
+    'imagine making that bet and knowing you have zero equity',
   ],
 
   bad_beat: [
-    // Short (expanded to 6+)
-    'brutal runout, truly nothing you can do', 'runner runner on the worst possible spot',
-    'variance showed up big and ugly right there', 'oof, that runout was absolutely criminal',
-    'the deck lied at the absolute worst time',
-    // Medium
-    'ran good until he suddenly did not', 'had it won then did not anymore',
-    'the river card was genuinely brutal to see', 'nobody deserves that kind of runout honestly',
-    'played it right all the way and lost anyway, that is poker',
-    // Longer
-    'the math was right, the cards had completely other plans', 'been there and it sucks every single time.',
-    'that one-outer hits different when real money is on it',
-    'this hand lives rent-free in his head for a while', 'sometimes the deck just does not care at all',
+    // Real pain. People who play poker know this feeling
+    'nah the deck genuinely had it out for him that hand',
+    'ran it perfectly and the river said absolutely not',
+    'I have had that exact runout happen to me and it\'s awful',
+    'math was right, cards did not care even a little',
+    'this is the clip you send people when they ask why you\'re on tilt',
+    'that one-outer is a special kind of cruel honestly',
+    'he played it great and still lost, that\'s just poker',
+    'the variance in this game is genuinely ruthless sometimes',
+    'that call was correct and it still didn\'t matter',
+    'sat with this clip for a minute before I could move on',
+    'nobody deserves to run into that on the river',
+    'sometimes the deck is just absolutely not on your side',
+    'the look on his face when the river peeled is everything',
+    'came into this world to feel pain apparently',
+    'if this happened to me I would have needed a walk outside',
   ],
 
   soul_read: [
-    // Short (expanded to 6+)
-    'he knew before the action even started', 'no way that was a guess at all', 'completely dialed in on that player',
-    // Medium
-    'that fold was either genius or pure instinct', 'called it before the cards even came',
-    'saw right through the entire story told', 'the timing on that call was completely different',
-    'reads like that do not come from a solver', 'hero call, actually earned the name for once',
-    // Longer
-    'how do you make that lay down at that stack depth', 'not many people make that call in that spot',
-    'snapped it off like he had played this exact spot before',
-    'the look on his face said he already knew what was coming',
+    // Genuine awe at a great read — this is when it clicks
+    'he knew what he was up against before he even acted',
+    'not a guess, not luck, that was a full live read',
+    'I have watched this three times and still can\'t figure out how',
+    'called it and looked completely comfortable doing it',
+    'nah nobody makes that fold without seeing something real',
+    'the look on his face said he had figured it out already',
+    'that call took more courage than I personally have',
+    'the read was there from the first bet honestly',
+    'you don\'t make that play from a chart, that\'s just feel',
+    'hero call is underselling it, that\'s a different level',
+    'most people fold that hand at that stack depth, not him',
+    'snapped it off like he had been waiting for that exact spot',
+    'this is the kind of hand that follows you around for good reasons',
+    'absolute conviction on a call that most of us never make',
+    'people will be studying this clip in poker coaching sessions',
   ],
 
   table_drama: [
-    // Short (expanded to 6+)
-    'the whole table got really weird there', 'someone absolutely snapped at that point', 'tension at the table was very real',
-    // Medium
-    'the table dynamic shifted hard after that hand', 'words exchanged, and they were not nice ones',
-    'two people, one pot, and terrible energy overall', 'someone composure cracked under the pressure',
-    'the dealer honestly had the hardest job at that table',
-    // Longer
-    'takes a lot to rattle most people and this did it',
-    'whatever was said, it got in his head and stayed there',
-    'nobody wins when the whole table tilts like that',
+    // The tension when a table goes sideways — real reactions
+    'the vibe at that table shifted immediately after that hand',
+    'words were exchanged and none of them were friendly',
+    'whatever happened next session must have been interesting',
+    'you could feel the energy change through the screen',
+    'everyone at that table felt it, nobody said anything useful',
+    'the dealer was doing the most thankless job in that moment',
+    'once the table tilts like that the whole dynamic is gone',
+    'said what he said and clearly meant all of it',
+    'takes a specific kind of moment to crack someone that composed',
+    'the tension before the river was already at a ten',
+    'some hands end the hand, some hands end the whole session',
+    'nobody won that hand in any meaningful way after that exchange',
+    'the energy in that room was completely different after this',
+    'I have been at a table like that and you just want to leave',
   ],
 
   celebrity: [
-    // Short (expanded to 6+)
-    'legend stuff, genuinely on a different level', 'still playing at the elite level', 'operating on a completely different level entirely',
-    // Medium
-    'hard not to watch every hand when he is at the table', 'some things in this game do not change',
-    'built the reputation hand by difficult hand over time', 'watched this guy play for years and still impressive',
-    // Longer
-    'the name carries real weight for a very good reason', 'you can learn something real from every hand he plays',
-    'that is just a completely different feel for the game, hard to teach',
+    // Watching a known player — reverence, learning, fandom
+    'still got it, watching him play is always worth it',
+    'built the reputation one well-played hand at a time',
+    'every time he sits down there is something to learn from it',
+    'hard not to just stop and watch when he is in a hand',
+    'the experience gap shows up in spots like this one',
+    'came to watch and learned something immediately, as expected',
+    'the way he reads the table is honestly a whole other thing',
+    'legend for a reason and this hand is a good reminder of why',
+    'I would love to know what was going through his head there',
+    'you can tell he has seen this exact spot a thousand times',
+    'studying hands like this is where the real improvement happens',
+    'the composure alone is worth the watch on this one',
+    'some players just have a feel for when to deviate and when not to',
+    'this clip lives rent-free in my head in the best way',
   ],
 
   funny: [
-    // Short (expanded to 6+)
-    'did not expect that to happen at all', 'poker really is pure comedy sometimes', 'I genuinely cannot believe that just happened',
-    // Medium
-    'watched this clip at least three times already', 'the whole table did not know how to process it',
-    'nobody planned for that specific outcome to happen', 'poker always finds a way to surprise everyone',
-    // Longer
-    'this hand will definitely come up in conversation for years',
-    'the reaction from everyone was as good as the hand itself',
-    'genuinely did not see that particular ending coming at all',
+    // Poker is genuinely hilarious sometimes
+    'I cannot stop watching this, send help',
+    'the poker gods were absolutely trolling that entire table',
+    'nobody at the table knew what to do with themselves after that',
+    'nah the reaction alone is worth watching multiple times',
+    'that outcome was not in anyone\'s range of possibilities',
+    'watched this like six times and it gets better each time',
+    'I am crying, the timing of that is genuinely perfect',
+    'every poker player in existence has been in this exact spot',
+    'the game just does this sometimes and you have to respect it',
+    'whoever planned for that outcome needs to explain their logic to me',
+    'the table\'s reaction tells you everything you need to know',
+    'this is the clip I send when someone asks me to explain poker',
+    'if that happened at my home game we would still be talking about it',
   ],
 
   educational: [
-    // Short (expanded to 6+)
-    'worth watching this clip at least twice', 'note the sizing on each street carefully', 'study this exact spot very carefully',
-    // Medium
-    'a lot of players consistently get this wrong', 'the decision tree here is definitely worth thinking about',
-    'simple concept but genuinely harder to execute in game', 'position doing almost all of the work here',
-    'pay close attention to how they play the turn',
-    // Longer
-    'this is exactly the spot that separates different levels of play',
-    'stack depth is doing a lot of work in this hand, good study material',
-    'range advantage playing out in real time, worth pausing and rewinding',
-    'the river decision is the one worth studying before your very next session',
+    // Actually useful content — engaged and curious
+    'rewatched this twice to catch the sizing pattern, worth it',
+    'the spot most players miss is right there on the turn',
+    'genuinely explains why position matters more than most people admit',
+    'adding this one to my mental database of spots to study',
+    'so many players get this exact decision completely wrong',
+    'paused it before the river to think through what I would do',
+    'the stack depth context is what makes this hand worth studying',
+    'this is the kind of content that actually improves your game',
+    'the way he constructs his range on the flop is the whole lesson here',
+    'spent ten minutes on this one spot, learned something real',
+    'most coaching content glosses over hands like this one, glad it\'s here',
+    'the river decision alone has kept me thinking about it for a day',
+    'breaks it down in a way that finally made it click for me',
+    'range advantage doing all the work and this is a good example',
   ],
 
   vlog: [
-    // Short (expanded to 6+)
-    'the grind keeps going regardless of results', 'living the poker life every single day', 'another long session in the books',
-    // Medium
-    'honest look at how a real session actually goes', 'the variance in this game is very real',
-    'every single session teaches you something new', 'running good is temporary, grinding is permanent',
-    // Longer
-    'good read on the room throughout the whole session',
-    'not every day is a winning day, he knows that better than most',
+    // Following someone\'s poker journey — real and relatable
+    'this is what a real session actually looks like, respect the honesty',
+    'the swings in this game never get easier to watch from the outside',
+    'documenting the grind honestly is harder than it looks',
+    'real talk, most people would have shut the camera off after that',
+    'this is the stuff nobody shows you when they talk about poker life',
+    'the variance hits differently when you are watching someone live it',
+    'grinding long sessions requires something most people do not have',
+    'the mental side of this game never gets talked about enough',
+    'raw look at what actually goes into playing poker seriously',
+    'you never see content this honest from people at this level',
+    'keeps coming back to it even after tough sessions, that matters',
+    'the lifestyle looks easy from the outside and is anything but',
+    'logged more hands this week than most people do in a year',
   ],
 
   tournament: [
-    // Short (expanded to 6+)
-    'ICM pressure hitting from every direction here', 'deep run loading, keep the momentum going',
-    'final table energy is different from everything else',
-    // Medium
-    'chip lead means nothing until it is actually over',
-    'tournament poker needs a completely different mental gear', 'one hand from a truly life-changing score',
-    'the shove/fold math gets very real near the money',
-    // Longer
-    'stack management under pressure is a skill people consistently underestimate',
-    'field was genuinely tough and they still made a run and played well',
-    'late registration versus early grind, that debate honestly never ends',
+    // Tournament pressure is a whole different thing
+    'ICM pressure at this stage is a completely different game',
+    'deep run energy is something you can feel through the screen',
+    'one chip and a chair is not a saying, it is a lifestyle',
+    'the field was brutal and they are still here, respect that',
+    'shove or fold decisions hit different when the money is real',
+    'nobody sleeps well during a deep tournament run and it shows',
+    'made it to this point playing great, do not stop now',
+    'final table spots cost years of work and this is the proof',
+    'the bubble is the most stressful twenty minutes in poker honestly',
+    'late registration debate aside, being here is what matters',
+    'watching someone navigate ICM well is genuinely satisfying to see',
+    'nah this level of focus is not something most people can access',
+    'every orbit at this stage means something completely different',
   ],
 
   high_stakes: [
-    // Short (expanded to 6+)
-    'real money on every single street here', 'a completely different game at this level', 'absolutely no soft spots at this table',
-    // Medium
-    'the range of players at this level is genuinely wild', 'mistakes at these stakes cost accordingly every single time',
-    'that bet sizing sends a real message to the whole table',
-    'nobody at this table is even remotely guessing',
-    // Longer
-    'you can feel the pressure coming right through the screen on this one',
-    'the mental game matters more as stakes go up, and this clearly shows it',
+    // Big games, elite players — awe and respect
+    'the numbers being moved around this table are not small',
+    'mistakes at this level show up in the results immediately',
+    'different game at these stakes, the pressure is on every single decision',
+    'nobody at this table is guessing, not even close',
+    'the bet sizing alone tells you these players know what they are doing',
+    'I can feel the pressure through the screen honestly',
+    'the caliber at this table makes every hand worth watching carefully',
+    'played at half these stakes once and still think about it',
+    'soft spots do not exist in games like this one',
+    'watching elite players mix it up is genuinely its own thing',
+    'the mental game becomes the whole game at stakes like this',
+    'respect the risk they are taking sitting down in this lineup',
   ],
 
   // ── Sports highlight video captions (used when clipType === 'sports') ──────────
   sports_highlight: [
-    // Very short (2-3 words) — adds range variety
-    'just money', 'that\'s different', 'nasty', 'no way', 'ice cold',
-    'look at that', 'wow', 'come on',
-    // Short (4-6 words)
-    'that was filthy', 'did not see that coming', 'highlight of the week',
-    'has to be a poster', 'nobody touches him when he\'s on',
-    // Medium (7-12 words)
-    'not many people can do what he just did there',
-    'that play changes how you think about the game',
-    'the athleticism on display is wild', 'the best players make it look easy',
-    'moment of the game right there', 'that\'s going on the highlight reel',
-    'whole arena felt that one', 'the footwork alone is worth studying',
-    'built different. that\'s the only explanation.',
-    'you practice that a thousand times and still might not pull it off in-game',
-    // Longer (13+ words)
-    'plays like that don\'t happen without years of work behind them',
-    'whoever was guarding that man was in a bad spot from the start',
-    'the timing on that was absolutely perfect. you just can\'t teach that.',
-    'hard to watch that and not appreciate how good these athletes are',
-    'this is why you watch every game, moments like this happen fast',
-    'the crowd reaction said everything that needed to be said',
-    'breakdown of that play frame by frame would be something else',
-    'the gap between good and elite becomes very obvious in moments like this',
+    // Very short — punchy reactions
+    'bro what', 'nah that\'s crazy', 'no way', 'ice cold',
+    'come on now', 'wild', 'stop it',
+    // Short
+    'that was genuinely filthy', 'I would never recover from that',
+    'did not see that coming at all', 'highlight of the whole week',
+    'nobody touches him when he is locked in',
+    // Medium
+    'not many people on earth can do what he just did there',
+    'that play changes how everyone thinks about this game',
+    'the athleticism here is honestly hard to process',
+    'the best players make it look easy and it is absolutely not easy',
+    'whole arena felt that one at the same time',
+    'the footwork alone makes this worth watching five more times',
+    'built different and this is the proof right here',
+    'you can practice that your whole life and still not pull it off',
+    // Longer
+    'plays like that do not happen without years of unglamorous work behind them',
+    'whoever was guarding that man was in a genuinely impossible position',
+    'the timing on that was so perfect it almost looks scripted',
+    'hard to watch this and not appreciate how rare this level actually is',
+    'this is exactly why you never leave before the final whistle',
+    'the crowd reaction said everything that needed to be said right there',
+    'that sequence frame by frame would make an incredible breakdown video',
+    'the gap between good and elite becomes obvious in moments exactly like this',
   ],
 };
 
@@ -706,38 +765,39 @@ const KNOWN_VENUES = [
 // {{subject}} = player name or show/venue name
 const CONTEXT_TEMPLATES = {
   player: [
-    '{{subject}} in this one',
-    'watching {{subject}} is always interesting',
-    'that {{subject}} hand was something',
-    'classic {{subject}} at the table',
-    '{{subject}} knows what he\'s doing out there',
-    '{{subject}} runs hot and cold like everyone else',
-    'always something to learn from watching {{subject}}',
-    '{{subject}} makes it look easy',
-    'hard to argue with how {{subject}} played that',
-    '{{subject}} doing {{subject}} things',
+    'watching {{subject}} is always a good use of time',
+    '{{subject}} making it look easy again',
+    'nah {{subject}} cooked right there',
+    '{{subject}} doing exactly what {{subject}} does',
+    'I watch every {{subject}} hand I can find honestly',
+    'hard to argue with how {{subject}} played that one',
+    'the {{subject}} read was already in by the turn honestly',
+    '{{subject}} in this spot is exactly what I came to see',
+    'learned something from watching {{subject}} do this',
+    'love or hate the style, {{subject}} knows what he is doing',
   ],
   venue: [
-    '{{subject}} always delivers',
-    'another one from {{subject}}',
-    '{{subject}}, never a dull hand',
-    'the action at {{subject}} never stops',
-    '{{subject}} has been running wild lately',
-    'if you\'re not watching {{subject}} you\'re missing out',
-    '{{subject}} is where the real hands happen',
-    'back at {{subject}}, back at it',
+    '{{subject}} always delivers content worth watching',
+    'another wild one from {{subject}}',
+    '{{subject}} never has a dull hand, I will give them that',
+    'the action at {{subject}} is just different honestly',
+    '{{subject}} has been running wild this month',
+    'if you are not watching {{subject}} you are genuinely missing out',
+    '{{subject}} is where the hands people talk about actually happen',
+    'back at {{subject}} and already it is interesting',
   ],
   concept: {
-    bluff:       ['had to be a bluff, nothing else makes sense there', 'the nerve on that bet size was real', 'stone cold execution when everyone was watching', 'run it and pray strategy, it landed perfectly', 'that sizing was a statement and it worked'],
-    hero_call:   ['that is a hero call if I have ever seen one', 'no way most players make that call there', 'the read was real from the very beginning', 'pure instinct and it paid off completely', 'dialed in on that one from the start'],
-    full_house:  ['flopped a monster and played it perfectly', 'river full house hits different in that spot', 'when the board gives you absolutely everything', 'flopped the world and got paid every street'],
-    bad_beat:    ['brutal runout on a perfectly played hand', 'the deck said no at the worst time', 'one outer special, nothing you can do about it', 'variance is a beast and it showed up today'],
-    vlog:        ['the grind on camera is something else entirely', 'raw look at what the real game looks like', 'day in the life content always hits different', 'respect for documenting the grind honestly and openly'],
-    wsop:        ['every WSOP hand carries so much more weight', 'bubble pressure at the World Series is different', 'deep run energy is real and you can feel it', 'WSOP is the gold standard and always will be'],
-    day_final:   ['every single chip counts late in a tournament', 'the pressure ramps up incredibly fast at this stage', 'this is exactly what high-stakes tournament poker looks like'],
-    breakdown:   ['breaking it down hand by hand is how you get better', 'the analysis is always worth watching closely', 'street-by-street breakdowns of hands are genuinely underrated content'],
+    bluff:      ['nah he had nothing and bet it anyway, respect', 'the nerve to run that through five streets is real', 'zero cards, full commitment, walked away with it', 'that sizing was a statement and the villain believed it', 'put together a story and they bought every word'],
+    hero_call:  ['that call took something most people do not have', 'no way I make that call there, genuinely no way', 'the read was in before he even tanked', 'called it and looked completely comfortable doing it', 'that is a different level of conviction right there'],
+    full_house:  ['flopped a monster and got paid for it', 'river full house in that spot hits different', 'the board gave him everything and he used all of it', 'flopped the world and milked every single street'],
+    bad_beat:    ['nah the deck genuinely had it out for him', 'ran it perfectly and the river said no', 'one outer with the money in, that is special cruelty', 'variance is a beast and it showed up today'],
+    vlog:        ['this is what the grind actually looks like, respect it', 'raw look at the real game, not the highlight version', 'day in the life stuff hits different when it is honest', 'documenting this honestly is harder than it looks'],
+    wsop:        ['every WSOP hand carries real weight, you can feel it', 'bubble pressure at the World Series is just different', 'deep run energy is something you feel through the screen', 'WSOP is the standard and this hand shows why'],
+    day_final:   ['every chip at this stage means something different', 'the pressure at a final table is something else entirely', 'this is exactly what high stakes tournament poker looks like'],
+    breakdown:   ['breaking it down like this is how you actually get better', 'this breakdown is more useful than a week of random hands', 'street-by-street is underrated as a study format'],
   }
 };
+
 
 /**
  * Extract context from a title string.
