@@ -15,13 +15,31 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
-import { generateComment } from '../lib/content-engine/HumanVoiceEngine.js';
+import { generateComment, generatePostCaption } from '../lib/content-engine/HumanVoiceEngine.js';
 import {
   shouldHorseBeActive,
   isHorseActiveHour,
   getHorseActivityRate,
 } from '../lib/content-engine/HorseScheduler.js';
-import { getRandomClip, getRandomCaption } from '../lib/content-engine/ClipLibrary.js';
+import { getRandomClip } from '../lib/content-engine/ClipLibrary.js';
+
+// Map ClipLibrary category values → HumanVoiceEngine POST_CAPTIONS pool keys
+// ClipLibrary uses snake_case categories (massive_pot, bluff, bad_beat, etc.)
+// HumanVoiceEngine uses the same keys — direct passthrough is safe for poker clips.
+// Unknown categories fall back to 'massive_pot' (all ClipLibrary clips are poker content).
+const CLIP_CATEGORY_TO_POOL: Record<string, string> = {
+  massive_pot: 'massive_pot',
+  bluff: 'bluff',
+  bad_beat: 'bad_beat',
+  soul_read: 'soul_read',
+  table_drama: 'table_drama',
+  celebrity: 'celebrity',
+  funny: 'funny',
+  educational: 'educational',
+  vlog: 'vlog',
+  tournament: 'tournament',
+  high_stakes: 'high_stakes',
+};
 
 const CONFIG = {
   HORSES_PER_TRIGGER: 2,
@@ -91,11 +109,12 @@ async function postVideoStory(horse: Horse): Promise<{ type: string; story_id?: 
     }
     if (!validClip) return null;
 
-    const rawCaption = getRandomCaption(validClip.category);
-    const caption =
-      rawCaption && rawCaption.trim().length >= 5
-        ? rawCaption.trim()
-        : TEXT_STORY_TOPICS[Math.floor(Math.random() * TEXT_STORY_TOPICS.length)] ?? '';
+    // BUG-07/08 FIX 2026-04-28: getRandomCaption() (ClipLibrary) used the old toxic
+    // CAPTION_TEMPLATES pool ("This pot is INSANE", "Stack going in the middle").
+    // Now uses HumanVoiceEngine.generatePostCaption() for the same quality guarantees
+    // as horse post captions: dedup, archetype voice, proper capitalization/punctuation.
+    const poolKey = CLIP_CATEGORY_TO_POOL[validClip.category] ?? 'massive_pot';
+    const caption = generatePostCaption(poolKey, horse.profile_id, validClip.title || '');
 
     const thumbnailUrl = `https://img.youtube.com/vi/${validClip.video_id}/hqdefault.jpg`;
 
@@ -123,7 +142,11 @@ async function postTextStory(horse: Horse): Promise<{ type: string; story_id?: u
   try {
     const topic = TEXT_STORY_TOPICS[Math.floor(Math.random() * TEXT_STORY_TOPICS.length)] ?? '';
     const gradient = STORY_GRADIENTS[Math.floor(Math.random() * STORY_GRADIENTS.length)];
-    const content = generateComment('general', horse.profile_id) || topic;
+    // BUG-03 FIX 2026-04-28: generateComment('general') returns short social comment phrases
+    // ("facts", "100%", "real talk") which are too terse for story text content.
+    // Stories need substantive sentences — use TEXT_STORY_TOPICS as primary, generateComment
+    // as secondary (only if topic somehow fails).
+    const content = topic || generateComment('general', horse.profile_id);
 
     const { data: storyId, error } = await getSupabase().rpc('fn_create_story', {
       p_user_id: horse.profile_id,
