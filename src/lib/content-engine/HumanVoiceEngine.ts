@@ -832,9 +832,13 @@ export function generatePostCaption(category: string, profileId: string, clipTit
   }
 
   // Fallback: pick from category-appropriate phrase pool
+  // SAFETY GUARD: If category is sports_highlight, NEVER fall back to massive_pot.
+  // detectCategory() could match poker terms in a sports clip title (e.g. 'all in',
+  // 'money', 'pot') and route to a poker pool. Always use sports_highlight as floor.
+  const isSportsCategory = category === 'sports_highlight';
   const pool = POST_CAPTIONS[category] ||
-               POST_CAPTIONS[detectCategory(safeTitle)] ||
-               POST_CAPTIONS.massive_pot;
+               (!isSportsCategory ? POST_CAPTIONS[detectCategory(safeTitle)] : null) ||
+               (isSportsCategory ? POST_CAPTIONS.sports_highlight : POST_CAPTIONS.massive_pot);
 
   const archetype = getArchetype(profileId);
 
@@ -851,7 +855,6 @@ export function generatePostCaption(category: string, profileId: string, clipTit
   // For sports content, block poker-specific and poker-hyperbole flairs
   if (archetype.flair.length > 0 && Math.random() < 0.20) {
     let flairPool = archetype.flair;
-    const isSportsCategory = category === 'sports_highlight';
     if (isSportsCategory) {
       const blockedForSports = ['solver take', 'GTO note', 'range perspective', 'massive', 'huge', 'unreal', 'textbook', 'seen it', 'classic spot', 'idk', 'not convinced', 'questionable'];
       flairPool = archetype.flair.filter(f => !blockedForSports.includes(f));

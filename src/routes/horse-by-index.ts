@@ -242,7 +242,18 @@ async function postVideoClip(horse, assignedSources, horseIndex, clipType = 'spo
     }
 
     // Generate human-sounding caption — no API call, no cost
-    const clipCategory = clip.category || (clipType === 'poker' ? 'massive_pot' : 'sports_highlight');
+    // CRITICAL FIX 2026-04-28: Sports clips have category='highlight','dunk','touchdown' etc.
+    // None of these exist in POST_CAPTIONS, causing a silent fallback to POST_CAPTIONS.massive_pot
+    // (poker pool) which produced captions like 'all in', 'pot got out of hand' on sports posts.
+    // Fix: sports clips ALWAYS use 'sports_highlight' regardless of DB category.
+    // Poker clips use clip.category if it maps to a real pool key, else 'massive_pot'.
+    const POKER_CAPTION_KEYS = new Set(['massive_pot','bluff','bad_beat','soul_read','table_drama','celebrity','funny','educational','vlog','tournament','high_stakes']);
+    let clipCategory: string;
+    if (clipType === 'sports') {
+        clipCategory = 'sports_highlight'; // Always — 'highlight','dunk','touchdown' are not caption pool keys
+    } else {
+        clipCategory = (clip.category && POKER_CAPTION_KEYS.has(clip.category)) ? clip.category : 'massive_pot';
+    }
     const caption = generatePostCaption(clipCategory, horse.profile_id, clip.title || '');
 
     const { data: post, error } = await getSupabase().from('social_posts').insert({
