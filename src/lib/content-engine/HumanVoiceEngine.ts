@@ -283,146 +283,150 @@ const POST_CAPTIONS = {
 
   massive_pot: [
     // Short
-    'stack going in', 'big money', 'pot got out of hand', 'two big hands collide',
-    'all in', 'monster pot', 'it went in', 'massive',
+    'stacks went in the middle fast', 'big money in the middle right there', 'pot got out of hand quickly', 'two big hands run into each other',
+    'chips all went in preflop', 'monster pot decided everything', 'all the chips got it in', 'massive pot that changed the session',
     // Medium
-    'that pot got huge fast', 'not sure who I\'m rooting for', 'someone\'s night just changed',
+    'that pot got huge incredibly fast', 'not sure who I am rooting for', 'someone night just changed completely',
     'chips were moving fast in that one', 'both players had a read, or thought they did',
     'pot size changes the math on everything', 'the swings in this game are real',
     'the money went in fast on that one', 'when both players feel good about it',
-    'all the chips are in the middle', 'this is why people watch poker',
+    'all the chips are in the middle now', 'this is why people watch poker live',
     // Longer
-    'that\'s a lot of money in the middle for one hand', 'looked calm at the table, was not calm',
-    'both ran it like they knew something the other didn\'t', 'nobody blinked. respect.',
+    'that is a lot of money in the middle for one hand', 'looked calm at the table, was not calm',
+    'both ran it like they knew something the other did not', 'nobody blinked, respect all around.',
     'the stacks got deep enough that everything after the flop was interesting',
-    'this hand changed the whole trajectory of the session',
-    'getting it all in pre is one thing, this was different',
-    'sometimes you just know going into it that it\'s going to be big',
+    'this hand changed the whole trajectory of the session entirely',
+    'getting it all in pre is one thing, this was completely different',
+    'sometimes you just know going into it that it is going to be big',
   ],
 
   bluff: [
-    // Short
-    'pure stones', 'zero cards', 'had nothing', 'ran it anyway',
+    // Short (expanded to 6+)
+    'pure stones, no cards needed at all', 'zero cards but full commitment all the way', 'had nothing and bet it anyway',
+    'ran it anyway and it actually worked',
     // Medium
-    'he had nothing and bet it big', 'that bluff had no business working',
-    'cold as ice at that table', 'the nerve to pull that off in that spot',
-    'the river bet was the whole story', 'they bought the story completely',
+    'he had nothing and bet it big anyway', 'that bluff had no business working at all',
+    'cold as ice the whole time at that table', 'the nerve to pull that off in that spot',
+    'the river bet was the whole entire story', 'they bought the story completely and completely',
     // Longer
-    'that sizing was a statement, not a question', 'didn\'t flinch once during the whole hand',
-    'bluff worked. should it have? probably not.', 'put a story together and they believed it',
-    'pure aggression, zero cards, full commitment',
+    'that sizing was a statement, not a question at all', 'did not flinch once during the whole hand',
+    'bluff worked, should it have, probably not.', 'put a story together and they believed every word',
+    'pure aggression, zero cards, and full commitment throughout',
   ],
 
   bad_beat: [
-    // Short
-    'brutal', 'runner runner', 'variance', 'oof', 'the deck lied',
+    // Short (expanded to 6+)
+    'brutal runout, truly nothing you can do', 'runner runner on the worst possible spot',
+    'variance showed up big and ugly right there', 'oof, that runout was absolutely criminal',
+    'the deck lied at the absolute worst time',
     // Medium
-    'ran good until he didn\'t', 'had it won then didn\'t',
-    'the river card was brutal', 'nobody deserves that runout',
-    'played it right, lost anyway. that\'s poker',
+    'ran good until he suddenly did not', 'had it won then did not anymore',
+    'the river card was genuinely brutal to see', 'nobody deserves that kind of runout honestly',
+    'played it right all the way and lost anyway, that is poker',
     // Longer
-    'the math was right, the cards had other plans', 'been there. it sucks every single time.',
-    'that one-outer hits different when there\'s money on it',
-    'this hand lives rent-free in his head now', 'sometimes the deck just doesn\'t care',
+    'the math was right, the cards had completely other plans', 'been there and it sucks every single time.',
+    'that one-outer hits different when real money is on it',
+    'this hand lives rent-free in his head for a while', 'sometimes the deck just does not care at all',
   ],
 
   soul_read: [
-    // Short
-    'he knew', 'no way that\'s a guess', 'dialed in',
+    // Short (expanded to 6+)
+    'he knew before the action even started', 'no way that was a guess at all', 'completely dialed in on that player',
     // Medium
-    'that fold was either genius or instinct', 'called it before the cards came',
-    'saw right through the story', 'the timing on that call was different',
-    'reads like that don\'t come from a solver', 'hero call, actually earned the name',
+    'that fold was either genius or pure instinct', 'called it before the cards even came',
+    'saw right through the entire story told', 'the timing on that call was completely different',
+    'reads like that do not come from a solver', 'hero call, actually earned the name for once',
     // Longer
     'how do you make that lay down at that stack depth', 'not many people make that call in that spot',
-    'snapped it off like he\'d played this exact spot before',
+    'snapped it off like he had played this exact spot before',
     'the look on his face said he already knew what was coming',
   ],
 
   table_drama: [
-    // Short
-    'table got weird', 'someone snapped', 'tension was real',
+    // Short (expanded to 6+)
+    'the whole table got really weird there', 'someone absolutely snapped at that point', 'tension at the table was very real',
     // Medium
-    'the table shifted after that hand', 'words exchanged, not nice ones',
-    'two people, one pot, bad energy', 'someone\'s composure cracked',
-    'the dealer had the hardest job at that table',
+    'the table dynamic shifted hard after that hand', 'words exchanged, and they were not nice ones',
+    'two people, one pot, and terrible energy overall', 'someone composure cracked under the pressure',
+    'the dealer honestly had the hardest job at that table',
     // Longer
-    'takes a lot to rattle some people, this did it',
+    'takes a lot to rattle most people and this did it',
     'whatever was said, it got in his head and stayed there',
-    'nobody wins when the table tilts like that',
+    'nobody wins when the whole table tilts like that',
   ],
 
   celebrity: [
-    // Short
-    'legend stuff', 'still elite', 'different level',
+    // Short (expanded to 6+)
+    'legend stuff, genuinely on a different level', 'still playing at the elite level', 'operating on a completely different level entirely',
     // Medium
-    'hard not to watch when he\'s at the table', 'some things don\'t change',
-    'built the reputation hand by hand', 'watched this guy play for years, still impressive',
+    'hard not to watch every hand when he is at the table', 'some things in this game do not change',
+    'built the reputation hand by difficult hand over time', 'watched this guy play for years and still impressive',
     // Longer
-    'the name carries weight for a reason', 'you can learn something from every hand he plays',
-    'that\'s just a different feel for the game, hard to teach',
+    'the name carries real weight for a very good reason', 'you can learn something real from every hand he plays',
+    'that is just a completely different feel for the game, hard to teach',
   ],
 
   funny: [
-    // Short
-    'did not expect that', 'poker is comedy', 'I can\'t',
+    // Short (expanded to 6+)
+    'did not expect that to happen at all', 'poker really is pure comedy sometimes', 'I genuinely cannot believe that just happened',
     // Medium
-    'watched this three times already', 'the table didn\'t know how to process it',
-    'nobody planned for that outcome', 'poker finds a way to surprise you',
+    'watched this clip at least three times already', 'the whole table did not know how to process it',
+    'nobody planned for that specific outcome to happen', 'poker always finds a way to surprise everyone',
     // Longer
-    'this hand will come up in conversation for years',
-    'the reaction was as good as the hand itself',
-    'genuinely did not see that ending coming',
+    'this hand will definitely come up in conversation for years',
+    'the reaction from everyone was as good as the hand itself',
+    'genuinely did not see that particular ending coming at all',
   ],
 
   educational: [
-    // Short
-    'worth watching twice', 'note the sizing', 'study this spot',
+    // Short (expanded to 6+)
+    'worth watching this clip at least twice', 'note the sizing on each street carefully', 'study this exact spot very carefully',
     // Medium
-    'a lot of players get this wrong', 'the decision tree here is worth thinking about',
-    'simple concept, harder to execute in game', 'position doing all the work here',
-    'pay attention to how they play the turn',
+    'a lot of players consistently get this wrong', 'the decision tree here is definitely worth thinking about',
+    'simple concept but genuinely harder to execute in game', 'position doing almost all of the work here',
+    'pay close attention to how they play the turn',
     // Longer
-    'this is the spot that separates levels of play',
+    'this is exactly the spot that separates different levels of play',
     'stack depth is doing a lot of work in this hand, good study material',
     'range advantage playing out in real time, worth pausing and rewinding',
-    'the river decision is the one worth studying before your next session',
+    'the river decision is the one worth studying before your very next session',
   ],
 
   vlog: [
-    // Short
-    'the grind continues', 'living it', 'another session',
+    // Short (expanded to 6+)
+    'the grind keeps going regardless of results', 'living the poker life every single day', 'another long session in the books',
     // Medium
-    'honest look at how a session actually goes', 'the variance in this game is real',
-    'every session teaches you something', 'running good is temporary, grinding is permanent',
+    'honest look at how a real session actually goes', 'the variance in this game is very real',
+    'every single session teaches you something new', 'running good is temporary, grinding is permanent',
     // Longer
     'good read on the room throughout the whole session',
-    'not every day is a winning day. he knows that better than most',
+    'not every day is a winning day, he knows that better than most',
   ],
 
   tournament: [
-    // Short
-    'ICM pressure', 'deep run loading', 'final table energy',
+    // Short (expanded to 6+)
+    'ICM pressure hitting from every direction here', 'deep run loading, keep the momentum going',
+    'final table energy is different from everything else',
     // Medium
-    'chip lead means nothing until it\'s over',
-    'tournament poker needs a different gear', 'one hand from a life-changing score',
-    'the shove/fold math gets real near the money',
+    'chip lead means nothing until it is actually over',
+    'tournament poker needs a completely different mental gear', 'one hand from a truly life-changing score',
+    'the shove/fold math gets very real near the money',
     // Longer
-    'stack management under pressure is a skill people underestimate',
-    'field was tough, still made a run and played it well',
-    'late registration vs early grind, that debate never ends',
+    'stack management under pressure is a skill people consistently underestimate',
+    'field was genuinely tough and they still made a run and played well',
+    'late registration versus early grind, that debate honestly never ends',
   ],
 
   high_stakes: [
-    // Short
-    'real numbers', 'different game entirely', 'no soft spots',
+    // Short (expanded to 6+)
+    'real money on every single street here', 'a completely different game at this level', 'absolutely no soft spots at this table',
     // Medium
-    'the range of players at this level is wild', 'mistakes at these stakes cost accordingly',
-    'that bet sizing sends a message to the whole table',
-    'nobody at this table is guessing',
+    'the range of players at this level is genuinely wild', 'mistakes at these stakes cost accordingly every single time',
+    'that bet sizing sends a real message to the whole table',
+    'nobody at this table is even remotely guessing',
     // Longer
-    'you can feel the pressure through the screen on this one',
-    'the mental game matters more as stakes go up, and this shows it',
+    'you can feel the pressure coming right through the screen on this one',
+    'the mental game matters more as stakes go up, and this clearly shows it',
   ],
 
   // ── Sports highlight video captions (used when clipType === 'sports') ──────────
@@ -473,52 +477,60 @@ const COMMENT_PHRASES = {
   ],
 
   bad_beat: [
-    'brutal', 'that one hurts to watch', 'been there too many times',
-    'variance is real', 'the deck had it out for him', 'played it right though',
-    'oof', 'one-outers are a special kind of pain', 'the math was right. cards weren\'t.',
-    'next session', 'shake it off', 'that kind of thing sticks with you a while',
-    'nothing to do but move on', 'happened to me last week. still thinking about it.',
-    'awful runout. nothing you can do.', 'that\'s just poker doing poker things',
+    'brutal runout, nothing you can do about that one', 'that one hurts to watch twice', 'been there too many times, still stings',
+    'variance is real and it hit hard right there', 'the deck had it out for him that hand',
+    'played it perfectly right up until the deck lied', 'oof, that runout is criminal',
+    'one-outers are a special kind of pain in this game', 'the math was right, the cards just disagreed.',
+    'next session, shake it off and keep going', 'that kind of thing sticks with you a while',
+    'nothing to do but move on and remember the math', 'happened to me last week, still thinking about it.',
+    'awful runout, absolutely nothing you can do.', 'that is just poker doing what poker does',
   ],
 
   bluff: [
-    'no cards needed', 'that took nerve', 'the sizing was a statement',
-    'he had to fold there honestly', 'stone cold', 'respect for the execution',
-    'fearless at the table', 'risky, worth it',
-    'the read was there before the shove', 'everyone at the table knew but nobody moved',
+    'no cards needed and he knew it', 'that took nerve most players do not have',
+    'the sizing was a statement, not a question',
+    'he had to fold there honestly, no other choice', 'stone cold at the table, never flinched',
+    'respect for the execution on that one', 'fearless play in a spot that mattered',
+    'risky spot, worth it in the end',
+    'the read was there long before the shove happened', 'everyone at the table knew it but nobody could move',
   ],
 
   tournament: [
-    'ICM nightmare spot', 'the bubble is brutal', 'chip leader playing it right',
-    'final table spots don\'t come free', 'shove range widens near the money',
-    'field was tough, still made it work', 'deep run incoming',
-    'tournament poker needs a different gear',
+    'ICM nightmare spot, no good options there', 'the bubble pressure is genuinely brutal to handle',
+    'chip leader playing it exactly right in that spot',
+    'final table spots do not come cheap or free', 'shove range widens significantly near the money',
+    'field was tough and they still made it work', 'deep run incoming if they keep playing like this',
+    'tournament poker requires a completely different mental gear',
   ],
 
   strategy: [
-    'the sizing tells the story', 'think about it from a range perspective',
-    'EV is all that matters long term', 'textbook spot',
-    'solver would have a different answer, this works too',
-    'position is doing everything here', 'the math checks out',
-    'good example of when to deviate from the chart',
+    'the sizing tells the whole story here', 'think about it from a range perspective first',
+    'EV is all that matters in the long run',
+    'textbook spot, could not be cleaner than that',
+    'solver would have a different answer but this works too',
+    'position is doing almost everything in this hand', 'the math checks out if you run it',
+    'good example of when to deviate from the chart entirely',
   ],
 
   session_report: [
-    'solid session', 'the grind pays off', 'good to book a win',
-    'keep stacking', 'the hours show up in the results', 'nice profit',
-    'sessions like that keep you going', 'congrats on the run',
+    'solid session, that result is well earned', 'the grind pays off when you stay patient',
+    'always good to book a winning session', 'keep stacking chips and staying focused',
+    'the hours you put in show up in the results', 'nice profit, build on that momentum',
+    'sessions like that are what keep you going back', 'congrats on the run, stay focused',
   ],
 
   grind: [
-    'respect the process', 'putting in volume', 'every hand counts',
-    'outwork the field', 'grind never stops', 'sessions add up',
-    'dedication is real', 'the work shows eventually',
+    'respect the process, it pays off eventually', 'putting in volume when others are sleeping',
+    'every hand counts over a long session', 'outwork the field and the results follow',
+    'the grind honestly never stops for real players', 'sessions add up to something real eventually',
+    'dedication to the game is genuinely real here', 'the work shows up in the results eventually',
   ],
 
   variance: [
-    'variance is a beast', 'the long run sorts it out', 'standard deviation in action',
-    'the swings are part of it', 'keep playing your game',
-    'downswings end. yours will too.', 'trust the math',
+    'variance is a beast that hits everyone eventually', 'the long run sorts it all out for real',
+    'standard deviation showing up in full force right now', 'the swings are just part of the game',
+    'keep playing your game and the math catches up', 'downswings always end, yours will too eventually.',
+    'trust the math even when the cards disagree with you',
   ],
 
   // Sports comment pool — used when horses comment on sports posts
@@ -716,14 +728,14 @@ const CONTEXT_TEMPLATES = {
     'back at {{subject}}, back at it',
   ],
   concept: {
-    bluff:       ['had to be a bluff. had to be.', 'the nerve on that bet', 'stone cold execution', 'run it and pray strategy', 'that sizing was a statement'],
-    hero_call:   ['that\'s a hero call if I\'ve ever seen one', 'no way I make that call', 'the read was real', 'pure instinct', 'dialed in on that one'],
-    full_house:  ['flopped a monster', 'river full house hits different', 'when the board gives you everything', 'flopped the world'],
-    bad_beat:    ['brutal runout', 'the deck said no', 'one outer special', 'variance is a beast'],
-    vlog:        ['the grind on camera is something else', 'raw look at the real game', 'day in the life stuff always hits', 'respect for documenting the grind'],
-    wsop:        ['every WSOP hand matters at this stage', 'bubble pressure is different', 'deep run energy', 'WSOP is the standard'],
-    day_final:   ['every chip counts late in a tournament', 'the pressure ramps up fast', 'this is what tournament poker looks like'],
-    breakdown:   ['breaking it down hand by hand is how you get better', 'the analysis is always worth watching', 'street-by-street breakdowns are underrated'],
+    bluff:       ['had to be a bluff, nothing else makes sense there', 'the nerve on that bet size was real', 'stone cold execution when everyone was watching', 'run it and pray strategy, it landed perfectly', 'that sizing was a statement and it worked'],
+    hero_call:   ['that is a hero call if I have ever seen one', 'no way most players make that call there', 'the read was real from the very beginning', 'pure instinct and it paid off completely', 'dialed in on that one from the start'],
+    full_house:  ['flopped a monster and played it perfectly', 'river full house hits different in that spot', 'when the board gives you absolutely everything', 'flopped the world and got paid every street'],
+    bad_beat:    ['brutal runout on a perfectly played hand', 'the deck said no at the worst time', 'one outer special, nothing you can do about it', 'variance is a beast and it showed up today'],
+    vlog:        ['the grind on camera is something else entirely', 'raw look at what the real game looks like', 'day in the life content always hits different', 'respect for documenting the grind honestly and openly'],
+    wsop:        ['every WSOP hand carries so much more weight', 'bubble pressure at the World Series is different', 'deep run energy is real and you can feel it', 'WSOP is the gold standard and always will be'],
+    day_final:   ['every single chip counts late in a tournament', 'the pressure ramps up incredibly fast at this stage', 'this is exactly what high-stakes tournament poker looks like'],
+    breakdown:   ['breaking it down hand by hand is how you get better', 'the analysis is always worth watching closely', 'street-by-street breakdowns of hands are genuinely underrated content'],
   }
 };
 
