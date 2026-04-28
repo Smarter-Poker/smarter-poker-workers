@@ -951,9 +951,15 @@ export async function replyToComments(maxReplies = 15) {
         if (existingReply) continue;
 
         // Generate reply using HumanVoiceEngine — proper voice, dedup, no slang noise.
-        // Detect if the comment being replied to is sports or general context.
+        // Detect if the comment being replied to is DEFINITELY sports context.
+        // BUG-FIX 2026-04-28: Original regex included 'game','player','team','season','coach',
+        // 'trade','athlete','roster' — all of which appear frequently in poker commentary
+        // ("the mental game", "the player tanked", "this team at the table").
+        // This caused poker reply threads to incorrectly get sports comment pool content
+        // ("Athletes at this level are just built different", "Is this the best player in the world?").
+        // Fix: only match unambiguously sport-specific league/sport names, never generic nouns.
         const replyToSports = comment.content && (
-            /\b(nba|nfl|mlb|nhl|soccer|ufc|basketball|football|baseball|hockey|sports|game|team|season|playoff|championship|player|athlete|coach|trade|roster)\b/i.test(comment.content)
+            /\b(nba|nfl|mlb|nhl|ufc|mma|basketball|football|baseball|hockey|soccer|mls|pga|wnba|ncaa|lakers|celtics|chiefs|patriots|yankees|dodgers|curry|lebron|mahomes)\b/i.test(comment.content)
         );
         const replyCommentType = replyToSports ? 'sports' : 'general';
         let replyText = generateComment(replyCommentType, horse.profile_id, comment.post_id);
