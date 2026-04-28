@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Pre-push hook — Phase 6 consolidation gate (2026-04-27)
+# Ref: SMARTER-POKER-PLATFORM-CONSOLIDATION.md §Migration Plan, Phase 6
+# Ref: .agent/architecture/ONE-SOURCE-OF-TRUTH.md (Agent Rulebook)
+#
+# Blocks pushes that:
+#   1. Contain merge-conflict markers (lesson from f490f61bf)
+#   2. Introduce vercel.json `crons` blocks (Open Claw exclusive policy)
+#   3. Reintroduce client-side PIN-gate storage (Phase 3.6 server-side only)
+#   4. Use raw supabase.auth.getUser() outside src/lib/auth/*
+#
+# Bypass with `git push --no-verify` only in genuine emergencies.
+
+set -e
+
+REMOTE="$1"
+URL="$2"
+FAIL=0
+
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  # Skip deletions
+  if [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ]; then continue; fi
+
+  if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    FILES=$(git diff --name-only "$LOCAL_SHA")
+  else
+    FILES=$(git diff --name-only "$REMOTE_SHA" "$LOCAL_SHA")
+  fi
+
+  # 1. Merge conflict markers
+  for f in $FILES; do
+    if [ -f "$f" ]; then
+      if grep -nE '^(<<<<<<< |>>>>>>> |={7,}$)' "$f" >/dev/null 2>&1; then
+        echo "[pre-push] BLOCKED: $f contains a merge-conflict marker"
+        FAIL=1
+      fi
+    fi
+  done
+
+  # 2. vercel.json crons (Open Claw exclusive policy)
+  for f in $FILES; do
+    case "$f" in
+      *vercel.json)
+        if [ -f "$f" ] && grep -q '"crons"' "$f"; then
+          echo "[pre-push] BLOCKED: $f introduces a Vercel crons block"
+          echo "           Use Open Claw → workers exclusively (per .agent/workflows/no-vercel-crons.md)."
+          FAIL=1
+        fi
+        ;;
+    esac
+  done
+
+  # 3. Client-side PIN-gate storage (Phase 3.6 forbids reintroducing this)
+  for f in $FILES; do
+    if [ -f "$f" ]; then
+      case "$f" in
+        *src/lib/auth/*) continue ;;
+      esac
+      if grep -qE "localStorage\.(set|get)Item\(['\"](commanderAdminPin|admin_pin|club_admin_pin)" "$f" 2>/dev/null; then
+        echo "[pre-push] BLOCKED: $f reintroduces client-side PIN storage"
+        echo "           Phase 3.6 moved PIN validation server-side."
+        FAIL=1
+      fi
+    fi
+  done
+
+  # 4. Raw supabase.auth.getUser() outside src/lib/auth
+  for f in $FILES; do
+    if [ -f "$f" ]; then
+      case "$f" in
+        *src/lib/auth/*) continue ;;
+        *src/lib/authUtils*) continue ;;
+        *node_modules/*) continue ;;
+        *eslint-plugin*) continue ;;
+      esac
+      if grep -qE 'supabase\.auth\.getUser\(\)' "$f" 2>/dev/null; then
+        echo "[pre-push] BLOCKED: $f calls supabase.auth.getUser()"
+        echo "           use validateBearer() from src/lib/auth instead."
+        FAIL=1
+      fi
+    fi
+  done
+done
+
+if [ "$FAIL" -ne 0 ]; then
+  echo ""
+  echo "[pre-push] FAILED — fix the issues above or use --no-verify if certain."
+  exit 1
+fi
+
+exit 0
