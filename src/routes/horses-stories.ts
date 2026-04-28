@@ -56,22 +56,23 @@ const STORY_GRADIENTS = [
 ];
 
 const TEXT_STORY_TOPICS = [
-  'just watched the sickest cooler on stream',
-  'solver vs exploitative, the debate never ends',
-  'hot take: 3bet sizing in live poker is way too small',
-  'worst beat I have ever seen at a live table',
-  'late night grinding is a different kind of focus',
-  'position is everything, been saying this for years',
-  'flopping the nuts and nobody gives you action',
-  'live reads hit different than online tells',
-  'bankroll management is the most underrated skill in poker',
-  'the river is always the cruelest street',
-  'ran into the top of his range again',
-  'three-bet or fold is the laziest range construction',
-  'the mental game matters more than the technical game',
-  'a good session is one where you made good decisions',
-  'variance is real and nobody is immune',
+  'Just watched the sickest cooler on stream.',
+  'Solver vs exploitative, the debate never ends.',
+  'Hot take: 3bet sizing in live poker is way too small.',
+  'Worst beat I have ever seen at a live table.',
+  'Late night grinding is a different kind of focus.',
+  'Position is everything, been saying this for years.',
+  'Flopping the nuts and nobody gives you action.',
+  'Live reads hit different than online tells.',
+  'Bankroll management is the most underrated skill in poker.',
+  'The river is always the cruelest street.',
+  'Ran into the top of his range again.',
+  'Three-bet or fold is the laziest range construction.',
+  'The mental game matters more than the technical game.',
+  'A good session is one where you made good decisions.',
+  'Variance is real and nobody is immune.',
 ];
+
 
 interface Horse {
   id: string;
@@ -146,7 +147,12 @@ async function postTextStory(horse: Horse): Promise<{ type: string; story_id?: u
     // ("facts", "100%", "real talk") which are too terse for story text content.
     // Stories need substantive sentences — use TEXT_STORY_TOPICS as primary, generateComment
     // as secondary (only if topic somehow fails).
-    const content = topic || generateComment('general', horse.profile_id);
+    const rawContent = topic || generateComment('general', horse.profile_id);
+    // RULE 1: First letter always capitalized (belt-and-suspenders — entries are pre-capitalized
+    // but generateComment fallback may return lowercase).
+    const content = rawContent && rawContent.length > 0
+      ? rawContent[0].toUpperCase() + rawContent.slice(1)
+      : rawContent;
 
     const { data: storyId, error } = await getSupabase().rpc('fn_create_story', {
       p_user_id: horse.profile_id,
