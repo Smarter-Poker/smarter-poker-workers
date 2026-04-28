@@ -37,6 +37,7 @@
 
 import { getSupabase } from '../supabase.js';
 import { shouldHorseBeActive, getHorseActivityRate, isHorseActiveHour, isHorseActiveHourTZ, applyWritingStyle } from './HorseScheduler.js';
+import { generateComment } from './HumanVoiceEngine.js';
 
 // Lazy-init Supabase client (RAT-AUTH-NUCLEAR compliant)
 // Prevents "supabaseKey is required" crash when env vars aren't yet available at module load
@@ -551,7 +552,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     // Get recent posts
     let postsQuery = getSupabase()
         .from('social_posts')
-        .select('id, author_id, content_type, content, link_site_name')
+        .select('id, author_id, content_type, content, link_site_name, metadata')
         .order('created_at', { ascending: false })
         .limit(50);
 
@@ -588,48 +589,46 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
         const withinLimit = await checkDailyLimit(horse.profile_id, 'comments');
         if (!withinLimit) continue;
 
-        // Phase 26: Keyword-based contextual comment selection
+        // Keyword-based contextual comment type selection
+        // Priority: explicit clip_type metadata > link_site_name > content text keywords
         let commentType = 'general';
         const lc = (post.content || '').toLowerCase();
-        
-        // Guard against sports posts triggering poker regexes (e.g. 'beat', 'record')
-        const isSports = post.link_site_name && (
-            post.link_site_name.includes('ESPN') || 
-            post.link_site_name.includes('Yahoo') || 
+
+        // BUG FIX 2026-04-28: Sports video posts (from sports_clips) have content_type='video'
+        // and metadata.clip_type='sports' but NO link_site_name. Without this check they fell
+        // through to commentType='video' which uses poker-lingo COMMENT_TEMPLATES.
+        const isSportsByMeta = post.metadata?.clip_type === 'sports';
+        const isSportsBySource = post.link_site_name && (
+            post.link_site_name.includes('ESPN') ||
+            post.link_site_name.includes('Yahoo') ||
             post.link_site_name.includes('CBS') ||
             post.link_site_name.includes('Sports')
         );
+        const isSports = isSportsByMeta || isSportsBySource;
 
-        // FIXED: Use word-boundary regex to prevent sports content bleeding into poker comment types
-        // e.g. 'beat' in 'Lakers beat the Celtics' must NOT trigger bad_beat comment
+        // Route to correct HumanVoiceEngine pool:
+        // Sports content never gets poker pools. Poker video only if explicitly poker clip.
         if (isSports) commentType = 'sports';
-        else if (post.content_type === 'video') commentType = 'video';
+        else if (post.content_type === 'video' && post.metadata?.clip_type === 'poker') commentType = 'video';
+        else if (post.content_type === 'video') commentType = 'video'; // fallback for untagged video
         else if (post.content_type === 'photo') commentType = 'photo';
         else if (/\b(bad beat|suck.?out|cooler|one.?outer|runner.?runner)\b/.test(lc)) commentType = 'bad_beat';
-        else if (/\b(wsop|bracelet|world series of poker)\b/.test(lc)) commentType = 'wsop';
+        else if (/\b(wsop|bracelet|world series of poker)\b/.test(lc)) commentType = 'tournament';
         else if (/\b(tournament|final table|bubble|mtt)\b/.test(lc)) commentType = 'tournament';
-        else if (/\b(plo|omaha|pot.?limit omaha)\b/.test(lc)) commentType = 'plo';
-        else if (/\b(hcl|hustler casino live|live at the bike)\b/.test(lc)) commentType = 'hcl';
         else if (/\b(bluff|hero.?call|hero.?fold)\b/.test(lc)) commentType = 'bluff';
-        else if (/\b(river card|runout|runner.?runner)\b/.test(lc)) commentType = 'river';
         else if (/\b(session|profit|cashed)\b/.test(lc)) commentType = 'session_report';
-        else if (/\b(cash game|1\/2|2\/5|5\/10|nosebleed)\b/.test(lc)) commentType = 'cash_game';
         else if (/\b(grind|grinding|volume|hours played)\b/.test(lc)) commentType = 'grind';
         else if (/\b(variance|downswing|upswing|run bad|run good)\b/.test(lc)) commentType = 'variance';
-        else if (/\b(bankroll|moving up stakes)\b/.test(lc)) commentType = 'bankroll';
         else if (/\b(strategy|gto|solver|ev|bet sizing)\b/.test(lc)) commentType = 'strategy';
 
-        // BUG-WR06 FIX: enforce minimum length after applyWritingStyle
-        // A short template can shrink further after style transforms; retry with 'general' fallbacks
-        let comment = getRandomComment(commentType);
-        comment = applyWritingStyle(comment, horse.profile_id);
-        if (comment.trim().length < 5) {
-            // Try up to 3 general fallbacks
-            for (let _retry = 0; _retry < 3; _retry++) {
-                const fallback = getRandomComment('general');
-                comment = applyWritingStyle(fallback, horse.profile_id);
-                if (comment.trim().length >= 5) break;
-            }
+        // Use HumanVoiceEngine.generateComment — has full dedup, per-horse archetype system,
+        // proper capitalization, punctuation, and NO slang/GTO flair on sports content.
+        // This replaces the old getRandomComment() + applyWritingStyle() pipeline which
+        // produced poker lingo on sports posts and short slang-only phrases.
+        let comment = generateComment(commentType, horse.profile_id, post.id);
+        // Safety: if the engine returns something too short, use a general fallback
+        if (!comment || comment.trim().length < 5) {
+            comment = generateComment('general', horse.profile_id, post.id);
         }
 
         // 🟢 DYNAMIC TYPING INDICATOR (Phase 11)
@@ -951,17 +950,16 @@ export async function replyToComments(maxReplies = 15) {
 
         if (existingReply) continue;
 
-        // Generate reply with horse's writing style
-        let replyText = getRandomComment('general');
-
-        // Sometimes reference the original comment
-        if (Math.random() > 0.6) {
-            const prefixes = ['fr tho', 'this ^^', '100% agree', 'exactly', 'real talk'];
-            replyText = prefixes[Math.floor(Math.random() * prefixes.length)];
+        // Generate reply using HumanVoiceEngine — proper voice, dedup, no slang noise.
+        // Detect if the comment being replied to is sports or general context.
+        const replyToSports = comment.content && (
+            /\b(nba|nfl|mlb|nhl|soccer|ufc|basketball|football|baseball|hockey|sports|game|team|season|playoff|championship|player|athlete|coach|trade|roster)\b/i.test(comment.content)
+        );
+        const replyCommentType = replyToSports ? 'sports' : 'general';
+        let replyText = generateComment(replyCommentType, horse.profile_id, comment.post_id);
+        if (!replyText || replyText.trim().length < 5) {
+            replyText = generateComment('general', horse.profile_id, comment.post_id);
         }
-
-        // Apply horse's unique writing style
-        replyText = applyWritingStyle(replyText, horse.profile_id);
 
         // Insert reply
         const { error } = await getSupabase()
