@@ -147,12 +147,13 @@ async function postTextStory(horse: Horse): Promise<{ type: string; story_id?: u
     // ("facts", "100%", "real talk") which are too terse for story text content.
     // Stories need substantive sentences — use TEXT_STORY_TOPICS as primary, generateComment
     // as secondary (only if topic somehow fails).
-    const rawContent = topic || generateComment('general', horse.profile_id);
+    const rawContent = topic || generateComment('general', horse.profile_id) || '';
     // RULE 1: First letter always capitalized (belt-and-suspenders — entries are pre-capitalized
     // but generateComment fallback may return lowercase).
-    const content = rawContent && rawContent.length > 0
-      ? rawContent[0].toUpperCase() + rawContent.slice(1)
+    const content = rawContent.length > 0
+      ? rawContent.charAt(0).toUpperCase() + rawContent.slice(1)
       : rawContent;
+
 
     const { data: storyId, error } = await getSupabase().rpc('fn_create_story', {
       p_user_id: horse.profile_id,
