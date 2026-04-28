@@ -806,10 +806,18 @@ function buildContextCaption(ctx, profileId) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function sanitizeHorseOutput(text) {
   if (!text || typeof text !== 'string') return text;
-  return text
-    .replace(/\u2014/g, ',')   // em dash → comma (natural spoken rhythm)
-    .replace(/  +/g, ' ')       // collapse double spaces left by removal
+  let out = text
+    .replace(/\u2014/g, ',')   // em dash → comma
+    .replace(/\u2013/g, ',')   // en dash → comma
+    .replace(/ - /g, ', ')     // hyphen-as-separator → comma (preserves compound words like 'one-outer')
+    .replace(/  +/g, ' ')      // collapse double spaces
     .trim();
+  // RULE 1: First letter ALWAYS capitalized — cell phone auto-cap standard.
+  // Applies as a final safety net regardless of archetype or style roll.
+  if (out.length > 0 && out[0] !== out[0].toUpperCase()) {
+    out = out[0].toUpperCase() + out.slice(1);
+  }
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -842,13 +850,27 @@ export function generatePostCaption(category: string, profileId: string, clipTit
 
   const archetype = getArchetype(profileId);
 
-  // Min-length guard: retry up to 3x to avoid trivially empty captions
-  // NOTE: threshold is 5, not 10, to allow the very short 2-3 word sports entries ("nasty", "no way")
+  // Pick initial phrase
   let phrase = '';
   for (let attempt = 0; attempt < 3; attempt++) {
     const candidate = pick(pool, profileId);
-    if (candidate && candidate.trim().length >= 5) { phrase = candidate; break; }
+    if (candidate && candidate.trim().length >= 4) { phrase = candidate; break; }
     if (!phrase || candidate.length > phrase.length) phrase = candidate || phrase;
+  }
+
+  // RULE 2: Minimum 6 words per caption. If the picked phrase is too short,
+  // pad it by appending a second complementary phrase from the same pool.
+  // This ensures even 1-3 word phrases ('brutal', 'oof', 'nasty') get context.
+  const wordCount = phrase.trim().split(/\s+/).filter(Boolean).length;
+  if (wordCount < 6) {
+    // Pick a second phrase — use salt 77 to avoid getting the same short one
+    const extra = pick(pool, profileId, 77);
+    if (extra && extra !== phrase && extra.trim().length > 3) {
+      // Combine: first phrase (no trailing punct) + comma + second phrase (lowercase)
+      const base = phrase.replace(/[.!?,;]+$/, '').trim();
+      const tail = extra.replace(/[.!?,;]+$/, '').trim().toLowerCase();
+      phrase = `${base}, ${tail}`;
+    }
   }
 
   // 20% chance: prefix with archetype flair (randomized pick, not always same word)
@@ -1165,8 +1187,19 @@ export function generateNewsCaption(headline: string, profileId: string, newsTyp
   let phrase = '';
   for (let attempt = 0; attempt < 3; attempt++) {
     const candidate = pick(pool, profileId, 2);
-    if (candidate && candidate.trim().length >= 10) { phrase = candidate; break; }
+    if (candidate && candidate.trim().length >= 4) { phrase = candidate; break; }
     if (!phrase || candidate.length > phrase.length) phrase = candidate || phrase;
+  }
+
+  // RULE 2: Minimum 6 words per news caption. Pad short phrases.
+  const newsCaptionWordCount = phrase.trim().split(/\s+/).filter(Boolean).length;
+  if (newsCaptionWordCount < 6) {
+    const extra = pick(pool, profileId, 88);
+    if (extra && extra !== phrase && extra.trim().length > 3) {
+      const base = phrase.replace(/[.!?,;]+$/, '').trim();
+      const tail = extra.replace(/[.!?,;]+$/, '').trim().toLowerCase();
+      phrase = `${base}, ${tail}`;
+    }
   }
 
   if (archetype.flair.length > 0 && Math.random() < 0.20) {
