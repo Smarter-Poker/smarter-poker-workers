@@ -858,15 +858,12 @@ export function generatePostCaption(category: string, profileId: string, clipTit
     if (!phrase || candidate.length > phrase.length) phrase = candidate || phrase;
   }
 
-  // RULE 2: Minimum 6 words per caption. If the picked phrase is too short,
-  // pad it by appending a second complementary phrase from the same pool.
-  // This ensures even 1-3 word phrases ('brutal', 'oof', 'nasty') get context.
-  const wordCount = phrase.trim().split(/\s+/).filter(Boolean).length;
-  if (wordCount < 6) {
-    // Pick a second phrase — use salt 77 to avoid getting the same short one
-    const extra = pick(pool, profileId, 77);
+  // RULE 2: Minimum 6 words per caption.
+  // Loop with different salts until the combined phrase is genuinely ≥6 words.
+  // Single-attempt logic failed: concatenating two short phrases ('brutal, oof') still < 6.
+  for (let padSalt = 77; padSalt <= 477 && phrase.trim().split(/\s+/).filter(Boolean).length < 6; padSalt += 100) {
+    const extra = pick(pool, profileId, padSalt);
     if (extra && extra !== phrase && extra.trim().length > 3) {
-      // Combine: first phrase (no trailing punct) + comma + second phrase (lowercase)
       const base = phrase.replace(/[.!?,;]+$/, '').trim();
       const tail = extra.replace(/[.!?,;]+$/, '').trim().toLowerCase();
       phrase = `${base}, ${tail}`;
@@ -1191,10 +1188,9 @@ export function generateNewsCaption(headline: string, profileId: string, newsTyp
     if (!phrase || candidate.length > phrase.length) phrase = candidate || phrase;
   }
 
-  // RULE 2: Minimum 6 words per news caption. Pad short phrases.
-  const newsCaptionWordCount = phrase.trim().split(/\s+/).filter(Boolean).length;
-  if (newsCaptionWordCount < 6) {
-    const extra = pick(pool, profileId, 88);
+  // RULE 2: Minimum 6 words per news caption — same hardened loop.
+  for (let padSalt = 88; padSalt <= 488 && phrase.trim().split(/\s+/).filter(Boolean).length < 6; padSalt += 100) {
+    const extra = pick(pool, profileId, padSalt);
     if (extra && extra !== phrase && extra.trim().length > 3) {
       const base = phrase.replace(/[.!?,;]+$/, '').trim();
       const tail = extra.replace(/[.!?,;]+$/, '').trim().toLowerCase();
