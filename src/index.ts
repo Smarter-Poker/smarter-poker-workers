@@ -60,6 +60,10 @@ import { bbjDetect } from './routes/bbj-detect.js';
 import { tournamentBountyDetect } from './routes/tournament-bounty-detect.js';
 import { playerStatsRefresh } from './routes/player-stats-refresh.js';
 import { rakebackPeriodSettle } from './routes/rakeback-period-settle.js';
+// Phase X7.4 — anti-cheat detectors (flag-only per Tier-E v1 contract)
+import { antiCheatMultiAccount } from './routes/anti-cheat-multi-account.js';
+import { antiCheatBotTiming } from './routes/anti-cheat-bot-timing.js';
+import { antiCheatChipDump } from './routes/anti-cheat-chip-dump.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -195,6 +199,14 @@ app.get('/cron/player-stats-refresh', playerStatsRefresh);
 app.post('/cron/player-stats-refresh', playerStatsRefresh);
 app.get('/cron/rakeback-period-settle', rakebackPeriodSettle);
 app.post('/cron/rakeback-period-settle', rakebackPeriodSettle);
+
+// ─── Phase X7.4 — anti-cheat detectors (closes P0-E1 + P0-E2) ──────────────
+app.get('/cron/anti-cheat-multi-account', antiCheatMultiAccount);
+app.post('/cron/anti-cheat-multi-account', antiCheatMultiAccount);
+app.get('/cron/anti-cheat-bot-timing', antiCheatBotTiming);
+app.post('/cron/anti-cheat-bot-timing', antiCheatBotTiming);
+app.get('/cron/anti-cheat-chip-dump', antiCheatChipDump);
+app.post('/cron/anti-cheat-chip-dump', antiCheatChipDump);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
