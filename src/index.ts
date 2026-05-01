@@ -88,6 +88,57 @@ app.get('/', (c) => c.text('smarter-poker-workers — GET /health for liveness')
 app.use('/cron/*', ipAllowlist);
 app.use('/cron/*', requireCronSecret);
 
+// Round 67 follow-up: cron_execution_log observability middleware.
+// Open Claw fires these endpoints but never wrote an audit row, leaving
+// us blind to which crons fired, error rates, durations, etc. This
+// middleware writes a started/completed row per request with the route
+// path as job_name, fire-and-forget on errors so logging never blocks
+// the underlying job.
+import { getSupabase as _getSupabaseForLog } from './lib/supabase.js';
+app.use('/cron/*', async (c, next) => {
+  const jobName = new URL(c.req.url).pathname;
+  const startedAt = new Date().toISOString();
+  const supa = _getSupabaseForLog();
+  let logRowId: string | null = null;
+  try {
+    const { data } = await supa
+      .from('cron_execution_log')
+      .insert({ job_name: jobName, status: 'running', started_at: startedAt })
+      .select('id')
+      .maybeSingle();
+    logRowId = data?.id ?? null;
+  } catch {
+    /* fire-and-forget */
+  }
+
+  const t0 = Date.now();
+  let resStatus: 'success' | 'error' = 'success';
+  let errMsg: string | null = null;
+  try {
+    await next();
+    if (c.res && c.res.status >= 400) {
+      resStatus = 'error';
+      errMsg = `HTTP ${c.res.status}`;
+    }
+  } catch (err) {
+    resStatus = 'error';
+    errMsg = err instanceof Error ? err.message : String(err);
+    throw err;
+  } finally {
+    if (logRowId) {
+      void supa
+        .from('cron_execution_log')
+        .update({
+          status: resStatus,
+          completed_at: new Date().toISOString(),
+          duration_ms: Date.now() - t0,
+          error: errMsg,
+        })
+        .eq('id', logRowId);
+    }
+  }
+});
+
 // Keep the scaffold ping — makes middleware chain testable without relying
 // on real cron handlers being live.
 app.get('/cron/_scaffold-ping', (c) =>
