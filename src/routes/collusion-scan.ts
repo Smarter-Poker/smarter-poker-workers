@@ -382,22 +382,27 @@ export async function collusionScan(c: Context) {
 
     const handsRows = (handsData ?? []) as HandRow[];
 
-    let actionRows: ActionRow[] = [];
-    try {
-      const { data: actionsData, error: actErr } = await supabase
-        .from('action_log')
-        .select('id, table_id, hand_id, user_id, created_at, street, action')
-        .gte('created_at', windowStart.toISOString())
-        .lt('created_at', windowEnd.toISOString())
-        .limit(200000);
-      if (!actErr && Array.isArray(actionsData)) {
-        actionRows = actionsData as ActionRow[];
+    // Round 67 fix: action_log was always empty in production (legacy table
+    // — no code ever wrote there). The TIMING_CORRELATION pattern silently
+    // starved on every scan. Now we synthesize per-action rows from
+    // hand_history.actions[] JSONB which IS populated by every hand.
+    const actionRows: ActionRow[] = [];
+    for (const h of handsRows) {
+      const arr = Array.isArray(h.actions) ? h.actions : [];
+      for (const a of arr as Array<Record<string, unknown>>) {
+        const uid = (a.userId ?? a.user_id ?? a.id) as string | undefined;
+        const tsRaw = (a.timestamp ?? a.ts ?? a.time) as number | undefined;
+        if (!uid || typeof tsRaw !== 'number') continue;
+        actionRows.push({
+          id: `${h.id}:${tsRaw}:${uid}`,
+          table_id: h.table_id,
+          hand_id: h.id,
+          user_id: uid,
+          created_at: new Date(tsRaw).toISOString(),
+          street: ((a.stage ?? a.street) as string | undefined) ?? null,
+          action: (a.action as string | undefined) ?? null,
+        });
       }
-    } catch (e) {
-      console.warn(
-        '[collusion-scan] action_log not available:',
-        e instanceof Error ? e.message : e,
-      );
     }
 
     const findings: Finding[] = [
