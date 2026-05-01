@@ -105,12 +105,17 @@ export async function antiCheatChipDump(c: Context) {
   const pairs = new Map<string, PairAcc>();
   // Per-user aggregate "everyone else" win rate
   const userTotals = new Map<string, { hands: number; wins: number }>();
+  // Round 69 fix: track per-(user, counterparty) wins/hands so we can subtract
+  // them from the user's total when computing "win rate vs everyone else" —
+  // otherwise the contaminated pair drags the giver's overall rate down,
+  // hiding the critical-tier signal where the giver IS a winning player
+  // outside this one pair.
+  const userVsUserStats = new Map<string, { hands: number; wins: number }>();
 
   for (const hand of (hands ?? []) as HandRow[]) {
     const players = hand.players ?? [];
     const winners = (hand.winners ?? []) as PlayerSeat[];
     const winnerIds = new Set(winners.map(uidOf).filter(Boolean) as string[]);
-    const pot = Number(hand.pot_size ?? 0) || 0;
 
     for (const p of players) {
       const uid = uidOf(p);
@@ -145,6 +150,15 @@ export async function antiCheatChipDump(c: Context) {
       // serviceable — the chip-dump signal lives in the pattern, not the precise amount)
       acc.net_transfer += giverInvested;
       pairs.set(key, acc);
+
+      // Round 69 fix: also track giver's hands+wins specifically against this
+      // receiver, so we can subtract them when computing the cleaner "vs
+      // everyone else" win rate below.
+      const vsKey = `${giverId}|${winnerId}`;
+      const vs = userVsUserStats.get(vsKey) ?? { hands: 0, wins: 0 };
+      vs.hands += 1;
+      // wins stays 0 — by construction giver lost this hand to winnerId
+      userVsUserStats.set(vsKey, vs);
     }
   }
 
@@ -157,23 +171,45 @@ export async function antiCheatChipDump(c: Context) {
     if (lossRatio < MIN_LOSS_RATIO) continue;
     if (acc.net_transfer < MIN_NET_CHIPS) continue;
 
+    // Round 69 fix: compute giver's win rate EXCLUDING the contaminated pair.
+    // Otherwise a savvy cheater whose only losing record is to the receiver
+    // looks like a "bad player" overall and never crosses the critical tier
+    // (giverWinRateOverall >= 0.5).
     const giverTotals = userTotals.get(acc.giver);
-    const giverWinRateOverall =
-      giverTotals && giverTotals.hands > 0 ? giverTotals.wins / giverTotals.hands : 0;
-    const severity = giverWinRateOverall >= 0.5 ? 'critical' : 'high';
+    const vsKey = `${acc.giver}|${acc.receiver}`;
+    const vsPair = userVsUserStats.get(vsKey) ?? { hands: 0, wins: 0 };
+    const handsExcludingPair = (giverTotals?.hands ?? 0) - vsPair.hands;
+    const winsExcludingPair = (giverTotals?.wins ?? 0) - vsPair.wins;
+    const giverWinRateExcludingPair =
+      handsExcludingPair > 0 ? winsExcludingPair / handsExcludingPair : 0;
+    const severity = giverWinRateExcludingPair >= 0.5 ? 'critical' : 'high';
 
     for (const playerId of [acc.giver, acc.receiver]) {
       try {
+        // Round 69 fix: dedupe by (player, flag_type, COUNTERPARTY) so a
+        // multi-target dumper gets a separate flag per receiver. Original
+        // code keyed on (player, flag_type) only — once flagged for the
+        // first pair, all subsequent pairs were silently swallowed until
+        // the first flag was reviewed.
+        const counterparty = playerId === acc.giver ? acc.receiver : acc.giver;
         const { data: existing } = await supabase
           .from('anti_cheat_flags')
-          .select('id')
+          .select('id, reason')
           .eq('player_id', playerId)
           .eq('flag_type', 'chip_dump')
           .eq('status', 'open')
-          .gte('flagged_at', dedupeSince)
-          .limit(1);
+          .gte('flagged_at', dedupeSince);
 
-        if (existing && existing.length > 0) {
+        const alreadyFlaggedForThisPair = (existing ?? []).some((row) => {
+          try {
+            const r = JSON.parse(String(row.reason ?? '{}'));
+            return r.counterparty_user_id === counterparty;
+          } catch {
+            return false;
+          }
+        });
+
+        if (alreadyFlaggedForThisPair) {
           result.flags_skipped_existing += 1;
           continue;
         }
@@ -184,13 +220,13 @@ export async function antiCheatChipDump(c: Context) {
           flag_type: 'chip_dump',
           severity,
           reason: JSON.stringify({
-            detector: 'chip_dump_pair_v1',
+            detector: 'chip_dump_pair_v2',
             role,
-            counterparty_user_id: role === 'giver' ? acc.receiver : acc.giver,
+            counterparty_user_id: counterparty,
             hands_together: acc.hands_together,
             giver_loss_ratio: Number(lossRatio.toFixed(3)),
             net_chips_transferred: Math.round(acc.net_transfer),
-            giver_overall_win_rate: Number(giverWinRateOverall.toFixed(3)),
+            giver_win_rate_excluding_pair: Number(giverWinRateExcludingPair.toFixed(3)),
             window_hours: WINDOW_HOURS,
           }),
           status: 'open',
