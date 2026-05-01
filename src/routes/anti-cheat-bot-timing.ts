@@ -90,39 +90,54 @@ export async function antiCheatBotTiming(c: Context) {
     return c.json({ ok: false, started_at: startedAt, ...result }, 500);
   }
 
-  // Aggregate per-user action timestamps
-  const byUser = new Map<string, number[]>();
+  // Round 67 fix: aggregate INTRA-HAND deltas only.
+  // The previous implementation flattened all per-user timestamps across all
+  // hands then took pairwise deltas. The cap at 5 minutes was too generous —
+  // typical between-hand idle is 5–60 seconds, well under 5 min, so those
+  // gaps dominated the std-dev computation. Real bots ended up indistinguish-
+  // able from humans because the inter-hand variance swamped the
+  // action-to-action variance. Live data confirmed: bot fleet 31 users with
+  // 200+ actions all showed std-dev 12–14 sec, far above the 50/100/150ms
+  // critical/high/medium thresholds → detector never triggered.
+  //
+  // Now we collect one deltas[] PER hand for each user, then concatenate.
+  // Cross-hand boundaries are not deltas. Inter-action delays cap at 90s
+  // (action_time_seconds is 15s + 1 timebank 15s = 30s typical — anything
+  // above 90s is a sit-out/disconnect, drop it).
+  const byUserDeltas = new Map<string, number[]>();
   for (const hand of (hands ?? []) as Array<{ actions: ActionRow[] | null }>) {
     const actions = hand.actions ?? [];
-    // Sort actions by timestamp for delta calculation
-    const sortedByUser = new Map<string, number[]>();
+    // Bucket this hand's actions by user
+    const perHandByUser = new Map<string, number[]>();
     for (const a of actions) {
       const uid = uidOf(a);
       const ts = tsOf(a);
       if (!uid || ts == null) continue;
-      const list = sortedByUser.get(uid) ?? [];
+      const list = perHandByUser.get(uid) ?? [];
       list.push(ts);
-      sortedByUser.set(uid, list);
+      perHandByUser.set(uid, list);
     }
-    for (const [uid, ts] of sortedByUser) {
+    // Compute intra-hand deltas only
+    for (const [uid, ts] of perHandByUser) {
+      if (ts.length < 2) continue;
       ts.sort((a, b) => a - b);
-      const list = byUser.get(uid) ?? [];
-      list.push(...ts);
-      byUser.set(uid, list);
+      const handDeltas: number[] = [];
+      for (let i = 1; i < ts.length; i++) {
+        const d = ts[i]! - ts[i - 1]!;
+        // Real action-to-action range: 0 < d <= 90s. Anything outside is
+        // either same-stage spam (<50ms is fine — keep it, that's the bot
+        // signal) or a disconnect/sit-out (>90s — drop, not a thinking
+        // delta).
+        if (d > 0 && d <= 90_000) handDeltas.push(d);
+      }
+      if (handDeltas.length === 0) continue;
+      const userBucket = byUserDeltas.get(uid) ?? [];
+      userBucket.push(...handDeltas);
+      byUserDeltas.set(uid, userBucket);
     }
   }
 
-  for (const [userId, timestamps] of byUser) {
-    if (timestamps.length < 200) continue; // not enough signal
-    timestamps.sort((a, b) => a - b);
-
-    const deltas: number[] = [];
-    for (let i = 1; i < timestamps.length; i++) {
-      const d = timestamps[i]! - timestamps[i - 1]!;
-      // Drop deltas > 5 minutes (e.g. between sessions) — not action-to-action
-      if (d > 0 && d < 300_000) deltas.push(d);
-    }
-
+  for (const [userId, deltas] of byUserDeltas) {
     if (deltas.length < 200) continue;
     result.users_scanned += 1;
 
