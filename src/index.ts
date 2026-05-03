@@ -126,7 +126,14 @@ app.use('/cron/*', async (c, next) => {
     throw err;
   } finally {
     if (logRowId) {
-      void supa
+      // x86b — Antigravity surfaced (2026-05-03): the prior `void supa.from(...)
+      // .update(...).eq(...)` discarded the PostgREST query builder without
+      // ever invoking .then(), so the lazy supabase-js client never sent the
+      // PATCH. All rows stayed at status='running' forever — duration_ms,
+      // completed_at, and error all permanently null. The original intent was
+      // fire-and-forget so we don't block the cron return; .then().catch()
+      // does the actual send while still detaching from the request lifecycle.
+      supa
         .from('cron_execution_log')
         .update({
           status: resStatus,
@@ -134,7 +141,10 @@ app.use('/cron/*', async (c, next) => {
           duration_ms: Date.now() - t0,
           error: errMsg,
         })
-        .eq('id', logRowId);
+        .eq('id', logRowId)
+        .then(({ error }) => {
+          if (error) console.warn('[cron-log] update failed:', error.message);
+        });
     }
   }
 });

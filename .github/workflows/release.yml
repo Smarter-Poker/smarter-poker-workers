@@ -48,10 +48,18 @@ jobs:
           SHORT_SHA=$(git rev-parse --short HEAD)
           CUSTOM_TAG="${{ inputs.tag }}"
           IMG="ghcr.io/smarter-poker/smarter-poker-workers"
+          # x86c — Antigravity surfaced (2026-05-03): the previous
+          # custom-tag branch did NOT push :latest. workflow_dispatch with
+          # a custom tag input would build sha-<SHA> + the custom tag, but
+          # leave :latest pointing at the previous build. The VM's
+          # docker compose pull would then cache-hit the stale :latest
+          # digest and not actually deploy the new code. Fix: always push
+          # :latest when the build is from main / a real ref, regardless
+          # of whether a custom tag input was supplied.
           if [ "${{ github.ref_type }}" = "tag" ]; then
             echo "tags=$IMG:${{ github.ref_name }},$IMG:latest" >> $GITHUB_OUTPUT
           elif [ -n "$CUSTOM_TAG" ]; then
-            echo "tags=$IMG:$CUSTOM_TAG,$IMG:sha-$SHORT_SHA" >> $GITHUB_OUTPUT
+            echo "tags=$IMG:$CUSTOM_TAG,$IMG:sha-$SHORT_SHA,$IMG:latest" >> $GITHUB_OUTPUT
           else
             echo "tags=$IMG:sha-$SHORT_SHA,$IMG:latest" >> $GITHUB_OUTPUT
           fi
