@@ -346,9 +346,8 @@ Return ONLY this JSON shape (no markdown, no extra text):
       response_format: { type: 'json_object' },
       temperature: 0.7,
       max_tokens: 4000,
-      // @ts-expect-error reasoning_effort is xAI-specific
       reasoning_effort: 'low',
-    });
+    } as any);
 
     const content = response.choices[0]?.message?.content;
     if (!content) return [];
