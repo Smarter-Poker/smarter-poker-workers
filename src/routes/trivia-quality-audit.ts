@@ -40,20 +40,36 @@ const VERIFIER_MODEL = 'grok-3'; // full model — higher reasoning, catches sub
 const HIGH_CONFIDENCE = 0.85;
 const FAIL_CONFIDENCE = 0.70;
 
-const AUDIT_SYSTEM_PROMPT = `You are a fact-checker for a poker trivia game. You will be given a multiple-choice question, its options, the marked-correct answer, and the explanation. Your job is to verify whether the marked-correct answer is FACTUALLY CORRECT.
+const AUDIT_SYSTEM_PROMPT = `You are a quality-assurance reviewer for a poker trivia game. For each multiple-choice question you receive, you must verify FOUR things and reject the question if ANY fail.
 
-Guidelines:
-- Only verify FACTS that are publicly verifiable (dates, names, records, rule definitions, established mathematical relationships).
-- Reject if the marked answer is wrong, the question references a fictional event, or the explanation contradicts the answer.
-- Be especially strict about: WSOP/EPT/WPT records, player career stats, dollar amounts, dates.
-- "Confidence" should reflect how sure YOU are about the correct answer, not how easy the question is.
-- If you cannot verify due to insufficient public information, set verified=false and confidence ≤ 0.5.
+CHECK 1 — FACTUAL ACCURACY (most important):
+- Is the marked-correct answer actually correct? Verify against publicly known facts (WSOP/EPT/WPT records, player career stats, dollar amounts, dates, TDA rules).
+- If the explanation contradicts the marked answer, reject.
+- If you can't verify due to insufficient public info, set verified=false and confidence ≤ 0.5.
 
-Output ONLY valid JSON in this exact shape (no markdown):
+CHECK 2 — NO ANSWER-REVEALING TEXT:
+- The question must NOT contain words or phrases that give away the answer.
+  Bad: "What major poker event did Doyle Brunson win, called the World Series Main Event?" (the answer is in the question)
+  Good: "What major event did Doyle Brunson win in 1976 and 1977 back-to-back?"
+- If the question text leaks the answer, reject (verified=false, confidence ≥ 0.8).
+
+CHECK 3 — DISTRACTOR PARITY:
+- All four options must be in the same category and roughly the same length.
+  Bad: ["1970", "1971", "the moon", "purple"] — non-numeric distractors when the answer is a year
+  Bad: ["Phil Hellmuth", "Doyle Brunson", "X", "Y"] — name distractors when the question asks for a year
+  Good: distractors that are PLAUSIBLE WRONG ANSWERS a real player might pick.
+- Joke distractors that obviously aren't real answers → reject.
+
+CHECK 4 — DIFFICULTY HONESTY:
+- If marked "hard" but only one option could plausibly be the answer (others are absurd), the question is too easy → reject.
+- If marked "easy" but requires obscure knowledge, label is wrong → still verify=true if factually correct, but knock confidence down to 0.7.
+
+Output ONLY valid JSON in this exact shape (no markdown, no extra fields):
 {
   "verified": true | false,
   "confidence": 0.00 to 1.00,
-  "reasoning": "1-2 sentences explaining your verdict, citing the actual fact",
+  "reasoning": "1-2 sentences. Cite the actual fact AND/OR which check failed (factual / reveals-answer / distractor-quality / difficulty-mismatch)",
+  "failure_modes": ["factual"|"reveals_answer"|"distractor_quality"|"difficulty_mismatch"|null],
   "corrected_answer_text": "if verified=false and you know the right answer, put it here; otherwise null"
 }`;
 
@@ -73,6 +89,7 @@ interface AuditDecision {
   verified: boolean;
   confidence: number;
   reasoning: string;
+  failure_modes: string[]; // Phase 53 — categorize WHY a question failed
   corrected_answer_text: string | null;
 }
 
@@ -107,6 +124,9 @@ async function auditOne(grok: any, q: any): Promise<AuditOutcome> {
       verified: !!parsed.verified,
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
       reasoning: String(parsed.reasoning || '').slice(0, 1000),
+      failure_modes: Array.isArray(parsed.failure_modes)
+        ? parsed.failure_modes.filter((f: any) => f && typeof f === 'string').map((f: string) => f.slice(0, 30))
+        : [],
       corrected_answer_text: parsed.corrected_answer_text ? String(parsed.corrected_answer_text).slice(0, 200) : null,
     };
 
@@ -182,6 +202,7 @@ export async function triviaQualityAudit(c: Context) {
     verified: o.decision!.verified,
     confidence: o.decision!.confidence,
     reasoning: o.decision!.reasoning,
+    failure_modes: o.decision!.failure_modes,
     corrected_answer_text: o.decision!.corrected_answer_text,
     previous_quality_score: o.prevQualityScore,
     new_quality_score: o.newQualityScore,

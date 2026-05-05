@@ -360,17 +360,30 @@ Return ONLY this JSON shape (no markdown, no extra text):
         typeof q.correct_index === 'number' && q.correct_index >= 0 && q.correct_index <= 3 &&
         q.explanation && q.explanation.length > 30,
       )
-      .map(q => ({
-        category: category.id,
-        difficulty,
-        question: q.question.trim(),
-        options: q.options.map((o: string) => o.trim()),
-        correct_index: q.correct_index,
-        explanation: q.explanation.trim(),
-        subcategory: `grok:${subcategory.slice(0, 60)}`,
-        created_at: new Date().toISOString(),
-        last_used_at: null,
-      }));
+      .map(q => {
+        // Phase 53 — anti-position-bias: Grok-3-mini puts the correct answer at
+        // index 0 ~80% of the time despite the prompt asking for randomness.
+        // Shuffle the options after generation so position is uniformly distributed.
+        const cleanOpts = q.options.map((o: string) => String(o).trim());
+        const correctText = cleanOpts[q.correct_index];
+        const shuffled = [...cleanOpts];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        const newCorrectIndex = shuffled.indexOf(correctText);
+        return {
+          category: category.id,
+          difficulty,
+          question: q.question.trim(),
+          options: shuffled,
+          correct_index: newCorrectIndex >= 0 ? newCorrectIndex : q.correct_index,
+          explanation: q.explanation.trim(),
+          subcategory: `grok:${subcategory.slice(0, 60)}`,
+          created_at: new Date().toISOString(),
+          last_used_at: null,
+        };
+      });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[trivia/track-B] generation error ${category.name}/${subcategory}/${difficulty}: ${msg}`);
