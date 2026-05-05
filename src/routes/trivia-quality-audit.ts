@@ -238,6 +238,38 @@ export async function triviaQualityAudit(c: Context) {
     if (upErr) console.warn(`[trivia-quality-audit] qs=${score} update failed:`, upErr.message);
   }
 
+  // Phase 54 #4 — write a per-category health snapshot the generation handler
+  // reads from to decide whether to pause that category.
+  const perCategory: Record<string, { audited: number; verifiedTrue: number; verifiedFalse: number }> = {};
+  for (let i = 0; i < candidates.length; i++) {
+    const cand = candidates[i];
+    if (!cand) continue;
+    const cat = cand.category;
+    const o = outcomes[i];
+    if (!perCategory[cat]) perCategory[cat] = { audited: 0, verifiedTrue: 0, verifiedFalse: 0 };
+    perCategory[cat]!.audited++;
+    if (!o?.decision) continue;
+    if (o.decision.verified && o.decision.confidence >= HIGH_CONFIDENCE) perCategory[cat]!.verifiedTrue++;
+    else if (!o.decision.verified && o.decision.confidence >= FAIL_CONFIDENCE) perCategory[cat]!.verifiedFalse++;
+  }
+  const healthRows = Object.entries(perCategory).map(([category, s]) => {
+    const passRate = s.audited > 0 ? Number((s.verifiedTrue / s.audited).toFixed(3)) : null;
+    const pause = passRate !== null && passRate < 0.85;
+    return {
+      category,
+      audited_count: s.audited,
+      verified_true_count: s.verifiedTrue,
+      verified_false_count: s.verifiedFalse,
+      pass_rate: passRate,
+      generation_paused: pause,
+      pause_reason: pause ? `audit pass rate ${Math.round((passRate || 0) * 100)}% < 85% threshold` : null,
+    };
+  });
+  if (healthRows.length > 0) {
+    const { error: hErr } = await sb.from('trivia_category_health').insert(healthRows);
+    if (hErr) console.warn('[trivia-quality-audit] health snapshot insert failed:', hErr.message);
+  }
+
   const elapsedMs = Date.now() - startTs;
   console.log(`[trivia-quality-audit] audited ${candidates.length} (✓${verifiedTrue} ✗${verifiedFalse} ?${uncertain} err${errors}) cost $${totalCost.toFixed(4)} in ${elapsedMs}ms`);
 

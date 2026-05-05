@@ -35,6 +35,12 @@ import { triviaDailyGenerator } from './routes/trivia-daily-generator.js';
 import { generateTriviaQuestions } from './routes/generate-trivia-questions.js';
 import { triviaPoolMonitor } from './routes/trivia-pool-monitor.js';
 import { triviaQualityAudit } from './routes/trivia-quality-audit.js';
+import {
+  triviaEmbedBackfill,
+  triviaThemeBackfill,
+  triviaPlayerRetag,
+  triviaRegressionTests,
+} from './routes/trivia-quality-tools.js';
 import { trainingDailyChallenge } from './routes/training-daily-challenge.js';
 import { hardStop } from './routes/hard-stop.js';
 import { horsesSocialAll } from './routes/horses-social-all.js';
@@ -210,6 +216,14 @@ app.get('/cron/trivia-pool-monitor', triviaPoolMonitor);
 app.post('/cron/trivia-pool-monitor', triviaPoolMonitor);
 app.get('/cron/trivia-quality-audit', triviaQualityAudit);
 app.post('/cron/trivia-quality-audit', triviaQualityAudit);
+app.get('/cron/trivia-embed-backfill', triviaEmbedBackfill);
+app.post('/cron/trivia-embed-backfill', triviaEmbedBackfill);
+app.get('/cron/trivia-theme-backfill', triviaThemeBackfill);
+app.post('/cron/trivia-theme-backfill', triviaThemeBackfill);
+app.get('/cron/trivia-player-retag', triviaPlayerRetag);
+app.post('/cron/trivia-player-retag', triviaPlayerRetag);
+app.get('/cron/trivia-regression-tests', triviaRegressionTests);
+app.post('/cron/trivia-regression-tests', triviaRegressionTests);
 app.get('/cron/training-daily-challenge', trainingDailyChallenge);
 app.post('/cron/training-daily-challenge', trainingDailyChallenge);
 app.get('/cron/hard-stop', hardStop);

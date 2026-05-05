@@ -405,6 +405,92 @@ async function checkForDuplicates(newQuestion: string, category: string): Promis
   return false;
 }
 
+// Phase 54 #2 — embedding-similarity dedup. Catches paraphrased duplicates
+// the keyword-overlap path misses (e.g. "first WSOP" vs "inaugural WSOP").
+async function checkEmbeddingDuplicate(newQuestion: string, category: string): Promise<boolean> {
+  const apiKey = process.env.XAI_API_KEY;
+  if (!apiKey) return false;
+  let vec: number[] | null = null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    const res = await fetch('https://api.x.ai/v1/embeddings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      signal: ctrl.signal,
+      body: JSON.stringify({ model: 'v1', input: newQuestion.slice(0, 4000) }),
+    });
+    clearTimeout(t);
+    if (res.ok) {
+      const data = await res.json();
+      const arr = (data as any)?.data?.[0]?.embedding;
+      if (Array.isArray(arr)) {
+        if (arr.length === 384) vec = arr;
+        else if (arr.length > 384) vec = arr.slice(0, 384);
+        else vec = arr.concat(new Array(384 - arr.length).fill(0));
+      }
+    }
+  } catch { /* fall through */ }
+  if (!vec) return false; // best-effort: if embedding service down, fall back to keyword check only
+
+  // Use pgvector cosine distance via Supabase RPC trick — postgrest can do
+  // ordering by vector distance via a custom function; but the simplest path
+  // is a raw SELECT via the supabase client's `.select()` with the embedding
+  // column rendered as JSON. We do a coarse pre-filter via category + recent
+  // window to keep payload small.
+  const sb = getSupabase();
+  const { data } = await sb.from('trivia_questions')
+    .select('id, embedding')
+    .eq('category', category)
+    .not('embedding', 'is', null)
+    .limit(2000);
+  if (!data) return false;
+
+  for (const r of data as { id: string; embedding: any }[]) {
+    const ev = Array.isArray(r.embedding) ? r.embedding : (r.embedding ? JSON.parse(r.embedding) : null);
+    if (!ev || ev.length !== vec.length) continue;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < vec.length; i++) {
+      const v = vec[i] || 0; const e = ev[i] || 0;
+      dot += v * e; na += v * v; nb += e * e;
+    }
+    const sim = dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
+    if (sim >= 0.93) return true;       // ≥93% cosine = near-duplicate
+  }
+  return false;
+}
+
+// Phase 54 #4 — circuit breaker. Reads the most recent trivia_category_health
+// snapshot for this category. If pass_rate < 0.85 OR generation_paused = true,
+// skip the category entirely on this tick.
+async function isCategoryPaused(category: string): Promise<{ paused: boolean; reason: string | null }> {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('trivia_category_health')
+    .select('pass_rate, generation_paused, pause_reason, snapshot_at')
+    .eq('category', category)
+    .order('snapshot_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return { paused: false, reason: null };
+  if (data.generation_paused) return { paused: true, reason: data.pause_reason || 'manual pause' };
+  if (data.pass_rate !== null && Number(data.pass_rate) < 0.85) {
+    return { paused: true, reason: `audit pass rate ${Math.round(Number(data.pass_rate) * 100)}% < 85%` };
+  }
+  return { paused: false, reason: null };
+}
+
+// Phase 54 #3 — theme density check. If the candidate question's theme already
+// represents >5% of the category pool, reject it to keep variety high.
+async function isThemeOversaturated(theme: string | null, category: string): Promise<boolean> {
+  if (!theme) return false;
+  const sb = getSupabase();
+  const { count: themeCount } = await sb.from('trivia_questions').select('*', { count: 'exact', head: true }).eq('category', category).eq('theme', theme);
+  const { count: catTotal } = await sb.from('trivia_questions').select('*', { count: 'exact', head: true }).eq('category', category);
+  if (!catTotal || catTotal < 40) return false;
+  return ((themeCount || 0) / catTotal) > 0.05;
+}
+
 // ─── Pool stats ───────────────────────────────────────────────────────────
 
 interface PoolStat {
@@ -509,7 +595,13 @@ export async function generateTriviaQuestions(c: Context) {
         }
         trackACalls++;
       } else {
-        // Track B — Grok
+        // Track B — Grok (with Phase 54 circuit breaker)
+        const breaker = await isCategoryPaused(need.categoryId);
+        if (breaker.paused) {
+          console.warn(`[trivia/track-B] ${need.categoryId} PAUSED — ${breaker.reason}`);
+          results.push({ track: 'B', category: need.categoryId, difficulty: need.difficulty, paused: true, reason: breaker.reason });
+          continue;
+        }
         const catDef = TRACK_B_CATEGORIES_DEF.find(c => c.id === need.categoryId);
         if (!catDef) continue;
         const subcat = catDef.subcategories[Math.floor(Math.random() * catDef.subcategories.length)]!;
@@ -517,7 +609,10 @@ export async function generateTriviaQuestions(c: Context) {
         const qs = await generateTrackBBatch(catDef, subcat, need.difficulty, want);
         const uniqueQs: TriviaQuestion[] = [];
         for (const q of qs) {
-          if (!(await checkForDuplicates(q.question, need.categoryId))) uniqueQs.push(q);
+          // Phase 54: dual-tier dedup — keyword first (fast), then embedding (deeper)
+          if (await checkForDuplicates(q.question, need.categoryId)) continue;
+          if (await checkEmbeddingDuplicate(q.question, need.categoryId)) continue;
+          uniqueQs.push(q);
         }
         if (uniqueQs.length > 0) {
           const { valid: validQs, rejected } = validateBatch(uniqueQs);
