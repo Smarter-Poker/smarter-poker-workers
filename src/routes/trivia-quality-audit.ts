@@ -102,6 +102,25 @@ interface AuditOutcome {
   error?: string;
 }
 
+// Phase 54 #7 — local Flesch reading-ease (no LLM call, pure math).
+// 90-100 = very easy, 60-70 = standard, 30-50 = college, 0-30 = grad-level.
+// Trivia questions should be 50+ to be approachable.
+function fleschReadingEase(text: string): number {
+  if (!text) return 0;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return 100;
+  const sentences = (text.match(/[.!?]+/g) || []).length || 1;
+  const syllables = words.reduce((s, w) => s + countSyllables(w), 0);
+  return 206.835 - 1.015 * (words.length / sentences) - 84.6 * (syllables / words.length);
+}
+function countSyllables(word: string): number {
+  word = word.toLowerCase().replace(/[^a-z]/g, '');
+  if (word.length <= 3) return 1;
+  word = word.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, '').replace(/^y/, '');
+  const matches = word.match(/[aeiouy]{1,2}/g);
+  return matches ? matches.length : 1;
+}
+
 async function auditOne(grok: any, q: any): Promise<AuditOutcome> {
   const prevQS = q.quality_score ?? null;
   try {
@@ -130,11 +149,20 @@ async function auditOne(grok: any, q: any): Promise<AuditOutcome> {
       corrected_answer_text: parsed.corrected_answer_text ? String(parsed.corrected_answer_text).slice(0, 200) : null,
     };
 
+    // Phase 54 #7 — clarity check. Hard-to-read questions get demoted even
+    // if factually correct.
+    const flesch = fleschReadingEase(q.question);
+    const clarityScore = flesch >= 60 ? 10 : flesch >= 40 ? 7 : flesch >= 20 ? 4 : 2;
+    const clarityFails = clarityScore <= 4;
+
     let newQS: number;
-    if (decision.verified && decision.confidence >= HIGH_CONFIDENCE) {
+    if (decision.verified && decision.confidence >= HIGH_CONFIDENCE && !clarityFails) {
       newQS = 9; // gold-tier
     } else if (!decision.verified && decision.confidence >= FAIL_CONFIDENCE) {
       newQS = 2; // soft-exclude (below the minQualityScore=6 floor used by all gameplay routes)
+    } else if (clarityFails) {
+      newQS = 4; // unclear English — demote even if factually right
+      decision.failure_modes = [...(decision.failure_modes || []), 'unclear_english'];
     } else {
       newQS = 5; // uncertain — surface in dashboard for human review
     }
@@ -226,6 +254,9 @@ export async function triviaQualityAudit(c: Context) {
   for (const [scoreStr, ids] of Object.entries(byScore)) {
     const score = parseInt(scoreStr, 10);
     const audited = outcomes.find(o => ids.includes(o.questionId) && o.decision)?.decision;
+    // Phase 54 #7: also write clarity fields per row. We can't easily group
+    // those by clarity in a single .in() update, so do per-row for clarity-flagged
+    // questions; the bulk update above handles quality_score for the rest.
     const { error: upErr } = await sb
       .from('trivia_questions')
       .update({
@@ -236,6 +267,17 @@ export async function triviaQualityAudit(c: Context) {
       })
       .in('id', ids);
     if (upErr) console.warn(`[trivia-quality-audit] qs=${score} update failed:`, upErr.message);
+  }
+
+  // Per-row clarity write (cheap — small dataset)
+  for (let i = 0; i < candidates.length; i++) {
+    const cand = candidates[i];
+    if (!cand) continue;
+    const flesch = fleschReadingEase(cand.question);
+    const clarityScore = flesch >= 60 ? 10 : flesch >= 40 ? 7 : flesch >= 20 ? 4 : 2;
+    await sb.from('trivia_questions')
+      .update({ clarity_score: clarityScore, clarity_flesch: Math.round(flesch * 100) / 100 })
+      .eq('id', cand.id);
   }
 
   // Phase 54 #4 — write a per-category health snapshot the generation handler
