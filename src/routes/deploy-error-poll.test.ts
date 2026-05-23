@@ -4,7 +4,7 @@ import { deployErrorPoll } from './deploy-error-poll.js';
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
-  // No VERCEL_TOKEN configured → short-circuit to 500 error.
+  // No VERCEL_TOKEN configured → graceful no-op (200), not a 500.
   // Exercises the early-return path without hitting Vercel API.
   delete process.env.VERCEL_TOKEN;
 });
@@ -24,11 +24,12 @@ const makeCtx = () => {
 };
 
 describe('GET/POST /cron/deploy-error-poll', () => {
-  it('short-circuits with 500 when VERCEL_TOKEN is missing', async () => {
+  it('short-circuits with 200 no-op when VERCEL_TOKEN is missing', async () => {
     const ctx = makeCtx();
     await deployErrorPoll(ctx);
-    const body = (ctx as any).captured.body as { error: string };
-    expect((ctx as any).captured.status).toBe(500);
-    expect(body.error).toContain('VERCEL_TOKEN');
+    const body = (ctx as any).captured.body as { action: string; message: string };
+    expect((ctx as any).captured.status).toBe(200);
+    expect(body.action).toBe('skipped');
+    expect(body.message).toContain('VERCEL_TOKEN');
   });
 });

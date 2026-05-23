@@ -222,7 +222,7 @@ export async function deployErrorPoll(c: Context) {
   const ghPat = process.env.GH_PAT;
 
   if (!vercelToken) {
-    return c.json({ error: 'VERCEL_TOKEN not configured' }, 500);
+    return c.json({ action: 'skipped', message: 'VERCEL_TOKEN not configured — deploy-error-poll disabled on this host' });
   }
 
   // Kill-switch
