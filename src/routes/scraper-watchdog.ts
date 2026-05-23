@@ -5,8 +5,10 @@
  *
  * Every 2 hours (dispatcher schedule): check venue_live_tables freshness
  * for each source. Tiered alerting:
- *   Tier 2 STALE (≥45 min)   — SMS to admin, 1h cooldown
- *   Tier 3 DEAD  (≥60 min)   — SMS + OneSignal push, 30min cooldown
+ *   Tier 2 STALE (>=45 min)  — SMS to admin, 1h cooldown
+ *   Tier 3 DEAD  (>=60 min)  — SMS + OneSignal push, 30min cooldown
+ *
+ * Sources: pokeratlas only. Bravo removed permanently (2026-05-23).
  *   Tier 4 ANOMALY (count < 10 || > 5000 || 75%+ drop vs baseline) — same as DEAD
  *   HEALTHY — if previously alerting, send ALL CLEAR recovery SMS
  *
@@ -214,7 +216,7 @@ export async function scraperWatchdog(c: Context) {
     resolved: [],
   };
 
-  for (const source of ['bravo', 'pokeratlas']) {
+  for (const source of ['pokeratlas']) {
     try {
       const { data, count, error } = await supabase
         .from('venue_live_tables')

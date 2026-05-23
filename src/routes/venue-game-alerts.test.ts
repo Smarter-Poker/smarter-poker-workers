@@ -29,7 +29,7 @@ vi.mock('../lib/supabase.js', () => ({
       } else if (table === 'venue_live_tables') {
         c.limit.mockResolvedValue({
           data: [
-            { venue_name: 'Venue A', game_name: 'NLH 1/2', tables_running: 3, source: 'bravo' },
+            { venue_name: 'Venue A', game_name: 'NLH 1/2', tables_running: 3, source: 'pokeratlas' },
           ],
           error: null,
         });

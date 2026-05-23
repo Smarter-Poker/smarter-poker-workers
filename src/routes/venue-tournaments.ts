@@ -24,7 +24,28 @@ import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 
 const RATE_LIMIT_MS = 2000;
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 20000;
+
+// Full browser-grade header set — passes Cloudflare's basic bot fingerprint check.
+// PokerAtlas embeds tournament data in JSON-LD server-side before the JS challenge
+// fires, so these headers are sufficient to retrieve the structured data.
+const BROWSER_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+  'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"macOS"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Upgrade-Insecure-Requests': '1',
+};
 
 interface Tournament {
   venue_name: string;
@@ -71,11 +92,7 @@ async function fetchUrl(url: string, retries = 3): Promise<string> {
     const response = await fetch(url, {
       signal: controller.signal,
       redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        Accept: 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
+      headers: BROWSER_HEADERS,
     });
     clearTimeout(timeout);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -90,6 +107,183 @@ async function fetchUrl(url: string, retries = 3): Promise<string> {
   }
 }
 
+// Returns true when Cloudflare's managed JS challenge page is detected.
+// In this case the HTML contains no real data and we must skip rather than
+// persist empty results or error-loop.
+function isCloudflareChallenge(html: string): boolean {
+  return html.includes('challenges.cloudflare.com') && html.includes('Just a moment');
+}
+
+// ---------------------------------------------------------------------------
+// PokerAtlas parser — two-stage extraction
+// Stage 1: JSON-LD (schema.org/Event) — embedded server-side before any CF
+//          JS challenge fires. Most reliable source.
+// Stage 2: HTML table-row fallback — used when JSON-LD yields nothing.
+// ---------------------------------------------------------------------------
+
+function extractDayFromScheduleText(text: string): string {
+  const DAY_MAP: Record<string, string> = {
+    mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday',
+    thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
+  };
+  const m = text.match(
+    /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Daily)/i,
+  );
+  if (!m || !m[1]) return 'Daily';
+  const k = m[1].toLowerCase().substring(0, 3);
+  return DAY_MAP[k] ?? m[1];
+}
+
+function extractGameType(text: string): string {
+  if (/\bPLO\b/i.test(text)) return 'PLO';
+  if (/\bOmaha\b/i.test(text)) return 'Omaha';
+  if (/\bMixed\b/i.test(text)) return 'Mixed';
+  if (/\bBig-O\b/i.test(text)) return 'Big-O';
+  return 'NLH';
+}
+
+function extractFormat(text: string): string | null {
+  if (/mystery\s*bounty/i.test(text)) return 'Mystery Bounty';
+  if (/bounty/i.test(text)) return 'Bounty';
+  if (/turbo/i.test(text)) return 'Turbo';
+  if (/deep\s*stack/i.test(text)) return 'Deep Stack';
+  if (/freezeout/i.test(text)) return 'Freezeout';
+  if (/rebuy/i.test(text)) return 'Rebuy';
+  return null;
+}
+
+function parsePokerAtlasTournamentsJsonLd(
+  html: string,
+  venueName: string,
+): Tournament[] {
+  const tournaments: Tournament[] = [];
+  // Match all <script type="application/ld+json"> blocks
+  const scriptRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = scriptRe.exec(html)) !== null) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(match[1] ?? '');
+    } catch {
+      continue;
+    }
+
+    // Handle both single objects and arrays
+    const items: unknown[] = Array.isArray(payload) ? payload : [payload];
+
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Record<string, unknown>;
+
+      // schema.org/Event or Event arrays inside a ItemList
+      const events: unknown[] = [];
+      if (obj['@type'] === 'Event') {
+        events.push(obj);
+      } else if (obj['@type'] === 'ItemList') {
+        const elements = obj['itemListElement'];
+        if (Array.isArray(elements)) {
+          for (const el of elements) {
+            if (el && typeof el === 'object' && (el as Record<string, unknown>)['@type'] === 'Event') {
+              events.push(el);
+            }
+          }
+        }
+      }
+
+      for (const ev of events) {
+        if (!ev || typeof ev !== 'object') continue;
+        const event = ev as Record<string, unknown>;
+
+        // PokerAtlas encodes buy-in in offers.price or name
+        const name = String(event['name'] ?? '');
+        const description = String(event['description'] ?? '');
+        const fullText = `${name} ${description}`;
+
+        // Buy-in from offers.price
+        let buyin = 0;
+        const offers = event['offers'];
+        if (offers && typeof offers === 'object') {
+          const price = (offers as Record<string, unknown>)['price'];
+          if (price !== undefined && price !== null) {
+            buyin = parseInt(String(price).replace(/[^0-9]/g, ''), 10);
+          }
+        }
+        // Fallback: parse $ from name/description
+        if (!buyin || Number.isNaN(buyin)) {
+          const buyinM = fullText.match(/\$(\d{1,3}(?:,\d{3})*)/);
+          if (buyinM && buyinM[1]) buyin = parseInt(buyinM[1].replace(/,/g, ''), 10);
+        }
+        if (!buyin || Number.isNaN(buyin) || buyin < 10 || buyin > 50000) continue;
+
+        // Start time from startDate
+        const startDate = String(event['startDate'] ?? '');
+        let startTime = '';
+        if (startDate) {
+          // ISO datetime: extract HH:MM and convert to AM/PM
+          const timePart = startDate.match(/T(\d{2}):(\d{2})/);
+          if (timePart && timePart[1] && timePart[2]) {
+            const h = parseInt(timePart[1], 10);
+            const m2 = timePart[2];
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            const h12 = h % 12 === 0 ? 12 : h % 12;
+            startTime = `${h12}:${m2}${ampm}`;
+          }
+        }
+        // Fallback: parse time string from name/description
+        if (!startTime) {
+          const timeM = fullText.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))/i);
+          if (timeM && timeM[1]) startTime = timeM[1].toUpperCase().replace(/\s/g, '');
+        }
+        if (!startTime) continue;
+
+        // Day of week from eventSchedule.byDay or startDate
+        let dayOfWeek = 'Daily';
+        const schedule = event['eventSchedule'];
+        if (schedule && typeof schedule === 'object') {
+          const byDay = (schedule as Record<string, unknown>)['byDay'];
+          if (byDay) {
+            const dayStr = String(byDay).replace(/.*\//, ''); // strip schema.org URL prefix
+            dayOfWeek = dayStr || 'Daily';
+          }
+        }
+        if (dayOfWeek === 'Daily' && startDate) {
+          const dateObj = new Date(startDate);
+          if (!Number.isNaN(dateObj.getTime())) {
+            const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+            dayOfWeek = DAYS[dateObj.getDay()] ?? 'Daily';
+          }
+        }
+        if (dayOfWeek === 'Daily') {
+          dayOfWeek = extractDayFromScheduleText(fullText);
+        }
+
+        const gtdM = fullText.match(/(?:GTD|Guaranteed)[:\s]*\$?([\d,]+)/i);
+        const guaranteed = gtdM && gtdM[1] ? parseInt(gtdM[1].replace(/,/g, ''), 10) : null;
+
+        tournaments.push({
+          venue_name: venueName,
+          day_of_week: dayOfWeek,
+          start_time: startTime,
+          buy_in: buyin,
+          game_type: extractGameType(fullText),
+          format: extractFormat(fullText),
+          guaranteed,
+        });
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  return tournaments.filter((t) => {
+    const key = `${t.day_of_week}-${t.start_time}-${t.buy_in}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// Fallback: HTML table-row parser (used when JSON-LD returns nothing).
 function parsePokerAtlasTournaments(html: string, venueName: string): Tournament[] {
   const tournaments: Tournament[] = [];
   const rows = html.split(/<tr[^>]*>/gi);
@@ -117,45 +311,16 @@ function parsePokerAtlasTournaments(html: string, venueName: string): Tournament
     const timeMatch = fullText.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i);
     if (!timeMatch || !timeMatch[1]) continue;
 
-    const dayMatch = fullText.match(
-      /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Daily)/i,
-    );
-    let dayOfWeek = 'Daily';
-    if (dayMatch && dayMatch[1]) {
-      const dayMap: Record<string, string> = {
-        mon: 'Monday',
-        tue: 'Tuesday',
-        wed: 'Wednesday',
-        thu: 'Thursday',
-        fri: 'Friday',
-        sat: 'Saturday',
-        sun: 'Sunday',
-      };
-      const k = dayMatch[1].toLowerCase().substring(0, 3);
-      dayOfWeek = dayMap[k] ?? dayMatch[1];
-    }
-
     const gtdMatch = fullText.match(/(?:GTD|Guaranteed)[:\s]*\$?([\d,]+)/i);
-
-    let gameType = 'NLH';
-    if (/\bPLO\b/i.test(fullText)) gameType = 'PLO';
-    else if (/\bOmaha\b/i.test(fullText)) gameType = 'Omaha';
-
-    let format: string | null = null;
-    if (/turbo/i.test(fullText)) format = 'Turbo';
-    else if (/deep\s*stack/i.test(fullText)) format = 'Deep Stack';
-    else if (/bounty/i.test(fullText)) format = 'Bounty';
-
-    const guaranteed =
-      gtdMatch && gtdMatch[1] ? parseInt(gtdMatch[1].replace(/,/g, ''), 10) : null;
+    const guaranteed = gtdMatch && gtdMatch[1] ? parseInt(gtdMatch[1].replace(/,/g, ''), 10) : null;
 
     tournaments.push({
       venue_name: venueName,
-      day_of_week: dayOfWeek,
+      day_of_week: extractDayFromScheduleText(fullText),
       start_time: timeMatch[1].toUpperCase().replace(/\s/g, ''),
       buy_in: buyin,
-      game_type: gameType,
-      format,
+      game_type: extractGameType(fullText),
+      format: extractFormat(fullText),
       guaranteed,
     });
   }
@@ -234,7 +399,12 @@ export async function venueTournaments(c: Context) {
       .limit(100);
 
     if (state) query = query.eq('state', state.toUpperCase());
-    if (source) query = query.eq('scrape_source', source);
+    // Exclude bravo permanently — removed 2026-05-23
+    if (source) {
+      query = query.eq('scrape_source', source);
+    } else {
+      query = query.neq('scrape_source', 'bravo');
+    }
     if (limitParam) {
       const n = parseInt(limitParam, 10);
       if (!Number.isNaN(n) && n > 0) query = query.limit(n);
@@ -273,7 +443,28 @@ export async function venueTournaments(c: Context) {
             url = url.replace(/\/$/, '') + '/tournaments';
           }
           const html = await fetchUrl(url);
-          tournaments = parsePokerAtlasTournaments(html, venue.name);
+
+          // Detect Cloudflare managed challenge — no real data available.
+          // Mark the venue so operators know it needs a headless proxy.
+          if (isCloudflareChallenge(html)) {
+            console.warn(`[venue-tournaments] CF challenge on ${venue.name} (${url})`);
+            await supabase
+              .from('poker_venues')
+              .update({
+                scrape_status: 'cf_blocked',
+                last_scraped: new Date().toISOString(),
+              })
+              .eq('id', venue.id);
+            stats.skipped++;
+            continue;
+          }
+
+          // Stage 1: JSON-LD structured data (schema.org/Event)
+          tournaments = parsePokerAtlasTournamentsJsonLd(html, venue.name);
+          // Stage 2: HTML table-row fallback
+          if (tournaments.length === 0) {
+            tournaments = parsePokerAtlasTournaments(html, venue.name);
+          }
         } else if (scrapeSource === 'direct_website') {
           if (!url.startsWith('http')) url = 'https://' + url;
           const paths = ['', '/poker', '/poker/tournaments', '/tournaments'];
