@@ -11,7 +11,8 @@
  * Idempotence:
  *   - 6h cooldown via isArticleRecentlyShared() reading social_posts.content
  *     LIKE %link% AND poker_news.scraped_at >= now-6h
- *   - source_url-keyed dedupe in poker_news (early-return if exists)
+ *   - source_url-keyed dedupe in poker_news: an article already present in the
+ *     archive is skipped entirely (never re-posted), regardless of its age
  *
  * Auth: /cron/* middleware chain.
  */
@@ -151,7 +152,12 @@ async function isArticleRecentlyShared(link: string): Promise<boolean> {
   return !!(newsData && newsData.length > 0);
 }
 
-async function saveToNewsArchive(article: Article): Promise<string | null> {
+interface ArchiveResult {
+  id: string;
+  existed: boolean;
+}
+
+async function saveToNewsArchive(article: Article): Promise<ArchiveResult | null> {
   const supabase = getSupabase();
 
   const { data: existing } = await supabase
@@ -160,7 +166,7 @@ async function saveToNewsArchive(article: Article): Promise<string | null> {
     .eq('source_url', article.link)
     .maybeSingle();
 
-  if (existing) return (existing as { id: string }).id;
+  if (existing) return { id: (existing as { id: string }).id, existed: true };
 
   const { data: newsRecord, error } = await supabase
     .from('poker_news')
@@ -175,6 +181,9 @@ async function saveToNewsArchive(article: Article): Promise<string | null> {
       category: article.category,
       tags: [article.category, article.source.toLowerCase()],
       published_at: article.pubDate.toISOString(),
+      // Explicit — the 6h cooldown check reads scraped_at and must not depend
+      // on a column default being present.
+      scraped_at: new Date().toISOString(),
     })
     .select()
     .maybeSingle();
@@ -183,7 +192,7 @@ async function saveToNewsArchive(article: Article): Promise<string | null> {
     console.warn('[poker-news] archive error:', error?.message ?? 'no data');
     return null;
   }
-  return (newsRecord as { id: string }).id;
+  return { id: (newsRecord as { id: string }).id, existed: false };
 }
 
 interface PostResult {
@@ -265,16 +274,21 @@ export async function pokerNews(c: Context) {
     }
 
     let posted: PostResult | null = null;
-    let newsId: string | null = null;
 
     for (const article of articles) {
       const recentlyShared = await isArticleRecentlyShared(article.link);
       if (recentlyShared) continue;
 
-      newsId = await saveToNewsArchive(article);
-      if (!newsId) continue;
+      const archived = await saveToNewsArchive(article);
+      if (!archived) continue;
 
-      posted = await postNewsArticle(article, newsId);
+      // Already in the archive — it has been posted before. The 6h cooldown
+      // only looks at recency, so an article that sits atop a feed overnight
+      // used to get a fresh duplicate social post every cycle. Reposting is an
+      // explicit re-share feature, not a side effect of scraping.
+      if (archived.existed) continue;
+
+      posted = await postNewsArticle(article, archived.id);
       if (posted) break;
     }
 

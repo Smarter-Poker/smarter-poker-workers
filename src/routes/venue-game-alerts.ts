@@ -50,11 +50,13 @@ export async function venueGameAlerts(c: Context) {
     checked_at: string;
     matches: MatchResult[];
     notifications_sent: number;
+    notification_errors: Array<{ alert_id: string; error: string }>;
     message?: string;
   } = {
     checked_at: new Date().toISOString(),
     matches: [],
     notifications_sent: 0,
+    notification_errors: [],
   };
 
   try {
@@ -101,11 +103,18 @@ export async function venueGameAlerts(c: Context) {
       const alertVenue = alert.venue_name?.toLowerCase().trim() ?? '';
       const alertGame = alert.game_type?.toLowerCase().trim() ?? '';
 
+      // An alert with no venue can never be matched safely — '' would equal any
+      // row with a null venue_name. Skip it rather than spraying notifications.
+      if (!alertVenue) continue;
+
       const matchingTables = liveTables.filter((t) => {
         const venueMatch = t.venue_name?.toLowerCase().trim() === alertVenue;
+        if (!venueMatch) return false;
+        // Empty game_type == "any game at this venue" (''.includes('') is
+        // always true); made explicit so the intent is not an accident.
+        if (!alertGame) return true;
         const tableGame = t.game_name?.toLowerCase().trim() ?? '';
-        const gameMatch = tableGame.startsWith(alertGame) || tableGame.includes(alertGame);
-        return venueMatch && gameMatch;
+        return tableGame.startsWith(alertGame) || tableGame.includes(alertGame);
       });
       if (matchingTables.length === 0) continue;
 
@@ -122,35 +131,50 @@ export async function venueGameAlerts(c: Context) {
         tables_running: totalRunning,
       });
 
-      // Fire push via World Hub's internal notifications endpoint
+      // Fire push via World Hub's internal notifications endpoint.
+      // A non-2xx response must NOT count as sent and must NOT start the 4h
+      // cooldown — that silently swallowed every alert whenever the endpoint
+      // or its service-role auth broke.
+      let pushDelivered = false;
+      const gameLabel = alert.game_type || 'A game';
       try {
-        await fetch(`${baseUrl}/api/notifications/send`, {
+        const pushRes = await fetch(`${baseUrl}/api/notifications/send`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${serviceRoleKey}`,
           },
           body: JSON.stringify({
-            title: `${alert.game_type} is Running`,
-            message: `${alert.venue_name} has ${totalRunning} ${alert.game_type} table${totalRunning > 1 ? 's' : ''} running right now.`,
+            title: `${gameLabel} is Running`,
+            message: `${alert.venue_name} has ${totalRunning} ${gameLabel} table${totalRunning > 1 ? 's' : ''} running right now.`,
             url: `${baseUrl}/hub/poker-near-me/live-games`,
             externalUserIds: [alert.user_id],
             category: 'venue_alerts',
           }),
         });
-        results.notifications_sent++;
+        if (pushRes.ok) {
+          pushDelivered = true;
+          results.notifications_sent++;
+        } else {
+          const body = await pushRes.text().catch(() => '');
+          const msg = `HTTP ${pushRes.status}${body ? ` — ${body.slice(0, 200)}` : ''}`;
+          console.warn('[venue-game-alerts] push rejected:', msg);
+          results.notification_errors.push({ alert_id: alert.id, error: msg });
+        }
       } catch (pushErr) {
-        console.warn(
-          '[venue-game-alerts] push failed:',
-          pushErr instanceof Error ? pushErr.message : String(pushErr),
-        );
+        const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+        console.warn('[venue-game-alerts] push failed:', msg);
+        results.notification_errors.push({ alert_id: alert.id, error: msg });
       }
 
-      // Update last_triggered so the next cycle respects cooldown
-      await supabase
-        .from('venue_game_alerts')
-        .update({ last_triggered: new Date().toISOString() })
-        .eq('id', alert.id);
+      // Only start the cooldown on a confirmed send, otherwise the user waits
+      // 4h for a notification that never arrived.
+      if (pushDelivered) {
+        await supabase
+          .from('venue_game_alerts')
+          .update({ last_triggered: new Date().toISOString() })
+          .eq('id', alert.id);
+      }
     }
 
     return c.json(results);

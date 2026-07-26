@@ -195,6 +195,18 @@ function detectEventType(text: string): string {
 
 // ─── PDF text parsers ────────────────────────────────────────────────────────
 
+// Date section headings that tour PDFs group their events under, e.g.
+// "Friday, March 14", "MARCH 14, 2026", "Mar 14".
+const DATE_HEADING_RE =
+  /^(?:(?:Mon|Tues?|Wednes|Wed|Thurs?|Fri|Satur|Sat|Sun)[a-z]*\.?,?\s*)?((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2})(?:\s*,?\s*(\d{4}))?\s*[-–—:]?\s*$/i;
+
+function extractDateHeading(line: string): string | null {
+  const m = DATE_HEADING_RE.exec(line.trim());
+  if (!m || !m[1]) return null;
+  const date = m[1].replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  return m[2] ? `${date} ${m[2]}` : date;
+}
+
 function parseScheduleText(rawText: string): PdfEvent[] {
   const events: PdfEvent[] = [];
   const seen = new Set<string>();
@@ -206,10 +218,18 @@ function parseScheduleText(rawText: string): PdfEvent[] {
   const eventLineRe =
     /^(\d{1,3}[A-C]?)\s+(\d{1,2}:\d{2}\s*[AP]M)\s+(\$[\d,]+)\s+(.{5,100}?)(?:\s+\d{1,2}:\d{2}\s*[AP]M|\s+\$[\d,]+,\d{3}|\s*$)/i;
 
+  // Tour PDFs list events under a date heading; without tracking it every
+  // main-parser event landed with start_date NULL (undatable in search).
+  let currentDate: string | null = null;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
     const m = eventLineRe.exec(line);
-    if (!m) continue;
+    if (!m) {
+      const heading = extractDateHeading(line);
+      if (heading) currentDate = heading;
+      continue;
+    }
 
     const evNumRaw = m[1] ?? '';
     const startTime = (m[2] ?? '').trim();
@@ -249,10 +269,16 @@ function parseScheduleText(rawText: string): PdfEvent[] {
     }
 
     let levels: number | null = null;
-    const levMatch = lookAhead.match(/\b(\d{2})\s+(?:🏆|POY|🃏|$)/);
+    // Trophy / card pictograph markers (written as escapes, not literal
+    // characters) plus the plain-text equivalents. Dropping the pictographs
+    // outright lost the level count on every PDF that uses them.
+    const levMatch = lookAhead.match(
+      /\b(\d{2})\s+(?:\uD83C\uDFC6|\uD83C\uDCCF|POY|Points?|Levels?|$)/i,
+    );
     if (levMatch?.[1]) levels = parseInt(levMatch[1], 10);
 
-    const dedupKey = `${buyIn}:${rawDesc.substring(0, 25).toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+    // Date is part of the identity: a series repeats the same event across days.
+    const dedupKey = `${currentDate ?? 'nodate'}:${buyIn}:${rawDesc.substring(0, 25).toLowerCase().replace(/[^a-z0-9]/g, '')}`;
     if (seen.has(dedupKey)) continue;
     seen.add(dedupKey);
 
@@ -265,6 +291,7 @@ function parseScheduleText(rawText: string): PdfEvent[] {
       guaranteed: gtd,
       starting_chips: chips,
       levels,
+      date: currentDate,
       game_type: detectGameType(rawDesc),
       event_type: detectEventType(rawDesc),
       source: 'pdf_extraction',
@@ -364,12 +391,18 @@ export function extractMsptPdfLinks(
   const entries: Array<{ stopName: string; pdfUrl: string }> = [];
   if (!html) return entries;
 
-  const pdfPattern = /href=["']([^"']*showpdf\.aspx\?eventID=\d+[^"']*)/gi;
-  const pdfLinks: string[] = [];
+  // ONE regex captures the href and its anchor text together. Two parallel
+  // index-counted passes desynchronised the moment an anchor contained nested
+  // markup, shifting every later stop name onto the wrong PDF.
+  const linkPattern =
+    /href=["']([^"']*showpdf\.aspx\?eventID=\d+[^"']*)["'][^>]*>([\s\S]{0,200}?)<\/a>/gi;
   let match: RegExpExecArray | null;
+  let index = 0;
+  const seen = new Set<string>();
 
-  while ((match = pdfPattern.exec(html)) !== null) {
+  while ((match = linkPattern.exec(html)) !== null) {
     let url = match[1] ?? '';
+    if (!url) continue;
     if (url.startsWith('/')) {
       try {
         const base = new URL(baseUrl);
@@ -378,24 +411,19 @@ export function extractMsptPdfLinks(
     } else if (!url.startsWith('http')) {
       url = `https://msptpoker.com${url.startsWith('/') ? '' : '/'}${url}`;
     }
-    pdfLinks.push(url);
-  }
+    if (seen.has(url)) continue;
+    seen.add(url);
+    index++;
 
-  const linkContextPattern = /href=["'][^"']*showpdf\.aspx\?eventID=\d+[^"']*["'][^>]*>([^<]{3,80})</gi;
-  let nameIdx = 0;
-  while ((match = linkContextPattern.exec(html)) !== null) {
-    const stopName = (match[1] ?? '').trim();
-    const pdfUrl = pdfLinks[nameIdx];
-    if (pdfUrl) {
-      entries.push({ stopName, pdfUrl });
-      nameIdx++;
-    }
-  }
+    const stopName =
+      (match[2] ?? '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80) || `Stop ${index}`;
 
-  while (nameIdx < pdfLinks.length) {
-    const pdfUrl = pdfLinks[nameIdx];
-    if (pdfUrl) entries.push({ stopName: `Stop ${nameIdx + 1}`, pdfUrl });
-    nameIdx++;
+    entries.push({ stopName, pdfUrl: url });
   }
 
   return entries;
@@ -432,8 +460,11 @@ export async function extractPdfSchedule(
       // Dynamic import — pdf-parse is an optional peer dep; use any cast so
       // tsc doesn't error when the package has no @types declaration.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { PDFParse } = await import('pdf-parse' as any) as { PDFParse: new (opts: { url: string }) => { getText(): Promise<{ text: string; pages?: unknown[]; numpages?: number }> } };
-      const parser = new PDFParse({ url: pdfUrl });
+      const { PDFParse } = await import('pdf-parse' as any) as { PDFParse: new (opts: { url?: string; data?: Uint8Array }) => { getText(): Promise<{ text: string; pages?: unknown[]; numpages?: number }> } };
+      // Feed the buffer we already downloaded (browser UA, 10MB cap, redirect
+      // handling). Passing the URL made pdf-parse re-fetch with its default
+      // client — sites that 403 non-browser UAs then fell to the crude fallback.
+      const parser = new PDFParse({ data: new Uint8Array(buffer) });
       const result = await parser.getText();
       rawText = result.text ?? '';
       numPages = result.pages ? result.pages.length : (result.numpages ?? 1);

@@ -22,6 +22,32 @@ export const requireCronSecret: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+/** Strips the IPv6-mapped IPv4 prefix so ::ffff:10.0.0.1 compares as 10.0.0.1. */
+function normalizeIp(ip: string): string {
+  const trimmed = (ip ?? '').trim();
+  if (!trimmed) return '';
+  return trimmed.startsWith('::ffff:') ? trimmed.slice(7) : trimmed;
+}
+
+/** Loopback or RFC1918/Docker-bridge peer — i.e. our own reverse proxy hop. */
+function isPrivatePeer(ip: string): boolean {
+  if (!ip) return false;
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  if (/^10\./.test(ip)) return true;
+  if (/^192\.168\./.test(ip)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  return false;
+}
+
+/**
+ * Reads the real TCP peer from the @hono/node-server adapter
+ * (c.env === { incoming, outgoing }). Empty string on other adapters.
+ */
+function socketPeerIp(env: unknown): string {
+  const incoming = (env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming;
+  return normalizeIp(incoming?.socket?.remoteAddress ?? '');
+}
+
 /**
  * ipAllowlist — accept only requests from Hetzner's own IP space (the
  * Open Claw dispatcher box) plus 127.0.0.1 for local healthchecks.
@@ -32,6 +58,12 @@ export const requireCronSecret: MiddlewareHandler = async (c, next) => {
  * If ALLOWED_CRON_IPS is unset, the allowlist is BYPASSED (dev mode only).
  * In production Docker Compose this env var MUST be set, enforced by the
  * Hetzner host's .env file.
+ *
+ * X-Forwarded-For is caller-supplied and therefore only trusted when the
+ * DIRECT peer is a known proxy: an entry in TRUSTED_PROXY_IPS, or a
+ * loopback/private-range address (the Docker bridge / local reverse proxy).
+ * A caller reaching the port directly from the public internet is judged on
+ * its socket address alone, so it can no longer spoof its way in.
  */
 export const ipAllowlist: MiddlewareHandler = async (c, next) => {
   const allowed = (process.env.ALLOWED_CRON_IPS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -45,12 +77,22 @@ export const ipAllowlist: MiddlewareHandler = async (c, next) => {
     return;
   }
 
-  // Docker/reverse-proxy: first hop is the container; client IP is in X-Forwarded-For.
-  // If the box is behind Cloudflare add CF-Connecting-IP handling in a future phase.
-  const xff = c.req.header('X-Forwarded-For') ?? '';
-  const clientIp = xff.split(',')[0]?.trim() || c.req.header('X-Real-IP') || '';
+  const trustedProxies = (process.env.TRUSTED_PROXY_IPS ?? '')
+    .split(',')
+    .map((s) => normalizeIp(s))
+    .filter(Boolean);
 
-  if (!clientIp || !allowed.includes(clientIp)) {
+  const peerIp = socketPeerIp(c.env);
+  const xffIp = normalizeIp(c.req.header('X-Forwarded-For')?.split(',')[0] ?? '');
+  const realIp = normalizeIp(c.req.header('X-Real-IP') ?? '');
+  const headerIp = xffIp || realIp;
+
+  // The socket peer always counts. Forwarded headers count only behind a
+  // proxy we recognise (or when the adapter exposes no socket at all).
+  const proxyTrusted = !peerIp || trustedProxies.includes(peerIp) || isPrivatePeer(peerIp);
+  const candidates = [peerIp, proxyTrusted ? headerIp : ''].filter(Boolean);
+
+  if (candidates.length === 0 || !candidates.some((ip) => allowed.includes(ip))) {
     return c.json({ error: 'forbidden' }, 403);
   }
   await next();

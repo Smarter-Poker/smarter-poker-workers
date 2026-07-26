@@ -10,8 +10,12 @@
  *
  * Idempotence:
  *   - 3-day staleness window (last_scraped > now-3d → skip unless force=true)
- *   - venue_daily_tournaments upsert ON CONFLICT (venue_id, day_of_week,
- *     start_time) — repeated runs over same data are no-op deltas
+ *   - venue_daily_tournaments upsert ON CONFLICT on the live 7-column key
+ *     (venue_id, venue_name, day_of_week, event_date, start_time, buy_in,
+ *     game_type) — repeated runs over same data are no-op deltas.
+ *     The legacy 4-column key was dropped by 20260408003.
+ *   - rows not refreshed by a successful venue scrape are flagged
+ *     is_active=false / data_quality='stale' (never deleted)
  *
  * Provenance: SHA-256 hash of raw response body persists as
  * scrape_html_hash. Each run gets a batchId, written to data_audit_log.
@@ -181,17 +185,30 @@ const DAY_ABBREV: Record<string, string> = {
   sun: 'sunday',
 };
 
+function capitalizeDay(day: string): string {
+  return day.charAt(0).toUpperCase() + day.slice(1);
+}
+
+/**
+ * Returns a capitalized day name ('Monday') — the venue_daily_tournaments CHECK
+ * constraint and the venue_tournament_calendar view's CASE both require the
+ * capitalized form; lowercase rows compute a wrong next_occurrence.
+ */
 function normalizeDay(raw: string): string | null {
   const s = raw.toLowerCase().trim();
-  if ((DAYS as readonly string[]).includes(s)) return s;
-  if (DAY_ABBREV[s]) return DAY_ABBREV[s]!;
+  if ((DAYS as readonly string[]).includes(s)) return capitalizeDay(s);
+  if (DAY_ABBREV[s]) return capitalizeDay(DAY_ABBREV[s]!);
   for (const d of DAYS) {
-    if (d.startsWith(s.slice(0, 3))) return d;
+    if (d.startsWith(s.slice(0, 3))) return capitalizeDay(d);
   }
   return null;
 }
 
-function parseTime24h(raw: string | undefined): string | null {
+/**
+ * Formats to the '7:00 PM' shape every other writer (and the UI parser / the
+ * 20260413 quality-fix regexes) expects — NOT 24h 'HH:MM:SS'.
+ */
+function parseTimeTo12h(raw: string | undefined): string | null {
   if (!raw) return null;
   const t = raw.trim().toUpperCase().replace(/\./g, '');
   const m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM|A|P)?$/);
@@ -201,7 +218,10 @@ function parseTime24h(raw: string | undefined): string | null {
   const ap = m[3] ?? '';
   if (ap.startsWith('P') && h !== 12) h += 12;
   else if (ap.startsWith('A') && h === 12) h = 0;
-  return `${String(h).padStart(2, '0')}:${String(mn).padStart(2, '0')}:00`;
+  if (h > 23 || mn > 59) return null;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(mn).padStart(2, '0')} ${ampm}`;
 }
 
 interface Schedule {
@@ -236,7 +256,7 @@ function extractSchedules(html: string, sourceUrl: string): Schedule[] {
     if (!dayRaw || !timeRaw) continue;
     const day = normalizeDay(dayRaw);
     if (!day) continue;
-    const st = parseTime24h(timeRaw.trim());
+    const st = parseTimeTo12h(timeRaw.trim());
     if (!st) continue;
     const key = `${day}|${st}`;
     if (seen.has(key)) continue;
@@ -274,7 +294,7 @@ function extractSchedules(html: string, sourceUrl: string): Schedule[] {
     if (!dayRaw || !timeRaw) continue;
     const day = normalizeDay(dayRaw);
     if (!day) continue;
-    const st = parseTime24h(timeRaw.trim());
+    const st = parseTimeTo12h(timeRaw.trim());
     if (!st) continue;
     const key = `${day}|${st}`;
     if (seen.has(key)) continue;
@@ -375,6 +395,9 @@ export async function scrapeCharitySchedules(c: Context) {
       scraped: 0,
       skipped: 0,
       inserted: 0,
+      incomplete: 0,
+      deactivated: 0,
+      writeErrors: 0,
       noData: 0,
       errors: [] as Array<{ id: string; name: string; error: string }>,
       results: [] as Array<Record<string, unknown>>,
@@ -442,28 +465,44 @@ export async function scrapeCharitySchedules(c: Context) {
           if (!deduped.has(k)) deduped.set(k, s);
         }
 
+        const scrapeTimestamp = new Date().toISOString();
+
         for (const [, sched] of deduped) {
+          // buy_in / start_time / scrape_html_hash are NOT NULL on
+          // venue_daily_tournaments — an incomplete parse can't be persisted.
+          if (!result.htmlHash || sched.buy_in == null || !sched.start_time) {
+            stats.incomplete++;
+            continue;
+          }
+
+          const gameType = sched.game_type || 'NLH';
           const record = {
             venue_id: venue.id,
             venue_name: venue.name,
+            tournament_name: `$${sched.buy_in} ${gameType}${sched.format ? ` ${sched.format}` : ''}`,
             day_of_week: sched.day_of_week,
-            start_time: sched.start_time || 'TBA',
+            event_date: null, // recurring weekly pattern
+            start_time: sched.start_time,
             buy_in: sched.buy_in,
-            game_type: sched.game_type || 'NLH',
+            game_type: gameType,
             format: sched.format,
             guaranteed: sched.guaranteed,
             source_url: sched.source_url || result.url,
+            last_scraped: scrapeTimestamp,
             is_active: true,
             data_quality: 'scraped_verified',
-            scrape_html_hash: result.htmlHash ?? null,
-            scrape_timestamp: new Date().toISOString(),
+            scrape_html_hash: result.htmlHash,
+            scrape_timestamp: scrapeTimestamp,
             scrape_batch_id: batchId,
             scrape_confidence: 'medium',
           };
 
           const { error: upsertError } = await supabase
             .from('venue_daily_tournaments')
-            .upsert(record, { onConflict: 'venue_id,day_of_week,start_time' });
+            .upsert(record, {
+              onConflict:
+                'venue_id,venue_name,day_of_week,event_date,start_time,buy_in,game_type',
+            });
 
           if (!upsertError) {
             insertedHere++;
@@ -473,6 +512,27 @@ export async function scrapeCharitySchedules(c: Context) {
               `[scrape-charity-schedules] upsert error for ${venue.name}:`,
               upsertError.message,
             );
+            stats.writeErrors++;
+            stats.errors.push({ id: vid, name: venue.name, error: `upsert: ${upsertError.message}` });
+          }
+        }
+
+        // Retire rows this run did not refresh — flag stale, never delete.
+        if (insertedHere > 0) {
+          const { data: staleRows, error: staleError } = await supabase
+            .from('venue_daily_tournaments')
+            .update({ is_active: false, data_quality: 'stale' })
+            .eq('venue_id', venue.id)
+            .eq('is_active', true)
+            .lt('scrape_timestamp', scrapeTimestamp)
+            .select('id');
+          if (staleError) {
+            console.warn(
+              `[scrape-charity-schedules] stale sweep failed for ${venue.name}:`,
+              staleError.message,
+            );
+          } else if (Array.isArray(staleRows)) {
+            stats.deactivated += staleRows.length;
           }
         }
 
@@ -514,6 +574,9 @@ export async function scrapeCharitySchedules(c: Context) {
             skipped_fresh: stats.skipped,
             no_data: stats.noData,
             inserted: stats.inserted,
+            incomplete: stats.incomplete,
+            deactivated: stats.deactivated,
+            write_errors: stats.writeErrors,
             errors: stats.errors.length,
             script: '/cron/scrape-charity-schedules',
           }),
@@ -526,8 +589,12 @@ export async function scrapeCharitySchedules(c: Context) {
       }
     }
 
+    // A run that scraped pages but could not persist a single row is a failure,
+    // not a success — the audit row used to claim records_affected regardless.
+    const writeFailure = stats.writeErrors > 0 && stats.inserted === 0;
+
     return c.json({
-      success: true,
+      success: !writeFailure,
       isDryRun,
       batchId,
       stats: {
@@ -537,6 +604,9 @@ export async function scrapeCharitySchedules(c: Context) {
         skippedFresh: stats.skipped,
         noData: stats.noData,
         inserted: stats.inserted,
+        incomplete: stats.incomplete,
+        deactivated: stats.deactivated,
+        writeErrors: stats.writeErrors,
         errors: stats.errors,
       },
       results: stats.results,

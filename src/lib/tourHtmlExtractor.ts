@@ -115,6 +115,18 @@ function detectEventType(text: string): string {
   return 'side_event';
 }
 
+/**
+ * Builds the game portion of an event name from the matched game token.
+ * Only the bare betting-limit tokens imply Hold'em — appending it
+ * unconditionally produced names like "$1,500 Omaha Hold'em".
+ */
+function composeGameName(token: string): string {
+  const t = (token || '').trim();
+  if (!t) return "Hold'em";
+  if (/^(no-limit|pot-limit|limit)$/i.test(t)) return `${t} Hold'em`;
+  return t;
+}
+
 function dedup(events: HtmlEvent[]): HtmlEvent[] {
   const seen = new Set<string>();
   return events.filter(ev => {
@@ -134,7 +146,7 @@ function parseWsopHtml(html: string): HtmlEvent[] {
   while ((m = wsopEventRe.exec(text)) !== null) {
     const buyIn = parseInt((m[3] ?? '').replace(/,/g, ''), 10);
     if (!buyIn || buyIn < 100 || buyIn > 1_000_000) continue;
-    const rawName = `$${buyIn.toLocaleString()} ${m[4] ?? ''} Hold'em`;
+    const rawName = `$${buyIn.toLocaleString()} ${composeGameName(m[4] ?? '')}`;
     events.push({ event_number: parseInt(m[1] ?? '', 10), date: (m[2] ?? '').trim(), event_name: rawName.substring(0, 120), buy_in: buyIn, guaranteed: null, starting_chips: null, game_type: detectGameType(m[4] ?? ''), event_type: detectEventType(rawName), source: 'wsop_html_parser' });
   }
   if (events.length < 5) {
@@ -142,7 +154,7 @@ function parseWsopHtml(html: string): HtmlEvent[] {
     while ((m = simpleRe.exec(text)) !== null) {
       const buyIn = parseInt((m[1] ?? '').replace(/,/g, ''), 10);
       if (!buyIn || buyIn < 100 || buyIn > 1_000_000) continue;
-      const rawName = `$${buyIn.toLocaleString()} ${m[2] ?? ''} Hold'em`;
+      const rawName = `$${buyIn.toLocaleString()} ${composeGameName(m[2] ?? '')}`;
       events.push({ event_number: null, event_name: rawName.substring(0, 120), buy_in: buyIn, guaranteed: null, starting_chips: null, game_type: detectGameType(m[2] ?? ''), event_type: detectEventType(rawName), source: 'wsop_html_fallback' });
     }
   }
@@ -185,15 +197,13 @@ function parseWsopcHtml(html: string): HtmlEvent[] {
     const eventName = `$${buyIn.toLocaleString()} ${m[2] ?? ''}`.substring(0, 120);
     events.push({ event_number: null, event_name: eventName, buy_in: buyIn, guaranteed: null, starting_chips: null, game_type: detectGameType(m[2] ?? ''), event_type: detectEventType(eventName), source: 'wsopc_html_parser' });
   }
-  if (stops.length > 0 && events.length < 5) {
-    const standardEvents = [
-      { name: 'WSOP Circuit Ring Event #1 - $365 NLH', buy_in: 365 },
-      { name: 'WSOP Circuit Ring Event #2 - $600 NLH Deepstack', buy_in: 600 },
-      { name: 'WSOP Circuit Ring Event #12 - $1,700 NLH Main Event', buy_in: 1700 },
-    ];
-    standardEvents.forEach((ev, i) => {
-      events.push({ event_number: i + 1, event_name: ev.name, buy_in: ev.buy_in, guaranteed: ev.buy_in === 1700 ? 1_000_000 : null, starting_chips: null, game_type: detectGameType(ev.name), event_type: detectEventType(ev.name), source: 'wsopc_template', notes: `Stop: ${stops[0]?.venue ?? 'TBD'} ${stops[0]?.dates ?? ''}` });
-    });
+  // NOTE: a previous version invented three "standard" ring events (including a
+  // fabricated $1,000,000 guarantee) whenever a stop was detected but fewer than
+  // 5 events parsed. That violates the scraped_verified/no-fabricated-data
+  // standard (20260401 integrity layer). Sparse pages now fall through to the
+  // LLM fallback in extractScheduleFromHtml instead.
+  if (stops.length > 0 && events.length === 0) {
+    console.debug(`  [WSOPC] ${stops.length} stop(s) detected but no events parsed — deferring to LLM fallback`);
   }
   return dedup(events);
 }

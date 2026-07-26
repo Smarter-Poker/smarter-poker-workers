@@ -74,6 +74,8 @@ interface Article {
   title: string;
   image: string;
   source: NewsSource;
+  /** ISO publication date from the feed, when the source provides one. */
+  publishedAt?: string | null;
 }
 
 const NEWS_SOURCES: NewsSource[] = [
@@ -637,7 +639,13 @@ async function scrapeRSS(source: NewsSource): Promise<Article[]> {
       if (!image) image = getContextualFallbackImage(title);
 
       if (image && item.link) {
-        articles.push({ url: item.link, title, image, source });
+        const rawDate = item.isoDate ?? item.pubDate ?? null;
+        let publishedAt: string | null = null;
+        if (rawDate) {
+          const parsed = Date.parse(rawDate);
+          if (!Number.isNaN(parsed)) publishedAt = new Date(parsed).toISOString();
+        }
+        articles.push({ url: item.link, title, image, source, publishedAt });
       }
     }
   } catch (err) {
@@ -815,9 +823,13 @@ async function scrapePokerOrg(_html: string, source: NewsSource): Promise<Articl
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
+  // In January the previous month is December of the PREVIOUS year — the old
+  // `${year}-12` pointed at a sitemap that does not exist.
+  const prevMonth = month === 1 ? 12 : month - 1;
+  const prevYear = month === 1 ? year - 1 : year;
   const sitemapUrls = [
     `https://www.poker.org/sitemaps/article-${year}-${month}.xml`,
-    `https://www.poker.org/sitemaps/article-${year}-${month - 1 > 0 ? month - 1 : 12}.xml`,
+    `https://www.poker.org/sitemaps/article-${prevYear}-${prevMonth}.xml`,
   ];
   for (const sitemapUrl of sitemapUrls) {
     if (articles.length >= CONFIG.MAX_ARTICLES_PER_SOURCE) break;
@@ -991,6 +1003,11 @@ async function postToSocialFeed(article: Article, newsPosterId: string | null): 
   if (error) console.warn(`[news-scraper] social post error: ${error.message}`);
 }
 
+/**
+ * Returns the saved row, or null when the upsert was suppressed as a duplicate.
+ * (It used to return `data`, which is a truthy EMPTY array for duplicates —
+ * inflating saved counts and permanently disabling the video fallback.)
+ */
 async function saveArticle(article: Article, newsPosterId: string | null): Promise<unknown> {
   const supabase = getSupabase();
   const slug = article.title
@@ -1015,7 +1032,9 @@ async function saveArticle(article: Article, newsPosterId: string | null): Promi
         is_published: true,
         is_featured: false,
         views: 0,
-        published_at: new Date().toISOString(),
+        // Real publication date when the source gave us one — stamping scrape
+        // time skewed the 3-day archive window.
+        published_at: article.publishedAt ?? new Date().toISOString(),
       },
       { onConflict: 'source_url', ignoreDuplicates: true },
     )
@@ -1033,7 +1052,7 @@ async function saveArticle(article: Article, newsPosterId: string | null): Promi
     await postToSocialFeed(article, newsPosterId);
   }
 
-  return data;
+  return savedArticle;
 }
 
 async function archiveOldArticles(): Promise<number> {

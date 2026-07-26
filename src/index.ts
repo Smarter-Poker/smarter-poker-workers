@@ -200,6 +200,7 @@ app.post('/cron/video-library-purge', videoLibraryPurge);
 app.get('/cron/purge-idempotency-keys', purgeIdempotencyKeys);
 app.post('/cron/purge-idempotency-keys', purgeIdempotencyKeys);
 app.get('/cron/refresh-venue-json', refreshVenueJson);
+app.post('/cron/refresh-venue-json', refreshVenueJson);
 app.get('/cron/content-health-check', contentHealthCheck);
 app.post('/cron/content-health-check', contentHealthCheck);
 app.get('/cron/daily-challenges', dailyChallenges);

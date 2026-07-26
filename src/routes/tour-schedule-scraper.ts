@@ -20,7 +20,7 @@ import {
   extractMsptPdfLinks,
   type PdfEvent,
 } from '../lib/tourPdfExtractor.js';
-import { fetchAndExtract, fetchHtml } from '../lib/tourHtmlExtractor.js';
+import { fetchAndExtract, fetchHtml, type HtmlEvent } from '../lib/tourHtmlExtractor.js';
 import { evaluateAndAlert, alertScraperCritical, type ScraperStats } from '../lib/scraperAlerts.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -28,7 +28,6 @@ const RATE_LIMIT_MS = 5_000;
 const MAX_RETRIES = 3;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_REGRESSION_LOSS = 0.30;
-const CURRENT_YEAR = new Date().getFullYear();
 
 // ─── Supabase ────────────────────────────────────────────────────────────────
 function getSupabase() {
@@ -109,7 +108,12 @@ function verifyPokerContent(html: string): { pass: boolean } {
 function verifyNoRegression(tourCode: string, newEvents: unknown[], registry: Record<string, Record<string, unknown>>): { pass: boolean; reason: string } {
   const existing = registry[tourCode];
   if (!existing) return { pass: true, reason: 'New tour' };
-  const existingCount = ((existing['stops_2026'] as unknown[] | undefined)?.length ?? 0) + ((existing['series_2026'] as unknown[] | undefined)?.length ?? 0);
+  // stops_2026/series_2026 are seeded arrays that this scraper never rewrites, so
+  // fall back to the count the previous run actually persisted — otherwise the
+  // gate compares against permanently stale data.
+  const seededCount = ((existing['stops_2026'] as unknown[] | undefined)?.length ?? 0) + ((existing['series_2026'] as unknown[] | undefined)?.length ?? 0);
+  const lastRunCount = typeof existing['last_scrape_events'] === 'number' ? existing['last_scrape_events'] as number : 0;
+  const existingCount = Math.max(seededCount, lastRunCount);
   if (existingCount === 0) return { pass: true, reason: 'No existing events' };
   if (newEvents.length < existingCount * (1 - MAX_REGRESSION_LOSS)) {
     return { pass: false, reason: `Regression: new=${newEvents.length} vs existing=${existingCount}` };
@@ -129,6 +133,7 @@ interface TourScraperStats extends ScraperStats {
   total_events: number;
   pdf_events_found: number;
   pdf_events_stored: number;
+  html_events_stored: number;
   errors: Array<{ tour?: string; source?: string; url?: string; error: string }>;
   skipped: Array<{ tour: string; reason: string }>;
   failures: Array<{ tour: string; error: string }>;
@@ -172,15 +177,63 @@ async function scrapeTourPdfs(tourCode: string, sources: Record<string, unknown>
 }
 
 // ─── Store PDF events ─────────────────────────────────────────────────────────
-function parseDateToISO(dateStr: string | undefined | null): string | null {
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+function pad2(n: number): string { return String(n).padStart(2, '0'); }
+
+/**
+ * Timezone-safe date parsing.
+ *  - Never routes through a local-time Date + toISOString (that rolls the day
+ *    back one on any server east of UTC).
+ *  - Never blind-appends a module-load-time year: a December scrape of a
+ *    January schedule would be stamped a year in the past. The year is chosen
+ *    per call, rolling forward when the resulting date is >6 months stale.
+ */
+export function parseDateToISO(dateStr: string | undefined | null): string | null {
   if (!dateStr) return null;
-  try {
-    const d = new Date(`${dateStr} ${CURRENT_YEAR}`);
-    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0] ?? null;
-    const d2 = new Date(dateStr);
-    if (!isNaN(d2.getTime())) return d2.toISOString().split('T')[0] ?? null;
-  } catch { /* ignore */ }
-  return null;
+  const raw = String(dateStr).trim();
+  if (!raw) return null;
+
+  // Already ISO (YYYY-MM-DD...) — take the date part verbatim.
+  const isoM = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoM && isoM[1] && isoM[2] && isoM[3]) return `${isoM[1]}-${isoM[2]}-${isoM[3]}`;
+
+  // "Jan 15", "January 15", "Jan 15, 2026", "15 Jan"
+  let month: number | null = null;
+  let day: number | null = null;
+  let year: number | null = null;
+
+  const monthFirst = raw.match(/([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?/);
+  const dayFirst = raw.match(/(\d{1,2})\s+([A-Za-z]{3,9})\.?(?:\s*,?\s*(\d{4}))?/);
+  if (monthFirst && monthFirst[1] && monthFirst[2]) {
+    month = MONTHS[monthFirst[1].slice(0, 3).toLowerCase()] ?? null;
+    day = parseInt(monthFirst[2], 10);
+    year = monthFirst[3] ? parseInt(monthFirst[3], 10) : null;
+  } else if (dayFirst && dayFirst[1] && dayFirst[2]) {
+    month = MONTHS[dayFirst[2].slice(0, 3).toLowerCase()] ?? null;
+    day = parseInt(dayFirst[1], 10);
+    year = dayFirst[3] ? parseInt(dayFirst[3], 10) : null;
+  }
+
+  if (month == null || day == null || day < 1 || day > 31) return null;
+
+  if (year == null) {
+    const now = new Date();
+    year = now.getUTCFullYear();
+    // >6 months in the past → the schedule belongs to next year.
+    const candidate = Date.UTC(year, month - 1, day);
+    if (candidate < now.getTime() - 182 * 24 * 60 * 60 * 1000) year += 1;
+  }
+
+  // Reject impossible calendar days (e.g. a mis-parsed "February 30"): Postgres
+  // rejects them outright, which would fail the whole event upsert.
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
+
+  return `${year}-${pad2(month)}-${pad2(day)}`;
 }
 
 async function storePdfEvents(tourCode: string, pdfEvents: PdfEvent[]): Promise<{ inserted: number; errors: number }> {
@@ -194,6 +247,42 @@ async function storePdfEvents(tourCode: string, pdfEvents: PdfEvent[]): Promise<
       start_time: ev.start_time ?? null, starting_chips: ev.starting_chips ?? null, levels: ev.levels ?? null,
       game_type: ev.game_type || 'NLH', event_type: ev.event_type || 'side_event',
       pdf_source_url: ev.pdf_source_url ?? null, source: ev.source || 'pdf_extraction',
+      scraped_at: new Date().toISOString(),
+    }, { onConflict: 'tour_code,event_name,buy_in', ignoreDuplicates: false });
+    if (error && !error.message?.includes('duplicate') && !error.message?.includes('does not exist')) { errors++; }
+    else if (!error) { inserted++; }
+  }
+  return { inserted, errors };
+}
+
+// ─── Store HTML-extracted events ──────────────────────────────────────────────
+// The HTML pipeline (bespoke parsers + LLM fallback) used to count events and
+// throw them away — nothing reached tour_event_details, so the nationwide search
+// saw zero rows from the primary path. Same upsert shape as storePdfEvents.
+async function storeHtmlEvents(
+  tourCode: string,
+  seriesName: string,
+  htmlEvents: HtmlEvent[],
+): Promise<{ inserted: number; errors: number }> {
+  const sb = getSupabase();
+  let inserted = 0; let errors = 0;
+  for (const ev of htmlEvents) {
+    if (!ev || !ev.event_name) continue;
+    const { error } = await sb.from('tour_event_details').upsert({
+      tour_code: tourCode,
+      series_name: seriesName || null,
+      event_number: ev.event_number ?? null,
+      event_name: ev.event_name,
+      buy_in: ev.buy_in ?? null,
+      guaranteed: ev.guaranteed ?? null,
+      start_date: parseDateToISO(ev.start_date ?? ev.date),
+      start_time: ev.start_time ?? null,
+      starting_chips: ev.starting_chips ?? null,
+      levels: ev.levels ?? null,
+      game_type: ev.game_type || 'NLH',
+      event_type: ev.event_type || 'side_event',
+      source: ev.source || 'html_extraction',
+      pdf_source_url: null,
       scraped_at: new Date().toISOString(),
     }, { onConflict: 'tour_code,event_name,buy_in', ignoreDuplicates: false });
     if (error && !error.message?.includes('duplicate') && !error.message?.includes('does not exist')) { errors++; }
@@ -218,7 +307,7 @@ export async function tourScheduleScraperHandler(c: Context): Promise<Response> 
     const stats: TourScraperStats = {
       success: true, scraper: scraperName, startedAt: new Date().toISOString(),
       tours_scraped: 0, tours_updated: 0, tours_skipped: 0, total_events: 0,
-      pdf_events_found: 0, pdf_events_stored: 0,
+      pdf_events_found: 0, pdf_events_stored: 0, html_events_stored: 0,
       errors: [], skipped: [], failures: [], verification_failures: [],
       results: {}, pdf_results: {},
     };
@@ -254,7 +343,7 @@ export async function tourScheduleScraperHandler(c: Context): Promise<Response> 
               const url = String(cfg['url'] ?? '');
               if (!url) continue;
               try {
-                let extractedEvents: unknown[] = [];
+                let extractedEvents: HtmlEvent[] = [];
                 let html = '';
                 const method = String(cfg['method'] ?? '');
                 if (method === 'html_extract' || method === 'scrapling') {
@@ -272,8 +361,25 @@ export async function tourScheduleScraperHandler(c: Context): Promise<Response> 
                 const v = { l1_response: l1.pass, l2_content: l2.pass, l5_regression: l5.pass, l5_reason: l5.reason };
 
                 if (extractedEvents.length > 0 && l5.pass) {
+                  // Persist the events themselves — counting them is not storing them.
+                  const storedHtml = await storeHtmlEvents(
+                    tourCode,
+                    String(tourSources['tour_name'] ?? tourCode),
+                    extractedEvents,
+                  );
+                  stats.html_events_stored += storedHtml.inserted;
+                  if (storedHtml.errors > 0) {
+                    stats.errors.push({ tour: tourCode, source: sourceName, url, error: `${storedHtml.errors} tour_event_details upserts failed` });
+                  }
+
                   bestResult = { events_found: extractedEvents.length, source: sourceName, verification: v };
-                  await saveRegistryEntry(tourCode, { ...(regEntry ?? {}), last_scraped: new Date().toISOString(), last_scrape_source: sourceName, last_scrape_events: extractedEvents.length });
+                  await saveRegistryEntry(tourCode, {
+                    ...(regEntry ?? {}),
+                    last_scraped: new Date().toISOString(),
+                    last_scrape_source: sourceName,
+                    last_scrape_events: extractedEvents.length,
+                    last_scrape_events_stored: storedHtml.inserted,
+                  });
                   stats.tours_updated++;
                   stats.total_events += extractedEvents.length;
                   break;
@@ -305,13 +411,24 @@ export async function tourScheduleScraperHandler(c: Context): Promise<Response> 
     stats.duration_ms = new Date(stats.finishedAt).getTime() - new Date(stats.startedAt).getTime();
     stats.success = stats.errors.length === 0 || stats.tours_updated > 0;
 
-    // Audit log
-    await getSupabase().from('scraper_runs').insert({
-      scraper_name: scraperName, started_at: stats.startedAt, finished_at: stats.finishedAt,
-      tours_scraped: stats.tours_scraped, tours_updated: stats.tours_updated, total_events: stats.total_events,
-      pdf_events_found: stats.pdf_events_found, errors_count: stats.errors.length,
-      status: stats.success ? 'success' : 'partial', details: JSON.stringify(stats),
+    // Audit log — scraper_runs columns are (source, status, stats, metadata,
+    // started_at, completed_at) + the tour counters added by 20260426.
+    // scraper_name/finished_at/details do NOT exist and made PostgREST reject
+    // (PGRST204) every insert silently.
+    const { error: auditError } = await getSupabase().from('scraper_runs').insert({
+      source: scraperName,
+      status: stats.success ? 'success' : 'partial',
+      stats,
+      metadata: { specific_tour: specificTour ?? null, pdf_only: pdfOnly, duration_ms: stats.duration_ms },
+      started_at: stats.startedAt,
+      completed_at: stats.finishedAt,
+      tours_scraped: stats.tours_scraped,
+      tours_updated: stats.tours_updated,
+      total_events: stats.total_events,
+      pdf_events_found: stats.pdf_events_found,
+      errors_count: stats.errors.length,
     });
+    if (auditError) console.warn('[TOUR SCRAPER] scraper_runs insert failed:', auditError.message);
 
     await evaluateAndAlert(scraperName, stats).catch(() => { /* non-fatal */ });
 
