@@ -34,6 +34,7 @@ interface ScanResult {
   hands_eligible: number;
   payouts_written: number;
   payouts_skipped_existing: number;
+  promo_swept: number;
   errors: string[];
 }
 
@@ -47,6 +48,7 @@ export async function bbjDetect(c: Context) {
     hands_eligible: 0,
     payouts_written: 0,
     payouts_skipped_existing: 0,
+    promo_swept: 0,
     errors: [],
   };
 
@@ -127,6 +129,26 @@ export async function bbjDetect(c: Context) {
     } catch (err) {
       result.errors.push(`hand ${hand.id}: ${(err as Error).message}`);
     }
+  }
+
+  // 6. Sweep accrued BBJ promo into the union promo wallets.
+  //
+  // Contributions land 50/25/25 into main/backup/promo on the pool row, but
+  // promo_balance is only MONEY IN FLIGHT until fn_sweep_bbj_promo_all()
+  // moves it to the union's promo wallet (audit sections 23/29: the one-time
+  // manual sweep moved 47,607.05; pools had re-accrued 3,339.90 within two
+  // days because nothing recurred). The sweep is idempotent, double-entry
+  // ledgered, and cheap (one canonical pool per scope since the 2026-08-17
+  // consolidation), so it rides the same 5-minute cadence as detection.
+  try {
+    const { data: sweep, error: sweepErr } = await supabase.rpc('fn_sweep_bbj_promo_all');
+    if (sweepErr) {
+      result.errors.push(`fn_sweep_bbj_promo_all: ${sweepErr.message}`);
+    } else {
+      result.promo_swept = Number((sweep as Record<string, unknown>)?.total_swept ?? 0);
+    }
+  } catch (err) {
+    result.errors.push(`promo sweep: ${(err as Error).message}`);
   }
 
   return c.json({
