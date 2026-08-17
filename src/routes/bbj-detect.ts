@@ -29,6 +29,23 @@ import { getSupabase } from '../lib/supabase.js';
 
 const SCAN_WINDOW_MIN = 6;       // scan last 6 minutes; 5min cron + 1min jitter
 
+// ── Overlap guard ──────────────────────────────────────────────────────────
+// A full scan takes ~7 minutes against a 5-minute cadence, so before this
+// guard every firing overlapped the previous one: two complete scans (and
+// two promo sweeps) were running at all times. We skip a firing while one
+// is in flight — but a skip stretches the effective cadence past the fixed
+// 6-minute scan window, which would leave hands settled in the gap never
+// scanned. So the window is dynamic: each run scans from the previous run's
+// START (minus 1 min jitter overlap), bounded to 60 min so a long stall
+// can't trigger an unbounded scan. Idempotency (payout-exists skip) makes
+// the widened, overlapping windows safe. A stale-in-flight escape (30 min)
+// keeps a hung run from blocking the detector until restart.
+const SCAN_OVERLAP_MS = 60_000;
+const MAX_CATCHUP_MS = 60 * 60_000;
+const STALE_INFLIGHT_MS = 30 * 60_000;
+let inFlightSinceMs: number | null = null;
+let lastScanStartMs: number | null = null;
+
 interface ScanResult {
   hands_scanned: number;
   hands_eligible: number;
@@ -41,7 +58,19 @@ interface ScanResult {
 export async function bbjDetect(c: Context) {
   const supabase = getSupabase();
   const startedAt = new Date().toISOString();
-  const since = new Date(Date.now() - SCAN_WINDOW_MIN * 60_000).toISOString();
+
+  if (inFlightSinceMs !== null && Date.now() - inFlightSinceMs < STALE_INFLIGHT_MS) {
+    return c.json({ ok: true, skipped: 'overlap', started_at: startedAt });
+  }
+  inFlightSinceMs = Date.now();
+
+  const sinceMs = lastScanStartMs !== null
+    ? Math.max(Date.now() - MAX_CATCHUP_MS, lastScanStartMs - SCAN_OVERLAP_MS)
+    : Date.now() - SCAN_WINDOW_MIN * 60_000;
+  lastScanStartMs = Date.now();
+  const since = new Date(sinceMs).toISOString();
+
+  try {
 
   const result: ScanResult = {
     hands_scanned: 0,
@@ -157,4 +186,8 @@ export async function bbjDetect(c: Context) {
     completed_at: new Date().toISOString(),
     ...result,
   });
+
+  } finally {
+    inFlightSinceMs = null;
+  }
 }
