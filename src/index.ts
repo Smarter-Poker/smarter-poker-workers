@@ -65,6 +65,7 @@ import { horsesSocialFriends } from './routes/horses-social-friends.js';
 import { tourScheduleScraperHandler } from './routes/tour-schedule-scraper.js';
 // Phase X4 — settlement-chain detectors (every 5 / 1 min)
 import { bbjDetect } from './routes/bbj-detect.js';
+import { startCronLogSweeper } from './lib/cronLogSweep.js';
 import { tournamentBountyDetect } from './routes/tournament-bounty-detect.js';
 import { playerStatsRefresh } from './routes/player-stats-refresh.js';
 import { rakebackPeriodSettle } from './routes/rakeback-period-settle.js';
@@ -301,6 +302,8 @@ app.onError((err, c) => {
 const port = Number.parseInt(process.env.PORT ?? '8081', 10);
 serve({ fetch: app.fetch, port, hostname: '0.0.0.0' }, (info) => {
   console.log(`[workers] listening on :${info.port}`);
+  // Reap cron_execution_log rows orphaned as 'running' by container restarts.
+  startCronLogSweeper();
 });
 
 // Graceful shutdown for Docker.

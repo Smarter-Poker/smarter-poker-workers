@@ -5,6 +5,12 @@
 #   bash scripts/deploy-workers.sh              # pull :latest, restart, verify
 #   bash scripts/deploy-workers.sh --release    # trigger release.yml first (so :latest matches HEAD)
 #   bash scripts/deploy-workers.sh --tag v1.2.3 # pull a specific tag instead of :latest
+#   bash scripts/deploy-workers.sh --build-on-server
+#                                               # GHCR-free: git-archive HEAD to the VM,
+#                                               # docker build there, compose up. Works when
+#                                               # the GHCR PAT / registry login is dead
+#                                               # (2026-08-18: both were - this path shipped
+#                                               # 601d951 and e4a3784).
 #
 # Prerequisites (set up by the Phase 2B.1-deploy AG prompt):
 #   SSH key:                ~/.ssh/workers_ed25519
@@ -36,11 +42,13 @@ die() { echo "[deploy-workers] ERROR: $*" >&2; exit "${2:-1}"; }
 # ─── Parse args ────────────────────────────────────────────────────────────────
 
 TRIGGER_RELEASE=0
+BUILD_ON_SERVER=0
 IMAGE_TAG="latest"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --release) TRIGGER_RELEASE=1 ;;
+    --build-on-server) BUILD_ON_SERVER=1 ;;
     --tag) shift; IMAGE_TAG="$1" ;;
     -h|--help) head -30 "$0" | grep -E '^#' | cut -c3-; exit 0 ;;
     *) die "unknown flag: $1" ;;
@@ -56,8 +64,40 @@ SERVER_IP=$(security find-generic-password -a smarter-poker -s workers-server-ip
   || die "Keychain entry 'smarter-poker/workers-server-ip' missing" 1
 SERVER_ID=$(security find-generic-password -a smarter-poker -s workers-server-id -w 2>/dev/null || echo "")
 
+# ─── GHCR-free path: build the image ON the VM from a git archive ─────────────
+# No GH_PAT, no registry pull. The VM builds HEAD's exact tree and tags it as
+# the compose image name, so `docker compose up` uses the local image.
+if [ "$BUILD_ON_SERVER" = "1" ]; then
+  SHA=$(git rev-parse --short=11 HEAD)
+  log "Build-on-server: shipping tree $SHA to $SERVER_IP..."
+  TARBALL=$(mktemp /tmp/workers-archive-XXXXXX.tar)
+  git archive --format=tar HEAD > "$TARBALL"
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "root@$SERVER_IP" \
+    'rm -rf /opt/workers-build && mkdir -p /opt/workers-build && tar -x -C /opt/workers-build' < "$TARBALL"
+  rm -f "$TARBALL"
+  log "Building on VM (this takes ~1-2 min)..."
+  ssh -i "$SSH_KEY" "root@$SERVER_IP" \
+    "cd /opt/workers-build && docker build --label org.opencontainers.image.revision=$SHA -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -30 /tmp/workers-build.log; exit 2; }" \
+    || die "on-server docker build failed (see /tmp/workers-build.log on the VM)" 2
+  ssh -i "$SSH_KEY" "root@$SERVER_IP" \
+    "cd /opt/workers && sudo -u workers docker compose up -d --no-build && sleep 5 && docker inspect --format 'rev={{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE_NAME | head -1)"
+  log "Probing /health..."
+  for i in 1 2 3 4 5 6; do
+    HEALTH=$(ssh -i "$SSH_KEY" "root@$SERVER_IP" 'curl -fsS -m 3 http://127.0.0.1:8081/health 2>/dev/null || echo ""')
+    if echo "$HEALTH" | grep -q '"status":"ok"'; then
+      log "health OK"
+      log "✓ Build-on-server deploy complete (rev $SHA)."
+      exit 0
+    fi
+    log "[$i/6] /health not ready, sleeping 5s..."
+    sleep 5
+  done
+  ssh -i "$SSH_KEY" "root@$SERVER_IP" "docker logs $SERVICE_NAME --tail 80 2>&1 || true"
+  die "/health never returned 200 after 30s" 3
+fi
+
 GH_PAT=$(security find-generic-password -a smarter-poker -s github-pat-ghcr-read -w 2>/dev/null) \
-  || die "Keychain entry 'smarter-poker/github-pat-ghcr-read' missing (PAT with read:packages scope)" 1
+  || die "Keychain entry 'smarter-poker/github-pat-ghcr-read' missing (PAT with read:packages scope). GHCR path is DEAD as of 2026-08-18 (401) - use --build-on-server, or rotate the PAT + docker login on the VM to restore this path" 1
 
 log "Target:     $SERVER_IP (id=${SERVER_ID:-unknown})"
 log "Image tag:  $IMAGE_TAG"
