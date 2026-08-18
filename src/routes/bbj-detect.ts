@@ -81,84 +81,23 @@ export async function bbjDetect(c: Context) {
     errors: [],
   };
 
-  // 1. Pull recently-settled hands
-  const { data: hands, error: handsErr } = await supabase
-    .from('hand_history')
-    .select('id, table_id, ended_at')
-    .gte('created_at', since)
-    .not('ended_at', 'is', null);
-
-  if (handsErr) {
-    result.errors.push(`hand_history scan: ${handsErr.message}`);
-    return c.json({ ok: false, started_at: startedAt, ...result }, 500);
-  }
-
-  result.hands_scanned = hands?.length ?? 0;
-
-  for (const hand of hands ?? []) {
-    try {
-      // 2. Skip if a payout already exists for this hand
-      const { data: existing } = await supabase
-        .from('bbj_payouts')
-        .select('id')
-        .eq('hand_id', hand.id)
-        .maybeSingle();
-
-      if (existing?.id) {
-        result.payouts_skipped_existing += 1;
-        continue;
-      }
-
-      // 3. Ask the SQL detector
-      const { data: eligibility, error: eligErr } = await supabase.rpc(
-        'fn_bbj_check_eligible',
-        { p_hand_id: hand.id },
-      );
-      if (eligErr) {
-        result.errors.push(`fn_bbj_check_eligible(${hand.id}): ${eligErr.message}`);
-        continue;
-      }
-      if (!eligibility?.eligible) continue;
-
-      result.hands_eligible += 1;
-
-      const winnerId = eligibility.winner_user_id as string | null;
-      const loserId  = eligibility.loser_user_id  as string | null;
-      const poolId   = eligibility.pool_id        as string | null;
-      const tableId  = (eligibility.table_id ?? hand.table_id) as string | null;
-      if (!winnerId || !loserId || !poolId || !tableId) continue;
-
-      // 4. Resolve currently-seated players at the table (excluding winner+loser)
-      const { data: seats } = await supabase
-        .from('table_seats')
-        .select('user_id')
-        .eq('table_id', tableId)
-        .not('user_id', 'is', null);
-
-      const tablePlayerIds = (seats ?? [])
-        .map((s) => s.user_id as string)
-        .filter((id) => id && id !== winnerId && id !== loserId);
-
-      // 5. Write the payout atomically via RPC
-      const { error: payoutErr } = await supabase.rpc('fn_bbj_payout', {
-        p_pool_id: poolId,
-        p_hand_id: hand.id,
-        p_table_id: tableId,
-        p_winner_user_id: winnerId,
-        p_loser_user_id: loserId,
-        p_table_player_ids: tablePlayerIds,
-      });
-
-      if (payoutErr) {
-        result.errors.push(`fn_bbj_payout(${hand.id}): ${payoutErr.message}`);
-        continue;
-      }
-
-      result.payouts_written += 1;
-    } catch (err) {
-      result.errors.push(`hand ${hand.id}: ${(err as Error).message}`);
-    }
-  }
+  // ── Steps 1-5 RETIRED (BBJ audit 2026-08-18, WH audit §40) ──────────────
+  //
+  // This cron used to scan every settled hand and drive a PARALLEL payout
+  // path (fn_bbj_check_eligible + fn_bbj_payout). The audit found that path
+  // was a second, WRONG implementation: the eligibility fn matched a field
+  // the engine never writes (so it was inert), and had it ever matched it
+  // would have paid the QUAD-ACES HOLDER without checking they lost, with
+  // no qualifications, no idempotency, wallet credits instead of table
+  // stacks, and a backwards 50% split. The engine's settlement path
+  // (detectBBJHit + bbj_atomic_payout_v2) is the sole detector/payer -
+  // 39/39 live payouts clean - and both DB functions are now retired
+  // server-side (they refuse, probed).
+  //
+  // Removing the scan also cuts this cron from ~413s (one RPC per settled
+  // hand, ~2,000 hands per window) to ~1s: the run no longer outlives its
+  // 5-minute cadence, so the overlap guard's skip-every-other-firing
+  // steady state disappears and the promo sweep truly runs every 5 minutes.
 
   // 6. Sweep accrued BBJ promo into the union promo wallets.
   //
