@@ -133,11 +133,15 @@ export async function solverWatchdog(c: Context) {
 
     // Record into the EXISTING cron health surface, keyed on the unique
     // cron_name so this row is a current-state indicator, not an append log.
+    // cron_health_log_last_status_check allows only success|error|timeout, so
+    // the health verdict maps onto that vocabulary rather than inventing one.
+    // 'error' here means "the solver fleet is unhealthy", not "this route
+    // failed" - error_message carries the specifics.
     const { error: upsertErr } = await supabase.from('cron_health_log').upsert(
       {
         cron_name: 'solver-watchdog',
         last_run_at: new Date().toISOString(),
-        last_status: health.status,
+        last_status: health.status === 'ok' ? 'success' : 'error',
         last_duration_ms: elapsed,
         error_message: health.problems.length > 0 ? health.problems.join('; ') : null,
         metadata: health as unknown as Record<string, unknown>,
@@ -145,7 +149,16 @@ export async function solverWatchdog(c: Context) {
       { onConflict: 'cron_name' },
     );
     if (upsertErr) {
+      // FAIL, do not warn-and-continue. The first cut of this route swallowed
+      // exactly this error: it returned 200 with a correct verdict while
+      // writing nothing, so the stall stayed invisible and the watchdog looked
+      // healthy. A monitor whose recording leg can fail silently is not a
+      // monitor - which is the whole defect this route exists to fix.
       console.warn('[solver-watchdog] cron_health_log upsert failed:', upsertErr.message);
+      return c.json(
+        { error: `health recorded nowhere: ${upsertErr.message}`, health },
+        500,
+      );
     }
 
     if (health.status === 'warn') {
