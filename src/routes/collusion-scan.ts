@@ -412,8 +412,47 @@ export async function collusionScan(c: Context) {
       ...scanWinRateAnomaly(handsRows),
     ];
 
+    // ── Exclude horse-vs-horse pairs ──────────────────────────────────────
+    // Horses are house-run AI. Two of them cannot collude in the sense this
+    // detector exists to catch, and including them destroyed the signal:
+    // 169,519 of the 169,523 rows ever written were horse-vs-horse, 99.99% of
+    // them WIN_RATE_ANOMALY at an average suspicion_score of 97 - and not one
+    // row in four months was ever reviewed.
+    //
+    // Why it saturates: WIN_RATE_ANOMALY flags any pair with >=30 shared hands
+    // and |bb/100| >= 80. Attributing a whole multiway pot delta to two named
+    // players is extremely noisy, so across a field of horses grinding
+    // thousands of hands essentially every pair crosses that line. It had
+    // flagged 81,301 distinct pairs drawn from just 573 players - roughly half
+    // of every pairing that exists. The one human ever caught had played 6
+    // hands total.
+    //
+    // Only BOTH-horse pairs are dropped. A horse/human pair is retained, so a
+    // horse leaking chips to a human still surfaces.
+    const findingIds = Array.from(new Set(findings.flatMap((f) => [f.player_a, f.player_b])));
+    const horseIds = new Set<string>();
+    if (findingIds.length > 0) {
+      const { data: horseRows, error: horseErr } = await supabase
+        .from('profiles')
+        .select('id')
+        .in('id', findingIds)
+        .eq('is_horse', true);
+      if (horseErr) {
+        // Fail the scan rather than fall back to the old behaviour. Falling
+        // back would quietly resume writing ~170k horse-vs-horse rows, which
+        // is the exact failure being fixed.
+        console.warn('[collusion-scan] horse lookup failed:', horseErr.message);
+        return c.json({ error: `horse lookup failed: ${horseErr.message}` }, 500);
+      }
+      for (const r of horseRows ?? []) horseIds.add((r as { id: string }).id);
+    }
+    const humanFindings = findings.filter(
+      (f) => !(horseIds.has(f.player_a) && horseIds.has(f.player_b)),
+    );
+    const suppressedHorsePairs = findings.length - humanFindings.length;
+
     const scan_date = windowEnd.toISOString().split('T')[0]!;
-    const rows = findings.map((f) => ({
+    const rows = humanFindings.map((f) => ({
       ...f,
       scan_date,
       window_start: windowStart.toISOString(),
@@ -439,6 +478,8 @@ export async function collusionScan(c: Context) {
       scanned_hands: handsRows.length,
       scanned_actions: actionRows.length,
       findings: findings.length,
+      findings_after_horse_filter: humanFindings.length,
+      suppressed_horse_pairs: suppressedHorsePairs,
       inserted,
       window: {
         start: windowStart.toISOString(),
