@@ -82,19 +82,6 @@ interface Results {
   fatal_error?: string;
 }
 
-/**
- * Most recent Monday 00:00 UTC — the canonical weekly period boundary, the
- * same convention union-rakeback.ts uses (lastMondayUtc). The union player
- * P&L window must be deterministic so a replay settles the same period and
- * the idempotency key on (union_id, period_start) actually holds.
- */
-function lastMondayUtcStart(from: Date = new Date()): Date {
-  const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-  const dow = d.getUTCDay(); // 0=Sun, 1=Mon
-  const back = dow === 0 ? 6 : dow - 1;
-  d.setUTCDate(d.getUTCDate() - back);
-  return d;
-}
 
 async function sendSettlementMessages(
   supabase: SupabaseClient,
@@ -207,13 +194,6 @@ export async function autoSettlement(c: Context) {
     errors: [],
   };
 
-  // Weekly window for the union player-P&L phase: previous Monday -> this
-  // Monday, both 00:00 UTC. Fixed timestamps (not "now") so the settlement is
-  // replay-safe and idempotent.
-  const periodEndDate = lastMondayUtcStart();
-  const periodStartDate = new Date(periodEndDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const periodStart = periodStartDate.toISOString();
-  const periodEnd = periodEndDate.toISOString();
 
   try {
     // ═══ PHASE 1: FREEZE ALL CLUBS ═══
@@ -822,18 +802,30 @@ export async function autoSettlement(c: Context) {
 
       for (const u of unionRows ?? []) {
         try {
+          // Self-chaining window: settles from the END of the last settled
+          // period to now. Two reasons over a fixed Monday-to-Monday window:
+          //   - no gap. A fixed window loses every flow that lands between one
+          //     period's end and the next period's start.
+          //   - the closing seated stack is measured at the same instant it is
+          //     recorded as the next period's opening baseline. A job running
+          //     Monday 10:00 for a window ending Monday 00:00 mis-stated every
+          //     club's stack by 10 hours of play.
+          // Skips automatically if too little time has passed (double-run).
           const { data: pnlRes, error: pnlErr } = await supabase.rpc(
-            'fn_union_settle_player_pnl_guarded',
-            {
-              p_union_id: (u as any).id,
-              p_start: periodStart,
-              p_end: periodEnd,
-            },
+            'fn_union_settle_player_pnl_weekly',
+            { p_union_id: (u as any).id },
           );
           if (pnlErr) throw pnlErr;
 
           const res = pnlRes as any;
-          if (res?.already_settled) {
+          if (res?.skipped) {
+            results.union_pnl.push({
+              union: (u as any).name,
+              status: 'skipped',
+              reason: res.reason,
+              hours: res.hours,
+            });
+          } else if (res?.already_settled) {
             results.union_pnl.push({ union: (u as any).name, status: 'already_settled' });
           } else if (res?.needs_review) {
             // Books did not balance — no chips moved, on purpose.
