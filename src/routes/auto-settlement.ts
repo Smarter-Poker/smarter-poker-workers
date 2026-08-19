@@ -178,6 +178,59 @@ async function sendSettlementMessages(
   }
 }
 
+/**
+ * Tell the union's owner and admins when a weekly player-P&L run did not
+ * settle. Without this the only record is `results.errors` in the cron's HTTP
+ * response — which goes to the Open Claw dispatcher and is read by nobody. A
+ * settlement that silently declines to pay is indistinguishable from one that
+ * paid, which defeats the point of having a guard at all.
+ */
+async function notifyUnionSettlementProblem(
+  supabase: SupabaseClient,
+  unionId: string,
+  unionName: string | null,
+  title: string,
+  message: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const recipients = new Set<string>();
+
+    const { data: unionRow } = await supabase
+      .from('unions')
+      .select('owner_id')
+      .eq('id', unionId)
+      .maybeSingle();
+    if ((unionRow as any)?.owner_id) recipients.add((unionRow as any).owner_id);
+
+    const { data: admins } = await supabase
+      .from('union_admins')
+      .select('user_id')
+      .eq('union_id', unionId);
+    for (const a of admins ?? []) {
+      if ((a as any)?.user_id) recipients.add((a as any).user_id);
+    }
+
+    if (recipients.size === 0) return;
+
+    await supabase.from('notifications').insert(
+      [...recipients].map((uid) => ({
+        user_id: uid,
+        type: 'settlement',
+        title,
+        message,
+        data: { union_id: unionId, union_name: unionName, ...data },
+        read: false,
+      })),
+    );
+  } catch (err) {
+    console.warn(
+      '[auto-settlement] union settlement alert failed:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 export async function autoSettlement(c: Context) {
   const supabase = getSupabase();
   const startTime = Date.now();
@@ -838,8 +891,19 @@ export async function autoSettlement(c: Context) {
             results.errors.push({
               club: (u as any).name,
               phase: 'union_player_pnl',
-              error: `P&L did not net to zero (imbalance ${res.imbalance}, tolerance ${res.tolerance}) — no chips moved`,
+              error: `P&L parked for review (${res.reason ?? 'unknown'}) — no chips moved`,
             });
+            await notifyUnionSettlementProblem(
+              supabase,
+              (u as any).id,
+              (u as any).name,
+              'Weekly player P&L needs review',
+              `This week's club/union player win-loss settlement was NOT paid. `
+                + `Reason: ${res.reason ?? 'unknown'}. `
+                + `${res.message ?? ''} No chips were moved. `
+                + `Review it on the union dashboard, then it can be re-run for this period.`,
+              { reason: res.reason, settlement_id: res.settlement_id, needs_review: true },
+            );
           } else {
             results.union_pnl.push({
               union: (u as any).name,
@@ -850,11 +914,21 @@ export async function autoSettlement(c: Context) {
             });
           }
         } catch (unionErr) {
+          const msg = unionErr instanceof Error ? unionErr.message : String(unionErr);
           results.errors.push({
             club: (u as any).name,
             phase: 'union_player_pnl',
-            error: unionErr instanceof Error ? unionErr.message : String(unionErr),
+            error: msg,
           });
+          await notifyUnionSettlementProblem(
+            supabase,
+            (u as any).id,
+            (u as any).name,
+            'Weekly player P&L failed',
+            `This week's club/union player win-loss settlement did not run: ${msg}. `
+              + `No chips were moved.`,
+            { error: msg, failed: true },
+          );
         }
       }
     } catch (pnlPhaseErr) {
