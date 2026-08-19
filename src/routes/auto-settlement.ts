@@ -77,6 +77,8 @@ interface Results {
   periods_opened: number;
   /** Per-union weekly player win/loss settlement (added 2026-08-19). */
   union_pnl: Array<Record<string, unknown>>;
+  /** Broken union governance invariants, if any (added 2026-08-19). */
+  governance: Array<Record<string, unknown>>;
   errors: Array<Record<string, unknown>>;
   duration_ms?: number;
   fatal_error?: string;
@@ -244,6 +246,7 @@ export async function autoSettlement(c: Context) {
     messages_sent: 0,
     periods_opened: 0,
     union_pnl: [],
+    governance: [],
     errors: [],
   };
 
@@ -935,6 +938,61 @@ export async function autoSettlement(c: Context) {
       results.errors.push({
         phase: 'union_player_pnl',
         error: pnlPhaseErr instanceof Error ? pnlPhaseErr.message : String(pnlPhaseErr),
+      });
+    }
+
+    // ═══ PHASE 8: UNION GOVERNANCE INVARIANTS (added 2026-08-19) ═══
+    // Every rule this project enforces fails SILENTLY — as data drift, not as
+    // a build error — so no code-level CI gate can see it. These invariants
+    // were being checked by hand with ad-hoc SQL, which does not survive a
+    // busy repo. fn_union_governance_check() states them once and returns one
+    // row per BROKEN invariant; an empty result is a healthy system.
+    results.phase = 'union_governance_check';
+    try {
+      const { data: violations, error: checkErr } = await supabase.rpc(
+        'fn_union_governance_check',
+      );
+      if (checkErr) throw checkErr;
+
+      const rows = (violations ?? []) as Array<{
+        invariant: string;
+        severity: string;
+        offenders: number;
+        detail: string;
+      }>;
+      results.governance = rows;
+
+      const critical = rows.filter((v) => v.severity === 'critical');
+      if (rows.length > 0) {
+        for (const v of rows) {
+          results.errors.push({
+            phase: 'union_governance_check',
+            error: `${v.severity.toUpperCase()} ${v.invariant}: ${v.detail} (${v.offenders})`,
+          });
+        }
+      }
+
+      // Only page a human for critical breaks — a warning is a nudge, a
+      // critical is the hard rule itself being violated in live data.
+      if (critical.length > 0) {
+        const { data: unionRows } = await supabase.from('unions').select('id, name');
+        for (const u of unionRows ?? []) {
+          await notifyUnionSettlementProblem(
+            supabase,
+            (u as any).id,
+            (u as any).name,
+            'Union rule violation detected',
+            critical
+              .map((v) => `${v.invariant}: ${v.detail} (${v.offenders} affected)`)
+              .join(' | '),
+            { violations: critical, governance_check: true },
+          );
+        }
+      }
+    } catch (govErr) {
+      results.errors.push({
+        phase: 'union_governance_check',
+        error: govErr instanceof Error ? govErr.message : String(govErr),
       });
     }
 
