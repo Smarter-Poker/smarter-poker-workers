@@ -87,12 +87,34 @@ export async function unionRakeback(c: Context) {
   };
 
   try {
-    const { data: unionsData } = await supabase
-      .from('unions')
-      .select('id, name, rake_wallet, settings')
+    // MONEY BUG FIX 2026-08-19: this read `unions.rake_wallet`, which is a
+    // dead legacy column — every row is 0. The live balance lives in
+    // `union_wallets.rake_wallet` (the same table `fn_union_debit_wallet`
+    // below already debits). So the filter `.gt('rake_wallet', 0)` matched
+    // NOTHING and this job returned "No unions with rake balance" every week:
+    // the weekly 90% rakeback has never actually paid a club, while the rake
+    // kept accumulating (470k+ found stranded in the union wallet).
+    // Read the balance from union_wallets, which is the source of truth.
+    const { data: walletRows, error: walletErr } = await supabase
+      .from('union_wallets')
+      .select('union_id, rake_wallet, unions!inner(id, name, settings)')
       .gt('rake_wallet', 0);
 
-    const unions = (unionsData ?? []) as Union[];
+    if (walletErr) {
+      // Fail loudly: a silent empty result here is exactly how this bug hid.
+      return c.json(
+        { success: false, error: `union_wallets read failed: ${walletErr.message}`, results },
+        500,
+      );
+    }
+
+    const unions: Union[] = (walletRows ?? []).map((row: any) => ({
+      id: row.union_id,
+      name: row.unions?.name ?? null,
+      rake_wallet: Number(row.rake_wallet ?? 0),
+      settings: row.unions?.settings ?? null,
+    }));
+
     if (unions.length === 0) {
       return c.json({ success: true, message: 'No unions with rake balance', results });
     }

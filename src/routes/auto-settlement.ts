@@ -75,9 +75,25 @@ interface Results {
   commissions_distributed: number;
   messages_sent: number;
   periods_opened: number;
+  /** Per-union weekly player win/loss settlement (added 2026-08-19). */
+  union_pnl: Array<Record<string, unknown>>;
   errors: Array<Record<string, unknown>>;
   duration_ms?: number;
   fatal_error?: string;
+}
+
+/**
+ * Most recent Monday 00:00 UTC — the canonical weekly period boundary, the
+ * same convention union-rakeback.ts uses (lastMondayUtc). The union player
+ * P&L window must be deterministic so a replay settles the same period and
+ * the idempotency key on (union_id, period_start) actually holds.
+ */
+function lastMondayUtcStart(from: Date = new Date()): Date {
+  const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
+  const dow = d.getUTCDay(); // 0=Sun, 1=Mon
+  const back = dow === 0 ? 6 : dow - 1;
+  d.setUTCDate(d.getUTCDate() - back);
+  return d;
 }
 
 async function sendSettlementMessages(
@@ -187,8 +203,17 @@ export async function autoSettlement(c: Context) {
     commissions_distributed: 0,
     messages_sent: 0,
     periods_opened: 0,
+    union_pnl: [],
     errors: [],
   };
+
+  // Weekly window for the union player-P&L phase: previous Monday -> this
+  // Monday, both 00:00 UTC. Fixed timestamps (not "now") so the settlement is
+  // replay-safe and idempotent.
+  const periodEndDate = lastMondayUtcStart();
+  const periodStartDate = new Date(periodEndDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const periodStart = periodStartDate.toISOString();
+  const periodEnd = periodEndDate.toISOString();
 
   try {
     // ═══ PHASE 1: FREEZE ALL CLUBS ═══
@@ -350,6 +375,37 @@ export async function autoSettlement(c: Context) {
               error: holdDebitErr.message,
             });
           } else {
+            // CONSERVATION FIX 2026-08-19: the treasury was debited but the
+            // union wallet was NEVER credited, so every weekly union hold
+            // destroyed chips instead of moving them. (The World Hub path
+            // already did this correctly via fn_union_credit_wallet, with a
+            // treasury refund on failure — mirrored here.)
+            const { error: holdCreditErr } = await supabase.rpc('fn_union_credit_wallet', {
+              p_union_id: unionId,
+              p_wallet: 'rake_wallet',
+              p_amount: unionHoldAmount,
+              p_tx_type: 'settlement_hold',
+              p_club_id: club.id,
+              p_period_id: openPeriod.id,
+            });
+            if (holdCreditErr) {
+              console.warn(
+                `[auto-settlement] Union hold credit failed for ${club.name}, refunding treasury:`,
+                holdCreditErr.message,
+              );
+              const { error: refundErr } = await supabase.rpc('fn_credit_treasury', {
+                p_club_id: club.id,
+                p_amount: unionHoldAmount,
+              });
+              results.errors.push({
+                club: club.name,
+                phase: 'union_hold_credit',
+                error: holdCreditErr.message,
+                refunded: !refundErr,
+                ...(refundErr ? { refund_error: refundErr.message } : {}),
+              });
+            }
+
             await supabase.from('chip_transactions').insert({
               club_id: club.id,
               from_user_id: null,
@@ -743,6 +799,77 @@ export async function autoSettlement(c: Context) {
           error: clubErr instanceof Error ? clubErr.message : String(clubErr),
         });
       }
+    }
+
+    // ═══ PHASE 7: UNION PLAYER P&L (added 2026-08-19) ═══
+    // Dan's rule: inside a union, players are merged and play each other, so
+    // wins/losses are tracked per player and the club and union square up
+    // weekly for whatever balances are owed. This runs ONCE PER UNION (not
+    // per club) because the settlement is a zero-sum transfer between the
+    // member clubs — losers must be collected from before winners are paid,
+    // which is only possible union-wide.
+    //
+    // fn_union_settle_player_pnl_guarded does the whole thing in one
+    // transaction and REFUSES to move chips unless the club nets prove
+    // zero-sum within tolerance (recording the run as 'needs_review'
+    // instead). It is idempotent on (union_id, period_start).
+    results.phase = 'union_player_pnl';
+    try {
+      const { data: unionRows, error: unionListErr } = await supabase
+        .from('unions')
+        .select('id, name');
+      if (unionListErr) throw unionListErr;
+
+      for (const u of unionRows ?? []) {
+        try {
+          const { data: pnlRes, error: pnlErr } = await supabase.rpc(
+            'fn_union_settle_player_pnl_guarded',
+            {
+              p_union_id: (u as any).id,
+              p_start: periodStart,
+              p_end: periodEnd,
+            },
+          );
+          if (pnlErr) throw pnlErr;
+
+          const res = pnlRes as any;
+          if (res?.already_settled) {
+            results.union_pnl.push({ union: (u as any).name, status: 'already_settled' });
+          } else if (res?.needs_review) {
+            // Books did not balance — no chips moved, on purpose.
+            results.union_pnl.push({
+              union: (u as any).name,
+              status: 'needs_review',
+              imbalance: res.imbalance,
+              tolerance: res.tolerance,
+            });
+            results.errors.push({
+              club: (u as any).name,
+              phase: 'union_player_pnl',
+              error: `P&L did not net to zero (imbalance ${res.imbalance}, tolerance ${res.tolerance}) — no chips moved`,
+            });
+          } else {
+            results.union_pnl.push({
+              union: (u as any).name,
+              status: 'settled',
+              collected: res?.total_collected,
+              paid: res?.total_paid,
+              unpaid: res?.total_unpaid,
+            });
+          }
+        } catch (unionErr) {
+          results.errors.push({
+            club: (u as any).name,
+            phase: 'union_player_pnl',
+            error: unionErr instanceof Error ? unionErr.message : String(unionErr),
+          });
+        }
+      }
+    } catch (pnlPhaseErr) {
+      results.errors.push({
+        phase: 'union_player_pnl',
+        error: pnlPhaseErr instanceof Error ? pnlPhaseErr.message : String(pnlPhaseErr),
+      });
     }
 
     results.phase = 'complete';
