@@ -960,6 +960,33 @@ export async function autoSettlement(c: Context) {
         offenders: number;
         detail: string;
       }>;
+      // Settlement flows are double-entry by construction, so unlike the
+      // platform-wide supply (which chip_supply_snapshots already tracks
+      // hourly and cannot fully explain), they can be asserted exactly. This
+      // is the check that would have caught the union hold destroying chips.
+      const { data: conservation, error: consErr } = await supabase.rpc(
+        'fn_settlement_conservation_check',
+      );
+      if (consErr) {
+        results.errors.push({
+          phase: 'union_governance_check',
+          error: `conservation check failed to run: ${consErr.message}`,
+        });
+      } else {
+        for (const c of (conservation ?? []) as Array<{
+          issue: string;
+          severity: string;
+          detail: string;
+        }>) {
+          rows.push({
+            invariant: c.issue,
+            severity: c.severity,
+            offenders: 1,
+            detail: c.detail,
+          });
+        }
+      }
+
       results.governance = rows;
 
       const critical = rows.filter((v) => v.severity === 'critical');
