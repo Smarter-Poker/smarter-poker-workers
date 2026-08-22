@@ -85,7 +85,14 @@ echo "report-stuck-prs: scanning $REPO (stuck after ${STUCK_AFTER_H}h)"
 #
 # The plain list endpoint is not an index. It is current.
 find_issue() {
-  gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+  # SAME TOKEN AS THE WRITE, and that is not a tidiness point. This read used
+  # plain $GH_TOKEN - the App installation token - while the write used
+  # GH_TOKEN_ISSUES. The App has no issues scope here, so the read returned
+  # nothing every time, the guard concluded there was no existing issue, and
+  # filed another one. World Hub #633, #637, #638 and PepNationLab #79, #81,
+  # #83 are that bug: a read and a write that disagreed about who they were.
+  GH_TOKEN="${GH_TOKEN_ISSUES:-${GH_TOKEN:-}}" \
+  gh issue list --repo "${REPO:-$GITHUB_REPOSITORY}" --state open --limit 100 --json number,title \
     --jq "[.[] | select(.title == \"$1\")] | .[0].number // empty" 2>/dev/null
 }
 
