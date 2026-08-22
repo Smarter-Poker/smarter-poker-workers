@@ -51,7 +51,15 @@ jobs:
   # ── Fast path: a PR just appeared or was updated ──────────────────────────
   queue-pr:
     name: Queue this PR for auto-merge
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    # Dependabot is excluded on purpose. GitHub deliberately withholds normal
+    # repo secrets from dependabot-triggered events, so GH_PAT is empty here and
+    # the job can only fall back to GITHUB_TOKEN. Rather than half-work and go
+    # red on every dependency bump, we let the sweep pick these up on its next
+    # pass, where the PAT is present.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
+      && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
