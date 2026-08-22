@@ -1,0 +1,80 @@
+#!/bin/bash
+# THE ONLY HOOK THAT FIRES BEFORE `git reset --hard origin/main` LANDS.
+#
+# Antigravity runs that reset on a background schedule to sync the tree. For
+# uncommitted files that is intended. For LOCAL COMMITS it is destruction, and
+# once the reflog ages out they are unrecoverable. It took the trivia phase-4
+# audit doc and the [mode].js edits on 2026-08-12.
+#
+# git has no `pre-reset` hook — the file of that name in some of these clones
+# has never once run — and `post-checkout` fires after the damage.
+# `reference-transaction` fires on "prepared", before any ref update is
+# committed to disk, and returning non-zero aborts the whole transaction.
+#
+# This version differs from the untracked one it replaces in three ways, each
+# of which had to change before it could be tracked and rolled to every repo:
+#
+#   1. IT SAVES BEFORE IT REFUSES. The commits about to be orphaned are written
+#      to refs/wip/orphan-guard/<stamp> first. A ref is not reachable from any
+#      branch but it is not garbage either, so even an override or a --no-verify
+#      now leaves the work recoverable. Blocking and saving are different jobs
+#      and only one of them was being done.
+#   2. IT HAS AN ESCAPE HATCH. scripts/agent-workspace.sh legitimately runs
+#      `git checkout -B <branch> origin/main`, which moves a ref backwards on
+#      purpose. Without AGENT_REF_GUARD_OK=1 this hook would wedge the one
+#      command every agent is told to start with.
+#   3. IT IS TRACKED. The version this replaces lives in .git/hooks/, which is
+#      untracked — so ten days of protection covered exactly one machine and
+#      died on every fresh clone.
+#
+# stdin is one line per ref update:  <old> SP <new> SP <ref-name> LF
+STATE="$1"
+[ "$STATE" = "prepared" ] || exit 0
+
+# Deliberate, announced ref rewinds. Set by scripts/agent-workspace.sh and
+# scripts/git-safe-push.sh, which move refs backwards as part of their job.
+[ "${AGENT_REF_GUARD_OK:-}" = "1" ] && exit 0
+[ -n "${CI:-}${GITHUB_ACTIONS:-}" ] && exit 0
+
+ZERO=0000000000000000000000000000000000000000
+
+while read -r OLD NEW REF; do
+    case "$REF" in
+        HEAD|refs/heads/main|refs/heads/master) ;;
+        *) continue ;;
+    esac
+    [ "$OLD" = "$ZERO" ] && continue
+    [ "$NEW" = "$ZERO" ] && continue
+    [ "$OLD" = "$NEW" ]  && continue
+
+    # Commits reachable from OLD but not NEW: exactly what this update destroys.
+    ORPHANED=$(git log "$NEW..$OLD" --oneline 2>/dev/null | head -20)
+    [ -n "$ORPHANED" ] || continue
+
+    # SAVE FIRST. update-ref inside a reference-transaction hook is a separate
+    # transaction and does not recurse into this hook for refs/wip/*, because
+    # the loop above only inspects HEAD and main.
+    STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+    SNAP="refs/wip/orphan-guard/${STAMP}"
+    git update-ref "$SNAP" "$OLD" 2>/dev/null
+
+    {
+      echo ""
+      echo "  BLOCKED: this ref update would orphan local commits."
+      echo ""
+      echo "$ORPHANED" | sed 's/^/    /'
+      echo ""
+      echo "  They are NOT on origin. Nothing has been lost — they are saved at:"
+      echo "    $SNAP"
+      echo ""
+      echo "  Recover with:   git log $SNAP     /     git checkout -b rescue $SNAP"
+      echo "  Ship them with: bash scripts/git-safe-push.sh \"what changed\""
+      echo ""
+      echo "  If you genuinely mean to discard them:"
+      echo "    AGENT_REF_GUARD_OK=1 git reset --hard origin/main"
+      echo ""
+    } >&2
+    exit 1
+done
+
+exit 0

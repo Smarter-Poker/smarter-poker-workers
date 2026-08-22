@@ -1,0 +1,26 @@
+#!/bin/bash
+# .git/hooks/pre-rebase to prevent rebases when unpushed data exists
+UPSTREAM=$1
+BRANCH=$2
+
+if [ -z "$BRANCH" ]; then
+    BRANCH=$(git symbolic-ref HEAD --short 2>/dev/null)
+fi
+
+# Allow rebasing if we're on a detached HEAD (e.g. in a worktree override)
+if ! git symbolic-ref HEAD >/dev/null 2>&1; then
+    exit 0
+fi
+
+# If pulling origin/main, and there are unpushed commits
+if [ "$UPSTREAM" = "origin/main" ] || [ "$UPSTREAM" = "refs/remotes/origin/main" ]; then
+    UNPUSHED=$(git log origin/main..HEAD --oneline 2>/dev/null)
+    DIRTY=$(git status --porcelain 2>/dev/null)
+    
+    if [ -n "$UNPUSHED" ] || [ -n "$DIRTY" ]; then
+        echo "🚨 PRE-REBASE HOOK BLOCKED: Attempting to rebase on origin/main with local WIP!"
+        echo "Aborting to protect uncommitted edits and unpushed commits."
+        exit 1
+    fi
+fi
+exit 0
