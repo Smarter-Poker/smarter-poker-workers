@@ -74,6 +74,21 @@ echo "report-stuck-prs: scanning $REPO (stuck after ${STUCK_AFTER_H}h)"
 # GITHUB_TOKEN, with `issues: write` declared in the workflow, is guaranteed to
 # have the permission, where an App's installation scopes can be narrowed
 # without anyone here noticing. Use the narrow token for the narrow job.
+# FIND THE EXISTING ISSUE WITHOUT USING SEARCH.
+#
+# `gh issue list --search "<title> in:title"` reads GitHub's SEARCH INDEX, which
+# is eventually consistent - a freshly created issue is not findable for a
+# minute or two. Two sweeps 87 seconds apart both looked, both saw nothing, and
+# both created one: PepNationLab #79 and #80, same title, same content. A
+# de-duplicating guard that duplicates is worse than none, because the noise
+# teaches people to ignore it.
+#
+# The plain list endpoint is not an index. It is current.
+find_issue() {
+  gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
+    --jq "[.[] | select(.title == \"$1\")] | .[0].number // empty" 2>/dev/null
+}
+
 gh_write() {
   local what="$1"; shift
   local out
@@ -158,20 +173,47 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
   EVER=$(gh pr list --repo "$REPO" --state all --limit 500 --json headRefName \
            --jq '.[].headRefName' 2>/dev/null | sort -u)
   DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main)
-  git fetch --no-tags --quiet origin "+refs/heads/*:refs/remotes/origin/*" 2>/dev/null || true
 
-  while read -r ref; do
-    B=${ref#refs/heads/}
+  # EVERYTHING HERE IS ASKED OF THE API, NOT OF THE LOCAL CLONE.
+  #
+  # The first version computed `git rev-list --count origin/main..origin/$B`
+  # locally, and the numbers it published were nonsense: branches reported as
+  # 3,908 and 4,693 commits ahead. The cause is that actions/checkout clones
+  # with fetch-depth 1. In a shallow repository a merge base cannot be found,
+  # so almost every commit on the branch counts as "not on main". The figures
+  # were artifacts of the checkout, and a table with an impossible number in it
+  # is a table people stop reading.
+  #
+  # `repos/{repo}/compare/{base}...{head}` answers the same question on the
+  # server, against the full history, in one call - and returns `status`, which
+  # also identifies the branches that are strictly behind and carry nothing.
+  while read -r B; do
+    [ -n "$B" ] || continue
     case "$B" in
       "$DEFAULT_BRANCH"|master|production) continue ;;
       ci-marker/*|build/*|backup/*|dependabot/*|sentry-autofix/*|revert-*|renovate/*) continue ;;
     esac
     printf '%s\n' "$EVER" | grep -qx "$B" && continue
-    AHEAD=$(git rev-list --count "origin/${DEFAULT_BRANCH}..origin/${B}" 2>/dev/null || echo 0)
+
+    CMP=$(gh api "repos/${REPO}/compare/${DEFAULT_BRANCH}...${B}" \
+            --jq '{a:.ahead_by,b:.behind_by,s:.status,d:(.commits|last|.commit.committer.date // "")}' 2>/dev/null || echo "")
+    [ -n "$CMP" ] || continue
+    AHEAD=$(jq -r '.a // 0' <<<"$CMP")
+    BEHIND=$(jq -r '.b // 0' <<<"$CMP")
+    STATUS=$(jq -r '.s // ""' <<<"$CMP")
+    TIP=$(jq -r '.d // ""'   <<<"$CMP")
+    # "behind" or "identical" means the branch carries nothing main does not.
+    # Those are stale pointers to delete, not work waiting to ship, and listing
+    # them is how this report would become noise.
     [ "${AHEAD:-0}" -gt 0 ] || continue
 
-    LAST_EPOCH=$(git log -1 --format=%ct "origin/$B" 2>/dev/null || echo "$NOW")
-    AGE_H=$(( (NOW - LAST_EPOCH) / 3600 ))
+    if [ -n "$TIP" ]; then
+      TIP_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$TIP" +%s 2>/dev/null \
+                  || date -u -d "$TIP" +%s 2>/dev/null || echo "$NOW")
+    else
+      TIP_EPOCH=$NOW
+    fi
+    AGE_H=$(( (NOW - TIP_EPOCH) / 3600 ))
     [ "$AGE_H" -lt "$STUCK_AFTER_H" ] && continue
 
     # An agent/* branch under a day old is an agent that stopped one step
@@ -186,11 +228,10 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
         fi ;;
     esac
 
-    ORPHANS="${ORPHANS}| \`${B}\` | ${AHEAD} | ${AGE_H}h | [open a PR](https://github.com/${REPO}/compare/${DEFAULT_BRANCH}...${B}?expand=1) |
+    ORPHANS="${ORPHANS}| \`${B}\` | ${AHEAD} | ${BEHIND} | ${AGE_H}h | [open a PR](https://github.com/${REPO}/compare/${DEFAULT_BRANCH}...${B}?expand=1) |
 "
     ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
-  done < <(git for-each-ref --format='%(refname)' refs/remotes/origin/ 2>/dev/null \
-            | sed 's|refs/remotes/origin/|refs/heads/|')
+  done < <(gh api "repos/${REPO}/branches" --paginate --jq '.[].name' 2>/dev/null)
 fi
 [ "$AUTO_OPENED" -gt 0 ] && echo "auto-opened $AUTO_OPENED pull request(s) for agent branches that were never proposed."
 
@@ -202,16 +243,17 @@ if [ "$ORPHAN_COUNT" -gt 0 ]; then
 
 ### ${ORPHAN_COUNT} branch(es) pushed, never proposed
 
-No pull request has ever existed for these, so nothing above can see them and Autopilot cannot queue what does not exist. Squash-merged branches are already filtered out — every row here is work that has genuinely never been asked to land.
+No pull request has ever existed for these, so nothing above can see them and Autopilot cannot queue what does not exist. Branches carrying nothing \`${DEFAULT_BRANCH}\` does not already have are filtered out, as are squash-merged ones — a squash leaves every merged branch permanently \"ahead\", so filtering on that alone reports the entire repo and the report gets ignored within a day.
 
-| branch | commits ahead | last commit | |
-|---|---|---|---|
+| branch | commits it has | commits it is missing | last commit | |
+|---|---|---|---|---|
 $(printf '%s' "$ORPHANS" | head -60)
+The **missing** column is the size of the job: a branch a few commits behind is a merge, one that is hundreds behind is a rebase and probably a rewrite.
+
 Judge each one: open a pull request, or delete the branch. Leaving it is the option that looks like nothing happening and is actually work quietly going nowhere."
 fi
 
-EXISTING=$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
-             --limit 1 --json number --jq '.[0].number' 2>/dev/null || true)
+EXISTING=$(find_issue "$TITLE")
 
 if [ "$COUNT" -eq 0 ] && [ "$ORPHAN_COUNT" -eq 0 ]; then
   echo "found: nothing stuck and no unproposed branches older than ${STUCK_AFTER_H}h."
