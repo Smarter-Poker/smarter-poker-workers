@@ -172,7 +172,54 @@ answers "did it ship".
 
 ---
 
-## 8. IF YOU ARE COMPLETELY LOST
+## 8. AGENTS WORK THROUGH THE CLI AND THE API. NEVER THE BROWSER UI
+
+Every operation in this estate — branching, committing, pushing, opening a pull
+request, reading a check, applying a migration, inspecting a deployment — is
+done with `git`, `gh`, the Supabase MCP, or an HTTP call. **Not by clicking.**
+
+That is not a style preference:
+
+- **It is auditable.** A `gh` call leaves a run log and an API trail. A click
+  leaves nothing, so when something goes wrong the reconstruction stops at
+  "somebody did something in the UI".
+- **The guards cannot see a click.** `report-stuck-prs.sh`,
+  `publish-watchdog.sh` and `estate-integrity.sh` all reason about repository
+  state through the API. An action taken outside it is invisible to every
+  protection in section 3.
+- **It is reproducible.** A command can be pasted into a commit message, put in
+  a script, and run again by the next agent. A screenshot cannot.
+
+**Reading a rendered page is a different thing and is fine** — checking that
+production actually looks right, or that a UI change landed. Use the browser
+tools for that. Never use them to *perform* a git, deploy, or database
+operation that a command can do.
+
+### The GitHub UI shows things that are not signals
+
+Worth knowing, because it has caused a false alarm:
+
+- **"`<branch>` had recent pushes — Compare & pull request"** persists for about
+  a day *after the branch has already merged or been deleted*. It is browser
+  chrome, not state. Both banners on the Club Arena page on 2026-08-22 were
+  like this: one branch had merged as a PR, the other no longer existed.
+  `gh pr list --state all --head <branch>` is the answer; the banner is not.
+- **A red "Production" badge** on a repo that is not supposed to deploy. Club
+  Arena carried one for a day from a forbidden `vercel --prod` workflow. If you
+  see one here, it is a bug to fix, not a deploy to retry — Club Arena
+  publishes only through the World Hub sync.
+
+If you want to know the true state of anything, ask the API:
+
+```bash
+gh pr list --state all --head <branch>      # has this branch ever been proposed
+gh run list --branch <branch> --limit 5      # what actually ran
+gh api repos/Smarter-Poker/<repo>/compare/main...<branch> --jq '.ahead_by,.status'
+```
+
+---
+
+## 9. IF YOU ARE COMPLETELY LOST
 
 ```bash
 bash scripts/agent-trees-audit.sh        # is any work at risk right now
