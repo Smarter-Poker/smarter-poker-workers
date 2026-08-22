@@ -58,7 +58,7 @@ Every guard here is written against `gh` and the REST API. Say so once and
 carry on with `gh`; do not ask for a credential.
 
 The GitHub UI also shows things that are not signals. A "had recent pushes —
-Compare & pull request" banner persists for about a day *after* the branch has
+Compare & pull request" banner persists for about a day _after_ the branch has
 merged or been deleted. Ask the API instead:
 `gh pr list --state all --head <branch>`.
 
@@ -93,7 +93,11 @@ bash scripts/agent-trees-snapshot.sh --list   # what was captured
 `.husky/reference-transaction` refuses any ref update that would orphan local
 commits and **saves them to `refs/wip/orphan-guard/<stamp>` first**, so even an
 override leaves them recoverable. A snapshot of every working tree runs every
-ten minutes.
+ten minutes ONCE the Mac has granted Full Disk Access — `~/Documents` is
+TCC-protected and a launchd agent cannot read inside it without that. Check
+with `bash scripts/install-wip-snapshot-agent.sh --status`; if it says it is
+capturing nothing, run `bash scripts/agent-trees-snapshot.sh` by hand at the
+start and end of your session.
 
 ## Before you say it is done, ask production — not the exit code
 
