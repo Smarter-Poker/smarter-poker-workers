@@ -26,12 +26,34 @@ fi
 
 echo "  --auto declined: $OUT"
 
-# Already mergeable and green -> merge now (checks still enforced by the ruleset).
-if echo "$OUT" | grep -qiE "clean status|not mergeable|already"; then
-  if gh pr merge "$PR" --repo "$REPO" --squash 2>&1; then
-    echo "  merged #$PR directly (it was already green)."
-    exit 0
-  fi
+# CASE 1 — already mergeable and green. `--auto` refuses with "clean status"
+# because there is nothing left to wait for. Merge it.
+#
+# CASE 2 — the base branch has no protection rules. GitHub only OFFERS
+# auto-merge on a protected branch that requires a check or a review; a ruleset
+# that merely blocks force-pushes does not qualify, so `--auto` is refused
+# outright with "Branch does not have required protected branch rules". Every
+# repo in this estate except Club Arena is in that position, which means
+# Autopilot would have queued nothing at all outside Club Arena.
+#
+# In such a repo there is no required check to wait for, so emulate auto-merge:
+# merge when the PR is CLEAN, and otherwise leave it for the next sweep (10
+# minutes). CLEAN specifically - not UNSTABLE - because UNSTABLE means a check
+# IS failing, just not a mandatory one, and merging that is how red code lands.
+if echo "$OUT" | grep -qiE "clean status|not mergeable|already|required protected branch rules"; then
+  STATE=$(gh pr view "$PR" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null || echo UNKNOWN)
+  case "$STATE" in
+    CLEAN|HAS_HOOKS)
+      if gh pr merge "$PR" --repo "$REPO" --squash 2>&1; then
+        echo "  merged #$PR directly (green, and its base branch offers no auto-merge)."
+        exit 0
+      fi
+      ;;
+    *)
+      echo "  #$PR is $STATE — not merging. The next sweep will look again."
+      exit 0
+      ;;
+  esac
 fi
 
 # Do not fail the workflow: a PR that cannot be queued yet (conflicts, failing
