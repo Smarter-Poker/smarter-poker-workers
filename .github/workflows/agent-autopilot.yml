@@ -259,6 +259,12 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          # Reads use the App token; the ISSUE WRITE uses GITHUB_TOKEN, whose
+          # `issues: write` is declared above and therefore guaranteed. The
+          # App's installation scopes can be narrowed without anyone here
+          # noticing, and the first live run of this step hit exactly that: six
+          # stranded pull requests found in PepNationLab and no issue raised.
+          GH_TOKEN_ISSUES: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: bash .github/scripts/report-stuck-prs.sh
 

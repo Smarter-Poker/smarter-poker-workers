@@ -52,6 +52,40 @@ STUCK_AFTER_H="${STUCK_AFTER_H:-3}"
 TITLE="Agent Autopilot: pull requests that cannot merge on their own"
 NOW=$(date -u +%s)
 
+echo "report-stuck-prs: scanning $REPO (stuck after ${STUCK_AFTER_H}h)"
+
+# EVERY WRITE GOES THROUGH HERE, and this function exists because of what it
+# replaces. The first version ended each write with
+#
+#     gh issue create ... >/dev/null 2>&1 && echo "opened an issue"
+#
+# so a failed write produced NOTHING - no error, no message, and a step that
+# still reported success. The very first live run in PepNationLab found six
+# stuck pull requests, could not create the issue, and printed 53 seconds of
+# silence. A guard that fails quietly is worse than no guard: it occupies the
+# place where a working one would go.
+#
+# That is the same anti-pattern this whole file is here to expose, written into
+# the file itself. So: capture, and say so.
+# ISSUE WRITES USE A DIFFERENT TOKEN ON PURPOSE. The App installation token is
+# required for MERGES, because a merge made with GITHUB_TOKEN does not trigger
+# downstream workflows and the commit would land without publishing. Raising an
+# issue has no downstream effect at all, so it does not need the App - and
+# GITHUB_TOKEN, with `issues: write` declared in the workflow, is guaranteed to
+# have the permission, where an App's installation scopes can be narrowed
+# without anyone here noticing. Use the narrow token for the narrow job.
+gh_write() {
+  local what="$1"; shift
+  local out
+  if out=$(GH_TOKEN="${GH_TOKEN_ISSUES:-${GH_TOKEN:-}}" gh "$@" 2>&1); then
+    echo "  $what"
+    return 0
+  fi
+  echo "::error::report-stuck-prs could not $what -- the finding is real but nobody was told."
+  printf '%s\n' "$out" | sed 's/^/    /'
+  return 1
+}
+
 PRS=$(gh pr list --repo "$REPO" --state open --limit 100 \
         --json number,title,headRefName,mergeStateStatus,isDraft,labels,createdAt,updatedAt,author \
       2>/dev/null || echo '[]')
@@ -144,9 +178,9 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
     # short. Finish the step for it; that is the whole point of Autopilot.
     case "$B" in
       agent/*)
-        if [ "$AGE_H" -lt 24 ] && gh pr create --repo "$REPO" --head "$B" \
-             --base "$DEFAULT_BRANCH" --fill >/dev/null 2>&1; then
-          echo "opened a pull request for orphan branch $B (${AHEAD} commits, ${AGE_H}h old)."
+        if [ "$AGE_H" -lt 24 ] && gh_write \
+             "open a pull request for orphan branch $B (${AHEAD} commits, ${AGE_H}h old)" \
+             pr create --repo "$REPO" --head "$B" --base "$DEFAULT_BRANCH" --fill; then
           AUTO_OPENED=$((AUTO_OPENED + 1))
           continue
         fi ;;
@@ -180,12 +214,11 @@ EXISTING=$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" 
              --limit 1 --json number --jq '.[0].number' 2>/dev/null || true)
 
 if [ "$COUNT" -eq 0 ] && [ "$ORPHAN_COUNT" -eq 0 ]; then
-  echo "nothing stuck and no unproposed branches older than ${STUCK_AFTER_H}h."
+  echo "found: nothing stuck and no unproposed branches older than ${STUCK_AFTER_H}h."
   if [ -n "${EXISTING:-}" ]; then
-    gh issue comment "$EXISTING" --repo "$REPO" \
-      --body "Everything listed here has merged, closed, or been proposed. Nothing is stuck and no branch is sitting unproposed." >/dev/null 2>&1 || true
-    gh issue close "$EXISTING" --repo "$REPO" >/dev/null 2>&1 || true
-    echo "closed issue #$EXISTING."
+    gh_write "comment on #$EXISTING" issue comment "$EXISTING" --repo "$REPO" \
+      --body "Everything listed here has merged, closed, or been proposed. Nothing is stuck and no branch is sitting unproposed." || true
+    gh_write "close issue #$EXISTING" issue close "$EXISTING" --repo "$REPO" || true
   fi
   exit 0
 fi
@@ -208,12 +241,11 @@ Whatever you do, do not reach for a flag that makes the check stop applying. \`-
 
 _Updated in place by \`.github/workflows/agent-autopilot.yml\` on every sweep. It closes itself when the list empties._${ORPHAN_SECTION}"
 
+echo "found: $COUNT stuck pull request(s), $ORPHAN_COUNT unproposed branch(es)."
 if [ -n "${EXISTING:-}" ]; then
-  gh issue edit "$EXISTING" --repo "$REPO" --body "$BODY" >/dev/null 2>&1 \
-    && echo "updated issue #$EXISTING with $COUNT stuck PR(s) and $ORPHAN_COUNT unproposed branch(es)."
+  gh_write "update issue #$EXISTING" issue edit "$EXISTING" --repo "$REPO" --body "$BODY" || true
 else
-  gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY" >/dev/null 2>&1 \
-    && echo "opened an issue listing $COUNT stuck PR(s) and $ORPHAN_COUNT unproposed branch(es)."
+  gh_write "open an issue" issue create --repo "$REPO" --title "$TITLE" --body "$BODY" || true
 fi
 
 {
