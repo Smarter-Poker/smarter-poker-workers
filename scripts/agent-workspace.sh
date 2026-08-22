@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# .husky/reference-transaction refuses a ref update that would orphan local
+# commits. This script moves refs backwards as part of its job, so it
+# announces the intent rather than the guard learning to ignore a command
+# shape. See that hook for what it saves before it refuses.
+export AGENT_REF_GUARD_OK=1
 # ONE WORKING TREE PER AGENT. Never share a checkout.
 #
 # THE PROBLEM THIS SOLVES

@@ -1,0 +1,19 @@
+#!/bin/bash
+# .git/hooks/post-checkout hook to detect and warn/block data loss
+PREV=$1
+NEW=$2
+FLAG=$3
+
+if [ "$FLAG" = "1" ]; then
+    LAST_REFLOG=$(git reflog -1 --format="%gs" 2>/dev/null)
+    if echo "$LAST_REFLOG" | grep -q "reset: moving to origin/main"; then
+        UNPUSHED=$(git log origin/main..$PREV --oneline 2>/dev/null)
+        if [ -n "$UNPUSHED" ]; then
+            echo "🚨 POST-CHECKOUT HOOK: Detected hard reset that wiped local commits!"
+            echo "Restoring previous HEAD to protect data..."
+            git reset --hard $PREV
+            exit 1
+        fi
+    fi
+fi
+exit 0
