@@ -37,6 +37,20 @@ trail, and every guard here reasons about repository state through the API — a
 action taken outside it is invisible to all of them. Reading a rendered page to
 check that production looks right is fine; performing an operation there is not.
 
+`gh pr checks` and the Checks API **403** with the local PAT — it has no
+Checks: Read. Not a blocker: every check here is a GitHub Actions job, and the
+Actions API reads fine with the same token.
+
+```bash
+gh pr view <n> --repo Smarter-Poker/<repo> --json state,mergeStateStatus
+gh run list --repo Smarter-Poker/<repo> --branch <branch> --limit 5 --json name,conclusion
+gh api repos/Smarter-Poker/<repo>/actions/runs/<id>/jobs --jq '.jobs[]|"\(.name) \(.conclusion)"'
+```
+
+`mergeStateStatus` is usually the whole answer: BLOCKED = a required check has
+not passed yet, CLEAN = it will merge, DIRTY = a real conflict. And you should
+not be polling anyway — open the PR and stop.
+
 If a GitHub MCP tool answers **`Bad credentials`**, you are not blocked — you
 are using the wrong tool. It carries its own static token, separate from the
 one `gh` uses, and on 2026-08-22 that token was dead while `gh` worked fine.
