@@ -9,8 +9,14 @@
 # words, and raise an issue that names the fix.
 set -uo pipefail
 
-if OUT=$(gh api user --jq .login 2>&1); then
-  echo "token OK — authenticated as: $OUT"
+# PROBE CHOICE MATTERS. `gh api user` is only valid for a USER token: a GitHub
+# App token (GITHUB_TOKEN) has no user and always returns
+# "403 Resource not accessible by integration", so the old probe reported a
+# perfectly working App token as dead. Asking about the REPOSITORY works for
+# both kinds of token, which is the point — this check exists to answer "can I
+# act on this repo", not "who am I".
+if OUT=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .full_name 2>&1); then
+  echo "token OK — can read $OUT"
 
   # A PAT with an expiry date is a scheduled outage. When it lapses, every
   # merge and every publish stops at once, and the only symptom is that PRs
