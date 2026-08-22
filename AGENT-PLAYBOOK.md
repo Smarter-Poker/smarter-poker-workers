@@ -195,6 +195,45 @@ production actually looks right, or that a UI change landed. Use the browser
 tools for that. Never use them to *perform* a git, deploy, or database
 operation that a command can do.
 
+### Reading CI status: `gh pr checks` 403s, and that is not a blocker
+
+The local fine-grained PAT has no **Checks: Read**, so these fail:
+
+```
+gh pr checks <n>                                   # GraphQL statusCheckRollup
+gh api repos/OWNER/REPO/commits/<sha>/check-runs   # Checks API
+```
+
+Both answer `Resource not accessible by personal access token`. That limit is
+real. It is **not** a reason to stop, because every check in this estate is a
+GitHub Actions job, and the Actions API is fully readable with the same token:
+
+```bash
+# 1. Can it merge? This is usually the only question you have.
+gh pr view <n> --repo Smarter-Poker/<repo> --json state,mergeStateStatus
+#    BLOCKED = a required check has not passed YET   CLEAN = it will merge
+#    DIRTY   = a real conflict, resolve hunk by hunk  MERGED = done
+
+# 2. Which workflows ran on the branch, and how did they end?
+gh run list --repo Smarter-Poker/<repo> --branch <branch> --limit 5   --json name,status,conclusion
+
+# 3. Which JOB failed, and at which step?
+gh api repos/Smarter-Poker/<repo>/actions/runs/<run-id>/jobs   --jq '.jobs[] | "\(.name) \(.status)/\(.conclusion)"'
+gh run view <run-id> --repo Smarter-Poker/<repo> --log-failed
+```
+
+Every guard in this repo — `report-stuck-prs.sh`, `publish-watchdog.sh`,
+`estate-integrity.sh` — reads CI exactly this way, for exactly this reason.
+
+Inside a workflow the question does not arise: the App (id 4680372) has Checks
+permission, so anything running in Actions can read them. Only the local PAT
+cannot.
+
+**And you should not be polling in the first place.** Open the PR and stop.
+Autopilot merges it when the checks go green. Checking once to see *why*
+something is BLOCKED is fine; sitting in a loop waiting is the thing the
+forbidden `wait_and_merge.sh` scripts did.
+
 ### `gh` is the sanctioned path. The GitHub MCP is not.
 
 If a GitHub MCP tool answers **`Bad credentials`**, you are not blocked — you
