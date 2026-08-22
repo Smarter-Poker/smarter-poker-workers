@@ -20,11 +20,33 @@
 # checks are green. No polling. No `--admin`. No human clicking a button.
 #
 # TOKEN NOTE (important, do not "simplify" this):
-# we deliberately prefer GH_PAT over the built-in GITHUB_TOKEN. A merge produced
-# by GITHUB_TOKEN does NOT trigger downstream workflows, so a GITHUB_TOKEN
+# GITHUB_TOKEN is the LAST resort, never the choice. A merge produced by
+# GITHUB_TOKEN does NOT trigger downstream workflows, so a GITHUB_TOKEN
 # auto-merge would land the commit on main and then never fire
-# `build-for-world-hub.yml` — the code would be merged but never published,
-# which looks exactly like the "it worked, then it regressed" symptom.
+# `build-for-world-hub.yml` — merged but never published, which is
+# indistinguishable from a regression.
+#
+# The order of preference is:
+#
+#   1. A GitHub App installation token, minted fresh on every run.
+#   2. `GH_PAT`.
+#   3. `GITHUB_TOKEN`, with a warning, because it cannot publish.
+#
+# WHY THE APP IS FIRST: `GH_PAT` expires 2026-11-19 20:14:28 UTC. On that date
+# every PR in every repo stops auto-merging and nothing publishes, while agents
+# carry on reporting success — a scheduled outage with no alarm attached.
+# Installation tokens are minted per run and last an hour, so there is no
+# expiry date to miss. That removes the cliff rather than moving it.
+#
+# It activates the moment the two settings exist and is inert until then, so
+# this file is safe to land before the App is created:
+#
+#   vars.AUTOPILOT_APP_ID              the App's numeric id (not a secret)
+#   secrets.AUTOPILOT_APP_PRIVATE_KEY  the full PEM, BEGIN/END lines included
+#
+# The App needs Contents: R/W, Pull requests: R/W, Workflows: R/W, and
+# Metadata + Checks: Read — Checks because the current fine-grained PAT cannot
+# read check runs on some repos, which is why `gh pr checks` 403s there today.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Agent Autopilot
 
@@ -69,23 +91,33 @@ jobs:
         # failed on its own first run.
         uses: actions/checkout@v4.3.1
 
+      - name: Mint a GitHub App installation token
+        # Skipped entirely when the App is not configured, in which case the
+        # `||` chain below falls through to GH_PAT exactly as before.
+        id: app-token
+        if: vars.AUTOPILOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.AUTOPILOT_APP_ID }}
+          private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
+
       - name: Verify the token actually works
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/check-token.sh
 
       - name: Enable squash auto-merge
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          USING_PAT: ${{ secrets.GH_PAT != '' }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          PUBLISHING_TOKEN: ${{ (steps.app-token.outputs.token != '' || secrets.GH_PAT != '') && 'true' || 'false' }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           set -uo pipefail
-          if [ "$USING_PAT" != "true" ]; then
-            echo "::warning::GH_PAT is unset — falling back to GITHUB_TOKEN. A merge made with GITHUB_TOKEN will NOT trigger build-for-world-hub.yml, so the commit would land on main without ever publishing. Set the GH_PAT secret."
+          if [ "$PUBLISHING_TOKEN" != "true" ]; then
+            echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured, so this run falls back to GITHUB_TOKEN. A merge made with GITHUB_TOKEN does NOT trigger build-for-world-hub.yml: the commit lands on main and never publishes. Set vars.AUTOPILOT_APP_ID + secrets.AUTOPILOT_APP_PRIVATE_KEY, or secrets.GH_PAT."
           fi
           case ",$LABELS," in
             *,do-not-merge,*|*,hold,*|*,wip,*)
@@ -104,21 +136,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4.3.1
 
+      - name: Mint a GitHub App installation token
+        # Skipped entirely when the App is not configured, in which case the
+        # `||` chain below falls through to GH_PAT exactly as before.
+        id: app-token
+        if: vars.AUTOPILOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.AUTOPILOT_APP_ID }}
+          private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
+
       - name: Verify the token actually works
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/check-token.sh
 
       - name: Queue and refresh every open PR
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          USING_PAT: ${{ secrets.GH_PAT != '' }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          PUBLISHING_TOKEN: ${{ (steps.app-token.outputs.token != '' || secrets.GH_PAT != '') && 'true' || 'false' }}
           REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
-          if [ "$USING_PAT" != "true" ]; then
-            echo "::warning::GH_PAT is unset — see the token note at the top of this workflow."
+          if [ "$PUBLISHING_TOKEN" != "true" ]; then
+            echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured. See the token note at the top of this workflow."
           fi
 
           PRS=$(gh pr list --repo "$REPO" --state open --limit 100 \
@@ -207,7 +249,7 @@ jobs:
       - name: Report
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           {
