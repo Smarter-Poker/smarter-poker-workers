@@ -54,6 +54,26 @@ DIR="$TREES/$SAFE_AGENT"
 
 git -C "$ROOT" fetch origin main --quiet
 
+# ── SNAPSHOT EVERY OTHER TREE BEFORE TOUCHING ANYTHING ──────────────────────
+#
+# The ten-minute launchd snapshot is the intended safety net, and on a Mac that
+# has not granted Full Disk Access it captures NOTHING: ~/Documents is
+# TCC-protected, so an unprivileged launchd agent may stat a path inside it but
+# not open one. Measured 2026-08-22 — 73 runs, zero snapshots, while nine trees
+# held uncommitted work.
+#
+# THIS script runs in an agent's own shell, which does have that access. And it
+# runs at exactly the right moment: an agent arriving is precisely when another
+# agent's uncommitted work is most likely to be disturbed. So take the snapshot
+# here too.
+#
+# Deliberately unfailable and silent: `|| true` and output discarded, because a
+# safety net must never be the reason a workspace claim fails. It costs about a
+# second. If you want to see what it captured:
+#   bash scripts/agent-trees-snapshot.sh --list
+SNAP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-trees-snapshot.sh"
+[ -f "$SNAP" ] && (cd "$ROOT" && bash "$SNAP" >/dev/null 2>&1) || true
+
 if [ -d "$DIR" ] && git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then
   # Reuse. Refuse to move an agent off work it has not committed - that is the
   # exact destruction this script exists to prevent.
