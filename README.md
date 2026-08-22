@@ -119,3 +119,32 @@ Per plan "out-of-scope" list:
 - No Express/Next.js — we don't need SSR, image opt, or a Pages Router
 - No database migrations (all schema lives in the Supabase project, managed via World Hub migrations)
 - No scheduler — Open Claw is the sole scheduler for all scheduled jobs
+
+## How code lands here
+
+`main` is protected by a ruleset, and agents do not merge. The sequence is:
+
+1. Branch from a freshly fetched `origin/main` — one working tree per agent,
+   never a shared checkout.
+2. Push the branch and open a pull request.
+3. **Stop.** `.github/workflows/agent-autopilot.yml` turns on squash
+   auto-merge, keeps the branch fresh as `main` moves, and GitHub merges it
+   the moment the required check goes green.
+
+The required check is **`Typecheck + Lint + Test + Build`** — the `checks` job
+in `ci.yml`. It is the only thing standing between a branch and `main`:
+`required_approving_review_count` is 0 and `bypass_actors` is empty, so nobody
+and nothing can merge past a red one.
+
+Before that rule existed, Autopilot merged on a mergeable state of `CLEAN`,
+which means "nothing is failing" — with no required check, that is the same
+sentence as "nothing was checked".
+
+Two things will strand every PR in this repo, so they are worth knowing:
+
+- **Renaming the `checks` job.** The rule requires the job's `name:` string.
+  Change it in `ci.yml` and GitHub waits forever for a context that no longer
+  reports. Change the ruleset in the same PR or leave the name alone.
+- **Requiring a job that does not run on `pull_request`.** Same outcome, same
+  reason. `ci.yml` triggers on both `push` and `pull_request` today; keep it
+  that way.
