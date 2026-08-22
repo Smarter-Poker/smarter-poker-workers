@@ -64,6 +64,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # A pull request Autopilot cannot land used to produce one line in a run log
+  # that nobody reads. It now produces an issue that closes itself when the
+  # list empties. See .github/scripts/report-stuck-prs.sh.
+  issues: write
 
 concurrency:
   group: agent-autopilot-${{ github.event.pull_request.number || github.ref }}
@@ -245,6 +249,18 @@ jobs:
               echo "#$N ($BRANCH): already queued (state=$STATE)."
             fi
           done
+
+      # Everything above lands what CAN land. This names what cannot, because
+      # a pull request nobody comes back for does not ship, and from outside
+      # the repo that is indistinguishable from the feature regressing.
+      # PepNationLab was carrying six of them - the oldest 68 days old - and
+      # nothing anywhere said so.
+      - name: Name the pull requests that cannot merge on their own
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/report-stuck-prs.sh
 
       - name: Report
         if: always()
