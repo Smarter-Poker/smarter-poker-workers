@@ -1,0 +1,213 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT AUTOPILOT — the merge button, moved server-side.
+#
+# WHY THIS EXISTS
+# Every regression post-mortem in this repo ends at the same place: an agent
+# hand-rolling the merge. The failure modes we actually observed, in one day:
+#
+#   * `wait_and_merge.sh` polled CI in a loop and finished with `gh pr merge
+#     --merge`. Merge commits are DISABLED on this repo, so the final API call
+#     failed silently and the PR sat open for hours while the agent reported
+#     success.
+#   * The next agent worked around that with `gh pr merge --squash --admin`.
+#     `--admin` bypasses required status checks — which is precisely how red
+#     code reached main four times.
+#   * Agents simply forgot. All five open PRs had auto-merge disabled.
+#
+# The fix is to stop asking agents to merge at all. An agent's job ends when it
+# opens a PR. This workflow enables squash auto-merge on it, keeps it fresh
+# against a fast-moving main, and GitHub merges it the moment the required
+# checks are green. No polling. No `--admin`. No human clicking a button.
+#
+# TOKEN NOTE (important, do not "simplify" this):
+# we deliberately prefer GH_PAT over the built-in GITHUB_TOKEN. A merge produced
+# by GITHUB_TOKEN does NOT trigger downstream workflows, so a GITHUB_TOKEN
+# auto-merge would land the commit on main and then never fire
+# `build-for-world-hub.yml` — the code would be merged but never published,
+# which looks exactly like the "it worked, then it regressed" symptom.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Agent Autopilot
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  push:
+    branches: [main, master, production]
+  schedule:
+    # Catches PRs opened by a workflow using GITHUB_TOKEN (those never emit a
+    # `pull_request` event), plus anything a transient API error skipped.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: agent-autopilot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Fast path: a PR just appeared or was updated ──────────────────────────
+  queue-pr:
+    name: Queue this PR for auto-merge
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        # WITHOUT THIS the job has no working tree and
+        # `.github/scripts/queue-pr.sh` exits 127. That is how this workflow
+        # failed on its own first run.
+        uses: actions/checkout@v4.3.1
+
+      - name: Verify the token actually works
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/check-token.sh
+
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          USING_PAT: ${{ secrets.GH_PAT != '' }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -uo pipefail
+          if [ "$USING_PAT" != "true" ]; then
+            echo "::warning::GH_PAT is unset — falling back to GITHUB_TOKEN. A merge made with GITHUB_TOKEN will NOT trigger build-for-world-hub.yml, so the commit would land on main without ever publishing. Set the GH_PAT secret."
+          fi
+          case ",$LABELS," in
+            *,do-not-merge,*|*,hold,*|*,wip,*)
+              echo "PR #$PR carries a hold label ($LABELS) — leaving it alone."
+              exit 0 ;;
+          esac
+          bash .github/scripts/queue-pr.sh "$REPO" "$PR"
+
+  # ── Sweep: main moved, or the timer fired ────────────────────────────────
+  sweep:
+    name: Sweep open PRs (queue + keep fresh)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.3.1
+
+      - name: Verify the token actually works
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/check-token.sh
+
+      - name: Queue and refresh every open PR
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          USING_PAT: ${{ secrets.GH_PAT != '' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if [ "$USING_PAT" != "true" ]; then
+            echo "::warning::GH_PAT is unset — see the token note at the top of this workflow."
+          fi
+
+          PRS=$(gh pr list --repo "$REPO" --state open --limit 100 \
+                  --json number,isDraft,labels,mergeStateStatus,autoMergeRequest,headRefName,baseRefName)
+
+          echo "$PRS" | jq -c '.[]' | while read -r pr; do
+            N=$(echo "$pr"      | jq -r '.number')
+            DRAFT=$(echo "$pr"  | jq -r '.isDraft')
+            AUTO=$(echo "$pr"   | jq -r 'if .autoMergeRequest then "yes" else "no" end')
+            STATE=$(echo "$pr"  | jq -r '.mergeStateStatus')
+            BRANCH=$(echo "$pr" | jq -r '.headRefName')
+            BASE=$(echo "$pr"   | jq -r '.baseRefName')
+            HOLD=$(echo "$pr"   | jq -r '[.labels[].name] | map(select(.=="do-not-merge" or .=="hold" or .=="wip")) | length')
+
+            if [ "$DRAFT" = "true" ] || [ "$HOLD" != "0" ]; then
+              echo "#$N ($BRANCH): draft or held — skipping."
+              continue
+            fi
+
+            # Keep the PR fresh. A stale base is how a conflict gets resolved
+            # by taking one whole side, which is how the leaderboard RPC call
+            # vanished while its signature survived.
+            #
+            # Do NOT test `mergeStateStatus == "BEHIND"`. GitHub reports a
+            # single status, and a PR that is BOTH behind AND has a failing or
+            # pending check reports BLOCKED — so the branch never got refreshed,
+            # its stale checks never re-ran, and it sat open forever. #188 was
+            # 28 commits behind and reporting BLOCKED when this was found.
+            # Ask the compare API how far behind it actually is instead.
+            #
+            # DIRTY means a real conflict: updating cannot fix it and would only
+            # churn CI, so leave those for an agent to resolve hunk by hunk.
+            # WHEN TO REFRESH A BRANCH — and, more importantly, when not to.
+            #
+            # `strict_required_status_checks_policy` is OFF, so GitHub does NOT
+            # require a PR to be up to date with main in order to merge. That
+            # makes refreshing optional — and refreshing a PR that is already
+            # green CANCELS its checks and restarts them, which actively stops
+            # it merging.
+            #
+            # Refreshing on every main push therefore livelocks at this repo's
+            # velocity: main lands a commit every 5-7 minutes and CI takes ~8,
+            # so open PRs restart forever and nothing converges. Measured: #204
+            # and #205 both had their runs cancelled and restarted the moment
+            # #203 merged.
+            #
+            # So refresh ONLY when the PR cannot merge as it stands:
+            #   * its checks FAILED and it is behind  -> results are stale, retry
+            #     them against current main;
+            #   * it is very far behind               -> semantic-conflict risk
+            #     outweighs the cost of one more run.
+            # Otherwise leave it alone and let auto-merge do its job.
+            if [ "$STATE" = "DIRTY" ]; then
+              echo "#$N ($BRANCH): conflicts with $BASE — an agent must resolve this."
+            else
+              # Compare against the PR's OWN base. Hardcoding "main" is wrong the
+              # moment this workflow is copied to a repo whose default branch is
+              # named something else (PepNationLab ships from `production`), and
+              # wrong for any PR that targets a release branch.
+              BEHIND=$(gh api "repos/$REPO/compare/${BASE}...$BRANCH" --jq '.behind_by' 2>/dev/null || echo 0)
+              LAST=$(gh run list --repo "$REPO" --branch "$BRANCH" --workflow ci.yml --limit 1 \
+                       --json conclusion --jq '.[0].conclusion // "none"' 2>/dev/null || echo none)
+              REFRESH=no
+              if [ "${BEHIND:-0}" -gt 0 ] && [ "$LAST" = "failure" ]; then
+                REFRESH="stale red checks ($BEHIND behind)"
+              elif [ "${BEHIND:-0}" -ge 40 ]; then
+                REFRESH="very stale ($BEHIND behind)"
+              fi
+              if [ "$REFRESH" != "no" ]; then
+                echo "#$N ($BRANCH): refreshing — $REFRESH."
+                gh pr update-branch "$N" --repo "$REPO" \
+                  || echo "::warning::#$N could not fast-forward — leaving for an agent."
+              else
+                echo "#$N ($BRANCH): $BEHIND behind $BASE, last CI=$LAST — leaving it to merge."
+              fi
+            fi
+
+            if [ "$AUTO" = "no" ]; then
+              echo "#$N ($BRANCH): auto-merge not set — enabling."
+              bash .github/scripts/queue-pr.sh "$REPO" "$N"
+            else
+              echo "#$N ($BRANCH): already queued (state=$STATE)."
+            fi
+          done
+
+      - name: Report
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "## Agent Autopilot sweep"
+            echo ""
+            echo "| PR | branch | state | auto-merge |"
+            echo "|----|--------|-------|------------|"
+            gh pr list --repo "$REPO" --state open --limit 100 \
+              --json number,headRefName,mergeStateStatus,autoMergeRequest \
+              --jq '.[] | "| #\(.number) | \(.headRefName) | \(.mergeStateStatus) | \(if .autoMergeRequest then "queued" else "NOT QUEUED" end) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
