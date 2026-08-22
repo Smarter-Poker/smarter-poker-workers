@@ -27,7 +27,11 @@ if OUT=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .full_name 2>&1); then
     EXP_EPOCH=$(date -u -d "$EXP" +%s 2>/dev/null || echo "")
     if [ -n "$EXP_EPOCH" ]; then
       DAYS=$(( (EXP_EPOCH - $(date -u +%s)) / 86400 ))
-      echo "GH_PAT expires in ${DAYS} day(s) (${EXP})."
+      # Reached only when GH_TOKEN is a USER token, i.e. the App did not mint
+      # one and the fallback PAT is in play. An App installation token has no
+      # user, so `gh api user` 403s and this whole block is skipped — which is
+      # itself the cheapest signal that the App is working.
+      echo "Running on the GH_PAT fallback, which expires in ${DAYS} day(s) (${EXP}). The GitHub App did not mint a token — check vars.AUTOPILOT_APP_ID."
       {
         echo "### Agent Autopilot token"
         echo ""
@@ -36,8 +40,11 @@ if OUT=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .full_name 2>&1); then
       if [ "$DAYS" -le 21 ]; then
         echo "::warning::GH_PAT expires in ${DAYS} day(s). When it lapses, NOTHING will auto-merge or publish. Rotate it: gh secret set GH_PAT --repo ${GITHUB_REPOSITORY:-<repo>} --body <fresh PAT>"
         if [ -n "${GITHUB_TOKEN_FALLBACK:-}" ]; then
+          # Not --search: that reads the eventually-consistent search index, so
+          # two runs minutes apart both see nothing and both file one. Ask the
+          # list endpoint, which is current.
           GH_TOKEN="$GITHUB_TOKEN_FALLBACK" gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --search "Agent Autopilot token expires in:title" --limit 1 --json number --jq '.[0].number' 2>/dev/null | grep -q . \
+            --limit 100 --json title --jq '.[].title' 2>/dev/null | grep -q "^Agent Autopilot token expires" \
           || GH_TOKEN="$GITHUB_TOKEN_FALLBACK" gh issue create --repo "$GITHUB_REPOSITORY" \
                --title "Agent Autopilot token expires ${EXP}" \
                --body "\`GH_PAT\` expires in ${DAYS} day(s) (\`${EXP}\`).
@@ -54,14 +61,19 @@ fi
 
 echo "::error::Agent Autopilot's token is invalid ($OUT)."
 echo "::error::Nothing will auto-merge or publish until it is replaced."
-echo "::error::Fix: gh secret set GH_PAT --repo ${GITHUB_REPOSITORY:-<repo>} --body <a fresh PAT with repo + pull_requests write>"
+echo "::error::The credential is a GitHub App installation token, minted per run."
+echo "::error::Check, in this order: the App is still installed on ${GITHUB_REPOSITORY:-<repo>};"
+echo "::error::  vars.AUTOPILOT_APP_ID is set; secrets.AUTOPILOT_APP_PRIVATE_KEY is the full PEM."
+echo "::error::A key rotated in the App settings invalidates the old PEM immediately."
 
 # Raise it where a human will actually see it, using the built-in token, which
 # is always valid even when GH_PAT is not.
 if [ -n "${GITHUB_TOKEN_FALLBACK:-}" ]; then
   export GH_TOKEN="$GITHUB_TOKEN_FALLBACK"
   TITLE="Agent Autopilot is down: GH_PAT is invalid"
-  EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$TITLE in:title" --limit 1 --json number --jq '.[0].number' 2>/dev/null || echo "")
+  # The list endpoint, not --search: see the note above.
+  EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title \
+               --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty" 2>/dev/null || echo "")
   if [ -z "$EXISTING" ]; then
     gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
       --body "\`gh api user\` returned:
@@ -72,7 +84,7 @@ $OUT
 
 **Impact:** no PR will auto-merge and no merge will publish to the World Hub until this is replaced. Agents will appear to work and nothing will ship.
 
-**Fix:** \`gh secret set GH_PAT --repo $GITHUB_REPOSITORY --body <fresh PAT>\` (needs repo contents + pull-requests write)." >/dev/null 2>&1 || true
+**Fix:** Autopilot mints a GitHub App installation token every run, so there is no expiry to renew — a failure here means the App itself. In order: confirm the App is still installed on this repo, that \`vars.AUTOPILOT_APP_ID\` is set, and that \`secrets.AUTOPILOT_APP_PRIVATE_KEY\` holds the complete PEM including its BEGIN/END lines. Regenerating the key in the App settings invalidates the previous PEM the moment you do it." >/dev/null 2>&1 || true
   fi
 fi
 exit 1
