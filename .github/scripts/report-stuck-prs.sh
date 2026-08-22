@@ -179,6 +179,25 @@ AUTO_OPENED=0
 if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
   EVER=$(gh pr list --repo "$REPO" --state all --limit 500 --json headRefName \
            --jq '.[].headRefName' 2>/dev/null | sort -u)
+
+  # WHEN EACH BRANCH'S PULL REQUEST FINISHED.
+  #
+  # "Has ever had a PR" is not the same as "has nothing left to ship", and the
+  # difference cost a fix today. PR #643 in World Hub squash-merged at
+  # 16:58:09Z; a commit was pushed to that same branch at 17:07:48Z, nine
+  # minutes later, and sat orphaned on the remote while its author believed it
+  # was on main. The filter above excluded it - correctly by its own rule, and
+  # wrongly in fact.
+  #
+  # So a branch that has MOVED SINCE its pull request closed is orphaned too.
+  # Keyed by branch, taking the most recent PR, because a branch can carry
+  # several over its life.
+  CLOSED_AT=$(gh pr list --repo "$REPO" --state all --limit 500 \
+                --json headRefName,mergedAt,closedAt \
+                --jq '[.[] | select((.mergedAt // .closedAt) != null)]
+                      | group_by(.headRefName)
+                      | map({(.[0].headRefName): ([.[] | (.mergedAt // .closedAt)] | max)})
+                      | add // {}' 2>/dev/null || echo '{}')
   DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main)
 
   # EVERYTHING HERE IS ASKED OF THE API, NOT OF THE LOCAL CLONE.
@@ -200,7 +219,15 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
       "$DEFAULT_BRANCH"|master|production) continue ;;
       ci-marker/*|build/*|backup/*|dependabot/*|sentry-autofix/*|revert-*|renovate/*) continue ;;
     esac
-    printf '%s\n' "$EVER" | grep -qx "$B" && continue
+    # A branch with no PR at all is an orphan. So is one whose PR has finished
+    # and which has been pushed to since - decided below, once the tip date is
+    # known, because that is the only thing that can tell them apart.
+    FINISHED=$(jq -r --arg b "$B" '.[$b] // empty' <<<"$CLOSED_AT")
+    if printf '%s\n' "$EVER" | grep -qx "$B"; then
+      [ -n "$FINISHED" ] || continue          # PR still open: the list above owns it
+    else
+      FINISHED=""                             # never proposed at all
+    fi
 
     CMP=$(gh api "repos/${REPO}/compare/${DEFAULT_BRANCH}...${B}" \
             --jq '{a:.ahead_by,b:.behind_by,s:.status,d:(.commits|last|.commit.committer.date // "")}' 2>/dev/null || echo "")
@@ -223,6 +250,18 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
     AGE_H=$(( (NOW - TIP_EPOCH) / 3600 ))
     [ "$AGE_H" -lt "$STUCK_AFTER_H" ] && continue
 
+    WHY_ORPHAN="never proposed"
+    if [ -n "$FINISHED" ]; then
+      FIN_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$FINISHED" +%s 2>/dev/null \
+                  || date -u -d "$FINISHED" +%s 2>/dev/null || echo 0)
+      # Two minutes of slack: a squash merge and the branch tip are written
+      # seconds apart, and reporting that as orphaned work would be noise.
+      if [ "$TIP_EPOCH" -le $((FIN_EPOCH + 120)) ]; then
+        continue
+      fi
+      WHY_ORPHAN="**pushed $(( (TIP_EPOCH - FIN_EPOCH) / 60 ))m AFTER its PR closed**"
+    fi
+
     # An agent/* branch under a day old is an agent that stopped one step
     # short. Finish the step for it; that is the whole point of Autopilot.
     case "$B" in
@@ -235,7 +274,7 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
         fi ;;
     esac
 
-    ORPHANS="${ORPHANS}| \`${B}\` | ${AHEAD} | ${BEHIND} | ${AGE_H}h | [open a PR](https://github.com/${REPO}/compare/${DEFAULT_BRANCH}...${B}?expand=1) |
+    ORPHANS="${ORPHANS}| \`${B}\` | ${AHEAD} | ${BEHIND} | ${AGE_H}h | ${WHY_ORPHAN} | [open a PR](https://github.com/${REPO}/compare/${DEFAULT_BRANCH}...${B}?expand=1) |
 "
     ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
   done < <(gh api "repos/${REPO}/branches" --paginate --jq '.[].name' 2>/dev/null)
@@ -250,10 +289,10 @@ if [ "$ORPHAN_COUNT" -gt 0 ]; then
 
 ### ${ORPHAN_COUNT} branch(es) pushed, never proposed
 
-No pull request has ever existed for these, so nothing above can see them and Autopilot cannot queue what does not exist. Branches carrying nothing \`${DEFAULT_BRANCH}\` does not already have are filtered out, as are squash-merged ones — a squash leaves every merged branch permanently \"ahead\", so filtering on that alone reports the entire repo and the report gets ignored within a day.
+Either no pull request has ever existed for these, or one did and **the branch was pushed to after it closed** — a commit that landed on the remote nine minutes after its PR squash-merged is exactly as orphaned as one that was never proposed, and until 2026-08-22 this report could not see the second kind. Nothing else can see either: Autopilot queues pull requests, and there is nothing to queue. Branches carrying nothing \`${DEFAULT_BRANCH}\` does not already have are filtered out, as are squash-merged ones — a squash leaves every merged branch permanently \"ahead\", so filtering on that alone reports the entire repo and the report gets ignored within a day.
 
-| branch | commits it has | commits it is missing | last commit | |
-|---|---|---|---|---|
+| branch | commits it has | commits it is missing | last commit | why | |
+|---|---|---|---|---|---|
 $(printf '%s' "$ORPHANS" | head -60)
 The **missing** column is the size of the job: a branch a few commits behind is a merge, one that is hundreds behind is a rebase and probably a rewrite.
 
