@@ -195,6 +195,26 @@ production actually looks right, or that a UI change landed. Use the browser
 tools for that. Never use them to *perform* a git, deploy, or database
 operation that a command can do.
 
+### `gh` is the sanctioned path. The GitHub MCP is not.
+
+If a GitHub MCP tool answers **`Bad credentials`**, you are not blocked — you
+are using the wrong tool. It carries its own static token, separate from the
+one `gh` uses, and a token nobody watches is a token that eventually expires.
+That happened on 2026-08-22: the MCP's token was dead while `gh` worked
+perfectly, and an agent reported itself blocked on a repository it could read.
+
+Every guard, script and workflow in this estate is written against `gh` and the
+REST API for exactly this reason. Use them:
+
+```bash
+gh pr create --fill                    # not the MCP's create_pull_request
+gh api repos/OWNER/REPO/contents/PATH  # not the MCP's get_file_contents
+```
+
+If you find the MCP dead, say so once and carry on with `gh`. Do not treat it
+as a blocker, and do not ask for a credential — `gh auth status` will tell you
+whether the one that matters is alive.
+
 ### The GitHub UI shows things that are not signals
 
 Worth knowing, because it has caused a false alarm:

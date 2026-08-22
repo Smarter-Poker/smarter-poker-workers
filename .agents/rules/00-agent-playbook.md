@@ -37,6 +37,12 @@ trail, and every guard here reasons about repository state through the API — a
 action taken outside it is invisible to all of them. Reading a rendered page to
 check that production looks right is fine; performing an operation there is not.
 
+If a GitHub MCP tool answers **`Bad credentials`**, you are not blocked — you
+are using the wrong tool. It carries its own static token, separate from the
+one `gh` uses, and on 2026-08-22 that token was dead while `gh` worked fine.
+Every guard here is written against `gh` and the REST API. Say so once and
+carry on with `gh`; do not ask for a credential.
+
 The GitHub UI also shows things that are not signals. A "had recent pushes —
 Compare & pull request" banner persists for about a day *after* the branch has
 merged or been deleted. Ask the API instead:
