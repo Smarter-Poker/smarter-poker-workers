@@ -1,5 +1,20 @@
 #!/bin/sh
 # One working tree per agent (rule 1a). Runs FIRST: if this commit should
 # not be happening in this directory at all, there is no point checking it.
-bash "$(git rev-parse --show-toplevel)/scripts/guard-shared-clone.sh"
+# BOTH GUARDS END IN "|| exit 1", AND set -e IS ABOVE THEM, ON PURPOSE.
+#
+# 2026-08-23: guard-shared-clone.sh was a bare command in a hook with neither.
+# A hook exits with the status of its LAST command, so the one-worktree-per-agent
+# guard could print a full refusal and the commit would be created anyway. It
+# could warn; it could never refuse. Club Arena and smarter-poker-commander had
+# the identical defect in two different shapes.
+set -e
+
+bash "$(git rev-parse --show-toplevel)/scripts/guard-shared-clone.sh" || exit 1
+
+# A commit Vercel cannot attribute never builds. 64 of the last 100 commits on
+# this repo's main are authored by an address that resolves to no GitHub user.
+# Nothing broke only because this repo deploys to Hetzner over SSH rather than
+# through Vercel - the day it gets a Vercel project, every one of them blocks.
+bash "$(git rev-parse --show-toplevel)/scripts/guard-commit-identity.sh" || exit 1
 
