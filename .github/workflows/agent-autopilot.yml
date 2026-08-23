@@ -53,8 +53,17 @@ name: Agent Autopilot
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
-  push:
-    branches: [main, master, production]
+  # NO push TRIGGER. Removed 2026-08-23.
+  #
+  # It fired a full sweep on every merge to main. Club Arena merges about
+  # nineteen times an hour, so main alone drove nineteen sweeps an hour in that
+  # repo and eight in World Hub - roughly 27 billed minutes an hour across the
+  # estate, since a job is billed as a whole minute however short it is.
+  #
+  # What the push trigger bought was re-queuing PRs that main had just moved
+  # underneath. The schedule below does exactly that, and cancel-in-progress
+  # cannot help here: a cancelled job still bills its rounded-up minute, so the
+  # only real saving is not starting the run.
   schedule:
     # Catches PRs opened by a workflow using GITHUB_TOKEN (those never emit a
     # `pull_request` event), plus anything a transient API error skipped.
@@ -71,7 +80,12 @@ on:
     # cases those cannot see — a PR opened by a workflow using GITHUB_TOKEN,
     # or one an API error skipped — and thirty minutes is well inside the
     # window where either matters.
-    - cron: '*/30 * * * *'
+    #
+    # RAISED BACK TO */15 on 2026-08-23, in the same change that removed the
+    # push trigger. The sweep is now the only thing re-queuing a PR that main
+    # moved under, so it has to be quicker than half an hour - and four sweeps
+    # an hour still replaces the nineteen that push was causing.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
