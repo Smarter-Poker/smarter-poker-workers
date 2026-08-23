@@ -195,6 +195,45 @@ production actually looks right, or that a UI change landed. Use the browser
 tools for that. Never use them to _perform_ a git, deploy, or database
 operation that a command can do.
 
+### If `api.github.com` is blocked, you are still not blocked
+
+Some agent sandboxes have no route to `api.github.com` — `git` gets through and
+`gh` does not. Two answers, in order:
+
+**1. Use the host shell.** Cowork sessions have `mcp__counselors__host_terminal`,
+which runs on the Mac where `gh` is already authenticated. Everything in this
+playbook works there. Check with `gh auth status` before concluding anything.
+
+**2. If you genuinely cannot reach the API at all, PUSHING IS ENOUGH.**
+
+```bash
+git push -u origin HEAD     # and stop
+```
+
+`report-stuck-prs.sh` sweeps every ten minutes and **opens the pull request for
+you** on any `agent/*` branch less than a day old. That is not a theory: as of
+2026-08-22 it had opened **14 pull requests** for agents that stopped at the
+push, and ten of them had already merged.
+
+So: branch under `agent/<your-name>/…` (which `agent-workspace.sh` does for
+you), push, and the system finishes the job. An older branch, or one outside
+that namespace, gets *reported* rather than opened — deliberately, because
+auto-merging a months-old branch is a regression wearing a rescue costume.
+
+**Never write a `.command` file, a handoff, or a "run this on your Mac" note.**
+That converts a solved problem into a human's task, and this is the one rule
+the whole system exists to enforce. If you are about to write one, the answer
+is one of the two above.
+
+**And verify before you advise.** An agent told Dan his clone was divergent and
+pointed him at `git-unstick.sh`; the clone was `0 behind, 0 ahead`. Running an
+unstick on a healthy clone creates a backup branch and a reset for nothing.
+Check first:
+
+```bash
+git rev-list --left-right --count origin/main...HEAD   # behind <tab> ahead
+```
+
 ### Reading CI status: `gh pr checks` 403s, and that is not a blocker
 
 The local fine-grained PAT has no **Checks: Read**, so these fail:
