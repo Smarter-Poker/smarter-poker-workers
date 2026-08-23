@@ -58,7 +58,20 @@ on:
   schedule:
     # Catches PRs opened by a workflow using GITHUB_TOKEN (those never emit a
     # `pull_request` event), plus anything a transient API error skipped.
-    - cron: '*/10 * * * *'
+    #
+    # COST, 2026-08-23: this was */10. Across seven repos that is 1,008 sweeps
+    # a day, every day, whether or not anybody is working — and GitHub bills
+    # per job rounded up to a whole minute, so a twenty-second sweep costs a
+    # full minute. It was the single largest recurring line on a week that
+    # reached $300.
+    #
+    # Halving the frequency costs almost nothing, because the schedule is a
+    # SAFETY NET, not the mechanism: the `pull_request` and `push` triggers
+    # above do the real work and fire within seconds. The sweep exists for the
+    # cases those cannot see — a PR opened by a workflow using GITHUB_TOKEN,
+    # or one an API error skipped — and thirty minutes is well inside the
+    # window where either matters.
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
