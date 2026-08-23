@@ -81,11 +81,13 @@ on:
     # or one an API error skipped — and thirty minutes is well inside the
     # window where either matters.
     #
-    # RAISED BACK TO */15 on 2026-08-23, in the same change that removed the
-    # push trigger. The sweep is now the only thing re-queuing a PR that main
-    # moved under, so it has to be quicker than half an hour - and four sweeps
-    # an hour still replaces the nineteen that push was causing.
-    - cron: '*/15 * * * *'
+    # STAYS AT */30 even though the push trigger is now gone (2026-08-23).
+    # Raising it to */15 was tempting - the sweep is the only thing left that
+    # re-queues a PR main moved under - but */15 across seven repos is 336 extra
+    # runs a day, about $80 a month, to shave at most fifteen minutes off a case
+    # the `pull_request` trigger usually catches first: agents push to their
+    # branches constantly, and every one of those fires `synchronize`.
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
