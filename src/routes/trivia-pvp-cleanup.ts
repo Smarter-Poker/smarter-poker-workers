@@ -8,8 +8,24 @@
  * - Only one scored → that player wins by forfeit, 10% rake
  * - Also expire trivia_pvp_queue entries >5min old
  *
- * Idempotent via status check (only 'active' matches touched; after
- * update they're 'abandoned' or 'complete').
+ * IDEMPOTENCY (rewritten 2026-08-23 after a 10-day currency leak).
+ * The claim that this route was "idempotent via status check" was false in
+ * both halves:
+ *   1. `.update({ status: 'abandoned' })` was rejected by
+ *      trivia_pvp_matches_status_check, which did not list 'abandoned'. The
+ *      result was never destructured, so the 23514 was invisible - the money
+ *      had already moved and the match stayed 'active'.
+ *   2. The refund passed `p_reference_id: null`, and add_diamonds_to_balance
+ *      only deduplicates when a reference is present.
+ * So the same four matches were refunded every four hours from 2026-08-13 to
+ * 2026-08-23: 488 credits, 14,240 diamonds minted against 120 in real stakes.
+ *
+ * Every credit now carries the SAME reference the player-facing settlement
+ * engine uses (pvp_refund_<matchId>_<userId>, pvp_match_win_<matchId>), so
+ * the two paths deduplicate against each other, and the database now REFUSES
+ * a settlement credit with a null reference outright. Every write that closes
+ * a match is checked and throws, because a status write that silently fails
+ * is what turns one bad refund into an unbounded series.
  *
  * Auth: /cron/* middleware chain.
  */
@@ -41,15 +57,64 @@ export async function triviaPvpCleanup(c: Context) {
     const now = new Date();
     const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
-    const refundPlayer = async (playerId: string | null, amount: number) => {
-      if (!playerId) return;
-      await supabase.rpc('add_diamonds_to_balance', {
-        p_user_id: playerId,
+    /**
+     * Move diamonds and REFUSE to continue quietly if the move did not happen.
+     * add_diamonds_to_balance returns { success: false, duplicate: true } on a
+     * replay, which is exactly what a retry wants to hear - that is the only
+     * failure treated as success here.
+     */
+    const creditDiamonds = async (
+      userId: string,
+      amount: number,
+      type: string,
+      description: string,
+      referenceId: string,
+    ) => {
+      const { data, error } = await supabase.rpc('add_diamonds_to_balance', {
+        p_user_id: userId,
         p_amount: amount,
-        p_type: 'pvp_refund',
-        p_description: `PvP match abandoned — ${amount}diamonds refund`,
-        p_reference_id: null,
+        p_type: type,
+        p_description: description,
+        p_reference_id: referenceId,
       });
+      const res = data as { success?: boolean; duplicate?: boolean; error?: string } | null;
+      if (res?.duplicate) return { credited: false, deduped: true };
+      if (error || res?.success === false) {
+        throw new Error(
+          `credit failed (${type}, ref ${referenceId}): ${error?.message ?? res?.error ?? 'unknown'}`,
+        );
+      }
+      return { credited: true, deduped: false };
+    };
+
+    /**
+     * Close a match, and throw if the close did not land. This is the write
+     * that failed silently for ten days; an unchecked terminal write turns a
+     * one-off payout into a schedule.
+     */
+    const closeMatch = async (matchId: string, patch: Record<string, unknown>) => {
+      const { error } = await supabase
+        .from('trivia_pvp_matches')
+        .update(patch)
+        .eq('id', matchId);
+      if (error) {
+        throw new Error(`could not close match ${matchId}: ${error.message}`);
+      }
+    };
+
+    const refundPlayer = async (
+      playerId: string | null,
+      amount: number,
+      matchId: string,
+    ) => {
+      if (!playerId) return;
+      await creditDiamonds(
+        playerId,
+        amount,
+        'pvp_refund',
+        `PvP match abandoned - ${amount} diamonds refunded`,
+        `pvp_refund_${matchId}_${playerId}`,
+      );
     };
 
     const updatePlayerStats = async (
@@ -99,18 +164,23 @@ export async function triviaPvpCleanup(c: Context) {
       const rakeAmount = Math.floor(totalPot * 0.1);
       const winnerPayout = totalPot - rakeAmount;
       if (winnerId) {
-        await supabase.rpc('add_diamonds_to_balance', {
-          p_user_id: winnerId,
-          p_amount: winnerPayout,
-          p_type: 'pvp_win',
-          p_description: `PvP forfeit win — ${winnerPayout}diamonds payout`,
-          p_reference_id: matchId,
-        });
+        // pvp_match_win_<matchId> is the reference pvp-settle-match.js has
+        // always used. Sharing it means a settle/sweep race is a no-op instead
+        // of a double payout. The bare matchId used before was a raw uuid in a
+        // globally unique reference index - a collision waiting to happen.
+        await creditDiamonds(
+          winnerId,
+          winnerPayout,
+          'pvp_win',
+          `PvP forfeit win - ${winnerPayout} diamonds payout`,
+          `pvp_match_win_${matchId}`,
+        );
       }
-      await supabase
-        .from('trivia_pvp_matches')
-        .update({ status: 'complete', winner_id: winnerId, completed_at: new Date().toISOString() })
-        .eq('id', matchId);
+      await closeMatch(matchId, {
+        status: 'complete',
+        winner_id: winnerId,
+        completed_at: new Date().toISOString(),
+      });
       await updatePlayerStats(winnerId, 'win', winnerPayout - stakeAmount);
       await updatePlayerStats(loserId, 'loss', stakeAmount);
     };
@@ -125,22 +195,31 @@ export async function triviaPvpCleanup(c: Context) {
 
     let refunded = 0;
     let forfeited = 0;
+    const failures: Array<{ match_id: string; error: string }> = [];
     for (const match of abandonedMatches) {
       const p1Submitted = match.player1_score !== null;
       const p2Submitted = match.player2_score !== null;
       const stakeAmount = match.stake_amount ?? 10;
 
-      if (!p1Submitted && !p2Submitted) {
-        await refundPlayer(match.player1_id, stakeAmount);
-        await refundPlayer(match.player2_id, stakeAmount);
-        await supabase.from('trivia_pvp_matches').update({ status: 'abandoned' }).eq('id', match.id);
-        refunded++;
-      } else if (p1Submitted && !p2Submitted) {
-        await awardForfeitWin(match.player1_id, match.player2_id, stakeAmount, match.id);
-        forfeited++;
-      } else if (!p1Submitted && p2Submitted) {
-        await awardForfeitWin(match.player2_id, match.player1_id, stakeAmount, match.id);
-        forfeited++;
+      try {
+        if (!p1Submitted && !p2Submitted) {
+          await refundPlayer(match.player1_id, stakeAmount, match.id);
+          await refundPlayer(match.player2_id, stakeAmount, match.id);
+          await closeMatch(match.id, { status: 'abandoned' });
+          refunded++;
+        } else if (p1Submitted && !p2Submitted) {
+          await awardForfeitWin(match.player1_id, match.player2_id, stakeAmount, match.id);
+          forfeited++;
+        } else if (!p1Submitted && p2Submitted) {
+          await awardForfeitWin(match.player2_id, match.player1_id, stakeAmount, match.id);
+          forfeited++;
+        }
+      } catch (err) {
+        // One bad match must not abort the sweep, but it must be LOUD and it
+        // must be counted. Silence here is the whole incident.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[trivia-pvp-cleanup] match failed:', match.id, msg);
+        failures.push({ match_id: match.id, error: msg });
       }
     }
 
@@ -152,9 +231,11 @@ export async function triviaPvpCleanup(c: Context) {
       .lt('created_at', new Date(now.getTime() - 5 * 60 * 1000).toISOString());
 
     return c.json({
-      success: true,
+      success: failures.length === 0,
+      scanned: abandonedMatches.length,
       refunded,
       forfeited,
+      failures,
       timestamp: now.toISOString(),
     });
   } catch (err) {
