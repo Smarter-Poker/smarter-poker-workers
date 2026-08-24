@@ -92,6 +92,61 @@ else
   git -C "$ROOT" worktree add --force -B "$BRANCH" "$DIR" origin/main >/dev/null
 fi
 
+# The one identity this estate can deploy under. Vercel refuses to build a
+# commit whose author it cannot resolve to a GitHub user; the deployment goes
+# to BLOCKED with no logs. Setting it here means an agent cannot get it wrong,
+# and scripts/guard-commit-identity.sh catches anyone working outside this tree.
+git -C "$DIR" config user.name  "Smarter-Poker"
+git -C "$DIR" config user.email "254329056+Smarter-Poker@users.noreply.github.com"
+
+# HOOKS AND DEPENDENCIES BEFORE THE FIRST COMMIT, NOT AFTER.
+# 2026-08-23: a fresh worktree had neither, and both failures were silent.
+# core.hooksPath pointed at the gitignored .husky/_, so git ran no hooks here at
+# all; and with no node_modules the hooks that did run went to the network.
+bash "$ROOT/scripts/ensure-hooks.sh" 2>&1 | sed "s/^/# /" >&2 || true
+
+# The link above is shared, and npm run inside ANY worktree writes through it.
+# Twice on 2026-08-23 that left ~285 package directories empty and broke the
+# hooks in every tree at once, with only an ERR_MODULE_NOT_FOUND to go on.
+# Probe it here - the one moment an agent is guaranteed to be looking - and
+# repair rather than report.
+bash "$ROOT/scripts/check-node-modules.sh" 2>&1 | sed "s/^/# /" >&2 || true
+
+# Every other guard in this estate queries GitHub, so all of them are blind to
+# work that never reached it. Ten commits sat in worktrees for nineteen hours on
+# 2026-08-23 and nothing noticed. An agent claiming a workspace is the most
+# frequent moment anybody looks at this machine, so the scan happens here.
+bash "$ROOT/scripts/check-unpushed-work.sh" --quiet 2>&1 | sed "s/^/# /" >&2 || true
+
+# Share the main clone's dependencies. The alternative is an npm install per
+# tree - minutes each, gigabytes across 47 trees - or a test gate that silently
+# skips, which is how a red test reaches main and blocks the bundle for all.
+# node_modules: a COPY-ON-WRITE CLONE, never a symlink.
+#
+# 2026-08-23. This used to be `ln -s`, and a symlink is not a safe thing to hand
+# an agent, because npm WRITES THROUGH IT. `npm ci` deletes node_modules before
+# reinstalling, so one `npm ci` in one worktree deleted the MAIN CLONE's install
+# that all 79 trees share. tsc and vitest vanished everywhere at once, agents
+# reasonably concluded their own tree was broken, and ran npm ci again - which
+# is a loop that sustains itself. It gutted the shared tree three times in one
+# afternoon, and two separate agents reported it independently.
+#
+# `cp -Rc` is an APFS clone: about five seconds, and copy-on-write, so it costs
+# no real disk until something modifies it. Each tree now owns its node_modules
+# outright, which means `npm ci` in a worktree is simply SAFE - the thing agents
+# were doing all along.
+if [ ! -e "$DIR/node_modules" ] && [ -d "$ROOT/node_modules" ]; then
+  if cp -Rc "$ROOT/node_modules" "$DIR/node_modules" 2>/dev/null; then
+    echo "# node_modules: cloned from the main clone (copy-on-write, ~5s, no extra disk)" >&2
+  elif cp -R "$ROOT/node_modules" "$DIR/node_modules" 2>/dev/null; then
+    # Not APFS. Slower and it really does use the disk, but still ISOLATED,
+    # which is the property that matters.
+    echo "# node_modules: copied from the main clone (no copy-on-write here)" >&2
+  else
+    echo "# node_modules: could not be provisioned - run npm ci in this tree" >&2
+  fi
+fi
+
 echo "# worktree: $DIR" >&2
 echo "# branch:   $BRANCH  (from origin/main)" >&2
 if [ "$MODE" = "--print-path" ]; then

@@ -7,7 +7,8 @@
 # audit doc and the [mode].js edits on 2026-08-12.
 #
 # git has no `pre-reset` hook — the file of that name in some of these clones
-# has never once run — and `post-checkout` fires after the damage.
+# has never once run — and `post-checkout` fires after the damage, and not on
+# `git reset` at all.
 # `reference-transaction` fires on "prepared", before any ref update is
 # committed to disk, and returning non-zero aborts the whole transaction.
 #
@@ -45,7 +46,67 @@ while read -r OLD NEW REF; do
     esac
     [ "$OLD" = "$ZERO" ] && continue
     [ "$NEW" = "$ZERO" ] && continue
-    [ "$OLD" = "$NEW" ]  && continue
+
+    # OLD == NEW IS NOT NOTHING. It is `git reset --hard` with no argument:
+    # history does not move, so this hook used to `continue` past it - and
+    # discarding the WORKING TREE is that command's entire effect. It is the
+    # exact shape that wiped a full Club Bank Cashier session twice on
+    # 2026-08-23, and every guard in this repo scored a pass on it because they
+    # all look for orphaned COMMITS and correctly found none.
+    #
+    # Nothing here can PREVENT it. By the time reference-transaction fires at
+    # "prepared", git has already reset the index and the working tree -
+    # verified by running `git status` from inside this hook mid-reset and
+    # getting a clean tree back. There is no earlier hook; git has no
+    # pre-reset. So this says what just happened and points at the snapshots,
+    # which is the difference between losing an hour and losing a session.
+    if [ "$OLD" = "$NEW" ]; then
+        # DO NOT ASK THE REFLOG. At "prepared" the entry for this operation
+        # has not been written yet, so `git reflog -1` returns the PREVIOUS
+        # action and the match never fires - the same class of mistake as the
+        # dead string test this commit removes from post-checkout.
+        #
+        # Measured instead: across reset(dirty), reset(clean), commit,
+        # checkout, fetch and tag, OLD == NEW on HEAD/main occurs ONLY for
+        # `git reset` and for `git branch -M <same-name>`. A freshly written
+        # ORIG_HEAD separates those two, because reset writes it and a rename
+        # does not.
+        GD=$(git rev-parse --git-dir 2>/dev/null || echo .git)
+        IS_RESET=no
+        if [ -f "$GD/ORIG_HEAD" ]; then
+            # GNU stat first (see the note in the commit): on Linux `stat -f`
+            # is --file-system and %m is the MOUNT POINT, a path, which would
+            # make the arithmetic below fail. macOS rejects -c and falls through.
+            NOW=$(date +%s)
+            MOD=$(stat -c %Y "$GD/ORIG_HEAD" 2>/dev/null || stat -f %m "$GD/ORIG_HEAD" 2>/dev/null || echo 0)
+            [ $((NOW - MOD)) -le 5 ] && IS_RESET=yes
+        fi
+        case "$IS_RESET" in
+            yes)
+                RECENT=$(git for-each-ref --sort=-creatordate --count=3 \
+                           --format='    %(refname)  (%(creatordate:relative))' \
+                           refs/wip 2>/dev/null)
+                {
+                  echo ""
+                  echo "  A hard reset just discarded uncommitted changes in this tree."
+                  echo "  History did not move, so nothing was orphaned - but tracked"
+                  echo "  modifications are gone. Untracked files are untouched."
+                  echo ""
+                  if [ -n "$RECENT" ]; then
+                    echo "  Most recent working-tree snapshots (launchd, every 10 min):"
+                    echo "$RECENT"
+                    echo ""
+                    echo "  Recover with:  git stash apply <ref>"
+                  else
+                    echo "  No refs/wip snapshots exist. If that work mattered, check"
+                    echo "  \`git fsck --lost-found\` now, before the objects are pruned."
+                  fi
+                  echo ""
+                } >&2
+                ;;
+        esac
+        continue
+    fi
 
     # Commits reachable from OLD but not NEW: exactly what this update destroys.
     ORPHANED=$(git log "$NEW..$OLD" --oneline 2>/dev/null | head -20)

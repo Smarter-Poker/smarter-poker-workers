@@ -67,9 +67,55 @@ while IFS= read -r line; do
 done < <(git -C "$ROOT" worktree list --porcelain; echo)
 
 echo
+
+echo
+echo "--- Checking Production Pipeline ---"
+# Dan/estate 2026-08-24: this URL is CLUB ARENA's published bundle, and the sha
+# it carries is keyed `ca_sha`. This script is supposed to be byte-identical in
+# all seven repos, so hardcoding it meant that in any OTHER repo the section
+# below fetched club-arena's build-info, compared club-arena's sha against THAT
+# repo's origin/main, found a mismatch every single time, and reported a false
+# "ORPHANED PUBLISH" while incrementing AT_RISK. A guard that cries wolf in six
+# of seven repos is a guard people learn to ignore.
+#
+# Derive it from the remote instead. Repos with no published bundle skip the
+# section entirely rather than being told their publish is broken.
+BUILD_INFO_URL=""
+case "$(git -C "$ROOT" config --get remote.origin.url 2>/dev/null || echo "")" in
+  *Smarter-Poker-Club-Arena*) BUILD_INFO_URL="https://smarter.poker/hub/club-arena/build-info.json" ;;
+esac
+if [ -z "$BUILD_INFO_URL" ]; then
+  echo "SKIP: this repo publishes no bundle of its own - nothing to compare."
+else
+NOW=$(date -u +%s)
+SERVED_JSON=$(curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${BUILD_INFO_URL}?cb=${NOW}" 2>/dev/null || true)
+if [ -n "$SERVED_JSON" ]; then
+  SERVED_SHA=$(printf '%s' "$SERVED_JSON" | sed -n 's/.*"ca_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
+  HEAD_SHA=$(git -C "$ROOT" rev-parse origin/main 2>/dev/null || true)
+  if [ -n "$SERVED_SHA" ] && [ -n "$HEAD_SHA" ]; then
+    if [ "$SERVED_SHA" = "$HEAD_SHA" ]; then
+      echo "OK: Production is serving origin/main ($HEAD_SHA)."
+    else
+      echo "WARNING: Production ($SERVED_SHA) is NOT serving origin/main ($HEAD_SHA)."
+      if git -C "$ROOT" merge-base --is-ancestor "$SERVED_SHA" "$HEAD_SHA" 2>/dev/null; then
+        echo "State: Lagging (Publish in flight or failed)."
+      else
+        echo "State: ORPHANED PUBLISH. Production is not an ancestor of main."
+        AT_RISK=$((AT_RISK + 1))
+      fi
+    fi
+  else
+    echo "WARNING: Could not parse SHAs."
+  fi
+else
+    echo "WARNING: Could not read $BUILD_INFO_URL"
+  fi
+fi
+
+
 if [ "$AT_RISK" -gt 0 ]; then
-  echo "$AT_RISK tree(s) hold work that exists in exactly one place."
-  echo "Commit and push them - open the PR and stop, Autopilot merges it."
+  echo
+  echo "FAIL: $AT_RISK issue(s) detected. Production is orphaned or local trees hold unpushed work."
   exit 1
 fi
-echo "Every tree is committed and pushed. Nothing would be lost by a reset."
+echo "SUCCESS: Everything is pushed, committed, and safely deployed."
