@@ -127,7 +127,7 @@ A green CI pipeline and a merged PR only prove your code does not crash. It **DO
 
 - **NO SURFACE-LEVEL PATCHES:** You must track the bug to its absolute root cause. Fixing a symptom without checking for structural contagion (e.g., stale cache, inherited state, nested URL parameters) is a failure of your duty.
 - **HOSTILE ENVIRONMENT TESTING:** You must assume the user's browser is a hostile environment: old `localStorage` data, expired tokens, stale bookmarks, and mid-flight network drops. If your fix relies on a pristine, freshly-cleared browser state to work, your fix is invalid.
-- **BURDEN OF PROOF:** You may not tell the user "I fixed it." You must explicitly explain exactly *how* you proved their exact edge case is eradicated.
+- **BURDEN OF PROOF:** You may not tell the user "I fixed it." You must explicitly explain exactly _how_ you proved their exact edge case is eradicated.
 
 ## APPENDIX A — CI PIPELINE & REVERT GUARDS
 
