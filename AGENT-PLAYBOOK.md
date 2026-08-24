@@ -15,23 +15,15 @@ git log -1 --format='%an <%ae>' # must be Smarter-Poker # <254329056+...@users.n
 git log --oneline origin/main..HEAD | wc -l
 State plainly whether you used --no-verify at any point. If you did, say where and why.
 
-PART C — IS THE CODE ACTUALLY DONE?
-Re-read your own diff before answering: `git diff origin/main...HEAD`
+PART C — IS THE CODE ACTUALLY DONE? (THE INTERROGATION)
+You must re-read your own diff before answering: `git diff origin/main...HEAD`
 
-1. STUBS — any TODO, FIXME, `throw new Error('not implemented')`,
-   empty catch, hardcoded placeholder, mock left in a real path?
-   Search for them; do not rely on memory.
-2. WIRING — is every new function actually CALLED? Every new component
-   rendered? Every new route reachable? Every emitted event listened
-   for? Name the caller for each thing you added.
-3. DATABASE — did you add a migration? Was it APPLIED to production
-   via the Supabase MCP? A migration file that never ran is a feature
-   the code believes in and the database has never heard of.
-4. REGRESSIONS — what existing behaviour does this change? Which tests
-   covered it? Did you update them in the SAME commit, or leave them
-   asserting the old rule?
-5. ERROR PATHS — what happens when the network fails, the row is
-   missing, the user is logged out? Show me where each is handled.
+1. STUBS & MOCKS — Are there any TODO, FIXME, `throw new Error('not implemented')`, empty catch blocks, or hardcoded placeholders left behind? Run a search. Do not rely on memory.
+2. WIRING & EXECUTION — Is every new function actually CALLED? Is every new component actually rendered? Is every route reachable? Name the exact caller for every single addition. Dead code is unacceptable.
+3. DATABASE STATE — Did you write a migration? Was it actually APPLIED to production via the Supabase MCP? A migration file that hasn't run is a feature the database doesn't know exists.
+4. COLLATERAL DAMAGE — What existing behavior did this change alter? Did you update the tests in the SAME commit, or did you leave them asserting the old rules?
+5. HOSTILE STATE & CACHE — What happens if the user's localStorage is stale? What happens if they enter via a 6-month-old bookmark? Show exactly where the fallback or transition is handled in your code.
+6. USER INTENT VERIFICATION — Did you actually solve the specific complaint the user raised? Explain step-by-step how your code definitively prevents the user's exact reported error sequence from ever happening again.
 
 PART D — DOES IT RUN?
 npx tsc --noEmit # paste the result
@@ -49,6 +41,16 @@ ANSWER FORMAT: for each of A–E, either the command output showing it is
 satisfied, or a plain statement of what is not done and what you are
 doing about it. If something is incomplete, say so — an honest gap is
 worth more than a confident claim I have to discover is wrong.
+
+---
+
+## RULE 8 — THE ZERO-ASSUMPTION DOCTRINE (PROOF OF RESOLUTION)
+
+A green CI pipeline and a merged PR only prove your code does not crash. It **DOES NOT** prove you fixed the user's problem. You are forbidden from claiming success until you have verified the resolution in production.
+
+- **NO SURFACE-LEVEL PATCHES:** You must track the bug to its absolute root cause. Fixing a symptom without checking for structural contagion (e.g., stale cache, inherited state, nested URL parameters) is a failure of your duty.
+- **HOSTILE ENVIRONMENT TESTING:** You must assume the user's browser is a hostile environment: old `localStorage` data, expired tokens, stale bookmarks, and mid-flight network drops. If your fix relies on a pristine, freshly-cleared browser state to work, your fix is invalid.
+- **BURDEN OF PROOF:** You may not tell the user "I fixed it." You must explicitly explain exactly _how_ you proved their exact edge case is eradicated.
 
 ---
 
@@ -80,17 +82,7 @@ git push -u origin HEAD && gh pr create --fill
 ```
 
 Autopilot enables squash auto-merge within seconds, keeps the branch fresh, and
-GitHub merges it the moment the required checks are green. **You never merge manually.**
-
-However, **do not exit immediately** after opening the PR. You must verify the PR actually goes green. Do not use bash polling (`while true; do ...`) as it wastes resources. Instead, use the **`schedule`** tool:
-
-1. Call `schedule` with `DurationSeconds=300` (5 minutes) and `Prompt="Check if the PR went green and merged. If it failed, read the logs, fix it, and push again."`
-2. End your turn. The system will wake you up when the timer fires.
-3. Check `gh pr status`.
-   - If **Merged**: You are done! Report task complete.
-   - If **Pending**: Set another 5-minute timer and go back to sleep.
-   - If **Failed/Blocked**: Fix the issue (e.g., `git pull --rebase origin main`, fix a red test), force-push, and set a new timer.
-4. **Never report task complete** to the user until the PR is verified green and merged.
+GitHub merges it the moment the required checks are green. **You never merge.**
 
 If you do only one thing from this document, do step 1. Sharing a checkout is
 the single largest cause of destroyed work here.
@@ -212,23 +204,23 @@ add a team member to unblock a deploy.
 
 Each one caused a real, dated incident.
 
-| Never                                                                     | What happened                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Work in the shared clone                                                  | One HEAD, one index. Agent B's `checkout -b` takes agent A's edits with it. Eight abandoned stashes and six `backup/*` branches were the evidence                                                                                                                                                                                                                |
-| `gh pr merge --admin`                                                     | Bypasses required checks. Red code reached `main` four times                                                                                                                                                                                                                                                                                                     |
-| `gh pr merge --merge` / `--rebase`                                        | Disabled here. The API call fails **silently** while the agent reports success                                                                                                                                                                                                                                                                                   |
-| A bash polling script (`wait_and_merge.sh`, `while true; do gh run list`) | Fragile and wastes compute. Use the Antigravity `schedule` tool to wait instead.                                                                                                                                                                                                                                                                                 |
-| `git push` / `--force` to `main`                                          | Blocked by the ruleset. A force-push once rewound `main` and dropped four commits already live in production                                                                                                                                                                                                                                                     |
-| `git pull --rebase origin main` on the Mac clone                          | Strands the clone mid-rebase. Use `bash scripts/git-unstick.sh`                                                                                                                                                                                                                                                                                                  |
-| `--no-verify`                                                             | Skips every hook, and each one is there because something was lost                                                                                                                                                                                                                                                                                               |
-| Resolve a conflict with `--ours` / `--theirs` on a whole file             | This is how a leaderboard RPC call vanished while its function signature survived. **Resolve hunk by hunk**                                                                                                                                                                                                                                                      |
-| Commit a red test                                                         | `npx vitest run tests/` is what PUBLISHES the bundle. A red test stops the deploy for everyone. Write the spec first as `it.skip()` with a note                                                                                                                                                                                                                  |
-| Write a migration and not apply it                                        | The code believes in a feature the database has never heard of. It fails 42703 into a catch block and nothing goes red. Apply with the Supabase MCP `apply_migration`                                                                                                                                                                                            |
-| Commit under any identity but `Smarter-Poker`                             | Vercel refuses to build a commit whose author it cannot resolve to a GitHub user. The deployment goes to **BLOCKED** - no build, no logs, nothing in CI can see it, only a red dashboard row. Five sat that way on 2026-08-23, all authored `Agent <agent@smarter.poker>`                                                                                        |
-| Commit a hook file non-executable                                         | git **skips** a hook that is not mode 755 and mentions it only as a hint buried in commit output. `.husky/pre-commit` was 644 in two repos, so both guards it holds were decorative for months                                                                                                                                                                   |
-| ~~`npm install` inside a worktree~~ — **now safe**                        | Worktrees used to share the main clone's `node_modules` through a symlink, and `npm ci` writes through it: one install deleted the shared tree and broke `tsc`/`vitest` for all 79 trees at once, three times in one afternoon. `scripts/agent-workspace.sh` now gives each tree its own copy-on-write clone, so npm in your own tree affects only your own tree |
-| `npm install` / `npm ci` inside a worktree                                | Worktrees share the main clone's `node_modules` through a symlink, and npm **writes through it**. One install in one tree emptied ~285 packages and broke `tsc`/`vitest` for every tree at once. Add the dependency in `~/Documents/<repo>` and run `npm ci` THERE. `scripts/check-node-modules.sh` detects and repairs it                                       |
-| Ask a human to push, merge, deploy, or approve                            | The entire point of this document                                                                                                                                                                                                                                                                                                                                |
+| Never                                                                | What happened                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Work in the shared clone                                             | One HEAD, one index. Agent B's `checkout -b` takes agent A's edits with it. Eight abandoned stashes and six `backup/*` branches were the evidence                                                                                                                                                                                                                |
+| `gh pr merge --admin`                                                | Bypasses required checks. Red code reached `main` four times                                                                                                                                                                                                                                                                                                     |
+| `gh pr merge --merge` / `--rebase`                                   | Disabled here. The API call fails **silently** while the agent reports success                                                                                                                                                                                                                                                                                   |
+| A polling script (`wait_and_merge.sh`, `while true; do gh run list`) | Fragile and unobservable. Autopilot already does this, server-side                                                                                                                                                                                                                                                                                               |
+| `git push` / `--force` to `main`                                     | Blocked by the ruleset. A force-push once rewound `main` and dropped four commits already live in production                                                                                                                                                                                                                                                     |
+| `git pull --rebase origin main` on the Mac clone                     | Strands the clone mid-rebase. Use `bash scripts/git-unstick.sh`                                                                                                                                                                                                                                                                                                  |
+| `--no-verify`                                                        | Skips every hook, and each one is there because something was lost                                                                                                                                                                                                                                                                                               |
+| Resolve a conflict with `--ours` / `--theirs` on a whole file        | This is how a leaderboard RPC call vanished while its function signature survived. **Resolve hunk by hunk**                                                                                                                                                                                                                                                      |
+| Commit a red test                                                    | `npx vitest run tests/` is what PUBLISHES the bundle. A red test stops the deploy for everyone. Write the spec first as `it.skip()` with a note                                                                                                                                                                                                                  |
+| Write a migration and not apply it                                   | The code believes in a feature the database has never heard of. It fails 42703 into a catch block and nothing goes red. Apply with the Supabase MCP `apply_migration`                                                                                                                                                                                            |
+| Commit under any identity but `Smarter-Poker`                        | Vercel refuses to build a commit whose author it cannot resolve to a GitHub user. The deployment goes to **BLOCKED** - no build, no logs, nothing in CI can see it, only a red dashboard row. Five sat that way on 2026-08-23, all authored `Agent <agent@smarter.poker>`                                                                                        |
+| Commit a hook file non-executable                                    | git **skips** a hook that is not mode 755 and mentions it only as a hint buried in commit output. `.husky/pre-commit` was 644 in two repos, so both guards it holds were decorative for months                                                                                                                                                                   |
+| ~~`npm install` inside a worktree~~ — **now safe**                   | Worktrees used to share the main clone's `node_modules` through a symlink, and `npm ci` writes through it: one install deleted the shared tree and broke `tsc`/`vitest` for all 79 trees at once, three times in one afternoon. `scripts/agent-workspace.sh` now gives each tree its own copy-on-write clone, so npm in your own tree affects only your own tree |
+| `npm install` / `npm ci` inside a worktree                           | Worktrees share the main clone's `node_modules` through a symlink, and npm **writes through it**. One install in one tree emptied ~285 packages and broke `tsc`/`vitest` for every tree at once. Add the dependency in `~/Documents/<repo>` and run `npm ci` THERE. `scripts/check-node-modules.sh` detects and repairs it                                       |
+| Ask a human to push, merge, deploy, or approve                       | The entire point of this document                                                                                                                                                                                                                                                                                                                                |
 
 ---
 
@@ -410,7 +402,10 @@ Inside a workflow the question does not arise: the App (id 4680372) has Checks
 permission, so anything running in Actions can read them. Only the local PAT
 cannot.
 
-**And you should not be bash-polling in the first place.** Open the PR, then use the **`schedule`** tool to set a wakeup timer (e.g., 5 minutes) and go to sleep. Autopilot merges it when the checks go green. When the timer wakes you up, check `gh pr status` to see if it merged or failed. Sitting in a bash `while` loop waiting is forbidden because it wastes compute, which is what the old `wait_and_merge.sh` scripts did.
+**And you should not be polling in the first place.** Open the PR and stop.
+Autopilot merges it when the checks go green. Checking once to see _why_
+something is BLOCKED is fine; sitting in a loop waiting is the thing the
+forbidden `wait_and_merge.sh` scripts did.
 
 ### `gh` is the sanctioned path. The GitHub MCP is not.
 
