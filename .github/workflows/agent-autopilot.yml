@@ -122,14 +122,14 @@ jobs:
         # WITHOUT THIS the job has no working tree and
         # `.github/scripts/queue-pr.sh` exits 127. That is how this workflow
         # failed on its own first run.
-        uses: actions/checkout@v4.3.1
+        uses: actions/checkout@v7.0.1
 
       - name: Mint a GitHub App installation token
         # Skipped entirely when the App is not configured, in which case the
         # `||` chain below falls through to GH_PAT exactly as before.
         id: app-token
         if: vars.AUTOPILOT_APP_ID != ''
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.AUTOPILOT_APP_ID }}
           private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
@@ -167,14 +167,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.3.1
+        uses: actions/checkout@v7.0.1
 
       - name: Mint a GitHub App installation token
         # Skipped entirely when the App is not configured, in which case the
         # `||` chain below falls through to GH_PAT exactly as before.
         id: app-token
         if: vars.AUTOPILOT_APP_ID != ''
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.AUTOPILOT_APP_ID }}
           private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
