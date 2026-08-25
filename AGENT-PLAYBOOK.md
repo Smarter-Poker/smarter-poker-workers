@@ -310,13 +310,19 @@ answers "did it ship".
 Measured on this machine 2026-08-25, after a session that took ~30 minutes and
 should have taken ~10. The gates are cheap. Waiting is not.
 
-| What                                 | Actual cost |
-| ------------------------------------ | ----------- |
-| `npx vitest run tests/` (1432 tests) | **~3.5s**   |
-| `npx tsc --noEmit` (client)          | **~21s**    |
-| server `tsc` + its vitest            | **~5s**     |
-| CI required checks, end to end       | **0-2 min** |
-| A whole pre-push gate                | **~26s**    |
+| What                                      | Actual cost |
+| ----------------------------------------- | ----------- |
+| `npx vitest run tests/` — **4,240 tests** | **~10s**    |
+| server `npx vitest run` — **1,452 tests** | **~21s**    |
+| `npx tsc --noEmit` (client)               | **~21s**    |
+| `npx tsc --noEmit` (server)               | **~3s**     |
+| CI required checks, end to end            | **0-2 min** |
+| **Every gate above, run in full**         | **~55s**    |
+
+The pre-push hook does not even run all of that — it runs the tests _related
+to what you touched_, which is faster still. And measure before you assume:
+an earlier draft of this table said "1432 tests in 3.5s", taken from a
+partial run, and was wrong in both columns.
 
 **So if your task took 25 minutes, roughly 24 of them were not compute.**
 They were one of these four:
@@ -326,7 +332,7 @@ They were one of these four:
 The single largest waste. Do not `sleep`-and-poll a deploy, a check, a merge,
 or a watchdog. **Every one of them is already watched server-side** — Autopilot
 merges, `publish-watchdog` compares production to `main`, `report-stuck-prs`
-opens the PR you forgot. Section 8 says never write `wait_and_merge.sh`; this is
+opens the PR you forgot. Section 5 forbids `wait_and_merge.sh` by name; this is
 the same rule for the same reason, and "I'll just check every 30 seconds"
 is that script written by hand.
 
