@@ -305,6 +305,74 @@ answers "did it ship".
 
 ---
 
+## 7b. YOUR TIME GOES SOMEWHERE. IT IS ALMOST NEVER THE WORK
+
+Measured on this machine 2026-08-25, after a session that took ~30 minutes and
+should have taken ~10. The gates are cheap. Waiting is not.
+
+| What                                 | Actual cost |
+| ------------------------------------ | ----------- |
+| `npx vitest run tests/` (1432 tests) | **~3.5s**   |
+| `npx tsc --noEmit` (client)          | **~21s**    |
+| server `tsc` + its vitest            | **~5s**     |
+| CI required checks, end to end       | **0-2 min** |
+| A whole pre-push gate                | **~26s**    |
+
+**So if your task took 25 minutes, roughly 24 of them were not compute.**
+They were one of these four:
+
+### 1. Waiting for something that finishes without you
+
+The single largest waste. Do not `sleep`-and-poll a deploy, a check, a merge,
+or a watchdog. **Every one of them is already watched server-side** — Autopilot
+merges, `publish-watchdog` compares production to `main`, `report-stuck-prs`
+opens the PR you forgot. Section 8 says never write `wait_and_merge.sh`; this is
+the same rule for the same reason, and "I'll just check every 30 seconds"
+is that script written by hand.
+
+Push, open the PR, **stop**. Check once at the end if you must. A poll loop also
+burns a tool call and a slice of context per iteration, so it costs tokens as
+well as minutes.
+
+### 2. Re-solving the same setup, once per worktree
+
+If you hit a missing dependency, a PATH problem or a broken tool, fix it **for
+the session**, not for the command in front of you. Four worktrees means four
+chances to solve the identical problem four times.
+
+`gh`, `node` and `npx` are not on the default PATH in every shell here:
+
+```bash
+export PATH="/opt/homebrew/bin:$PATH"; source ~/.nvm/nvm.sh
+```
+
+### 3. One command per round trip
+
+Every tool call is latency. Batch independent commands into one invocation and
+independent tool calls into one message. Ten `echo`-and-check calls that could
+have been one script are ten round trips you paid for and nine you did not need.
+
+Trim output at the source — `| head`, `--jq`, `cut -c1-120`. An unbounded `ps`
+or `git log` can blow the response limit outright, which costs the whole call.
+
+### 4. Long operations inside a blocking call
+
+Anything over ~90s can outlive the call and you will lose the result, retry, and
+pay twice. Background it and come back:
+
+```bash
+nohup bash -c 'long-thing' >/tmp/out.log 2>&1 &      # returns instantly
+```
+
+### And before you expand the job
+
+"Get everything up to date" is not a mandate to open eleven pull requests across
+seven repositories. When a task grows past what was asked, **say what you found
+and let the human choose the scope.** Finding six more problems is useful; fixing
+all of them unasked, slowly, is usually not what was wanted.
+
+---
+
 ## 8. AGENTS WORK THROUGH THE CLI AND THE API. NEVER THE BROWSER UI
 
 Every operation in this estate — branching, committing, pushing, opening a pull
