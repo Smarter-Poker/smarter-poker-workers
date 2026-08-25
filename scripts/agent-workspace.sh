@@ -52,6 +52,177 @@ SAFE_AGENT=$(printf '%s' "$AGENT" | tr -c 'A-Za-z0-9._-' '-')
 BRANCH="agent/${SAFE_AGENT}/$(printf '%s' "$SLUG" | sed 's#^agent/[^/]*/##')"
 DIR="$TREES/$SAFE_AGENT"
 
+# Share the main clone's dependencies. The alternative is an npm install per
+# tree - minutes each, gigabytes across 47 trees - or a test gate that silently
+# skips, which is how a red test reaches main and blocks the bundle for all.
+# node_modules: a COPY-ON-WRITE CLONE, never a symlink.
+#
+# 2026-08-23. This used to be `ln -s`, and a symlink is not a safe thing to hand
+# an agent, because npm WRITES THROUGH IT. `npm ci` deletes node_modules before
+# reinstalling, so one `npm ci` in one worktree deleted the MAIN CLONE's install
+# that all 79 trees share. tsc and vitest vanished everywhere at once, agents
+# reasonably concluded their own tree was broken, and ran npm ci again - which
+# is a loop that sustains itself. It gutted the shared tree three times in one
+# afternoon, and two separate agents reported it independently.
+#
+# `cp -Rc` is an APFS clone: about five seconds, and copy-on-write, so it costs
+# no real disk until something modifies it. Each tree now owns its node_modules
+# outright, which means `npm ci` in a worktree is simply SAFE - the thing agents
+# were doing all along.
+#
+# 2026-08-25: EVERY PACKAGE ROOT, AND ON EVERY ENTRY - NOT JUST AT CREATION.
+#
+# Two holes, both measured on this machine:
+#
+#   1. This block only ever knew about the repo root. `server/` is its own
+#      package with its own node_modules, and NOTHING provisioned it, so
+#      124 of 162 Club Arena trees could not run the ENGINE's tsc or vitest
+#      at all. That is the highest-stakes code in the repo, and the pre-push
+#      hook responds to a missing vitest by printing a WARNING and skipping
+#      the test gate - so "NEVER PUSH A RED TEST" was unenforceable in the
+#      large majority of trees, silently, for anyone touching server/**.
+#      A gate that has quietly stopped running looks exactly like a gate
+#      with nothing to complain about.
+#
+#   2. It ran only when the tree was first created. Provisioning takes a few
+#      seconds, and an agent whose session is interrupted inside that window
+#      leaves an unprovisioned tree that NOTHING ever repairs - it is skipped
+#      forever after, because the `git worktree add` has already happened.
+#      That is where the 8 trees with no root node_modules came from.
+#
+# So: provision every package root, every time this script is run, and repair
+# what is missing rather than assuming creation succeeded. Cloning is a no-op
+# when the directory is already there, so the steady-state cost is one `[ -e ]`
+# per package root.
+provision_node_modules() {
+  # $1 = package dir relative to the repo root ("" for the root itself)
+  local rel="$1"
+  local src="$ROOT${rel:+/$rel}"
+  local dst="$DIR${rel:+/$rel}"
+  local label="${rel:-.}/node_modules"
+
+  [ -d "$dst" ] || return 0
+  # A directory is not a package. Without this, a branch where server/ exists
+  # but carries no manifest still gets ~700 packages dropped into it.
+  [ -f "$dst/package.json" ] || return 0
+
+  if [ ! -d "$src/node_modules" ]; then
+    # Silence here is how the server/ hole survived: nothing was provisioned
+    # and nothing said so.
+    echo "# $label: the main clone has none either - run 'npm ci' in ${rel:-the clone root}" >&2
+    return 0
+  fi
+
+  [ -e "$dst/node_modules" ] && return 0
+
+  # ATOMIC, because `[ -e ]` above is a presence test and not a completeness
+  # test. Copying straight to the destination means any interruption - a killed
+  # session, a full disk, a TCC prompt - leaves a partial tree that every later
+  # run then treats as provisioned forever. That is the exact hole this block
+  # was written to close, and the first version of it reintroduced the hole one
+  # line below the fix. Build beside the target, then rename.
+  #
+  # It also means we never copy ONTO an existing directory, which is what
+  # produces node_modules/node_modules and poisons a tree permanently.
+  local tmp="$dst/.node_modules-provision.$$"
+  rm -rf "$dst"/.node_modules-provision.* 2>/dev/null || true
+
+  if cp -Rc "$src/node_modules" "$tmp" 2>/dev/null; then
+    mv "$tmp" "$dst/node_modules" && echo "# $label: cloned from the main clone (copy-on-write, no extra disk)" >&2
+  elif cp -R "$src/node_modules" "$tmp" 2>/dev/null; then
+    # Not APFS. Slower and it really does use the disk, but still ISOLATED,
+    # which is the property that matters.
+    mv "$tmp" "$dst/node_modules" && echo "# $label: copied from the main clone (no copy-on-write here)" >&2
+  else
+    rm -rf "$tmp" 2>/dev/null || true
+    echo "# $label: could not be provisioned - run 'npm ci' in ${rel:-the tree root}" >&2
+  fi
+}
+
+# EVERY package root, discovered rather than listed. The first version of this
+# was `for _pkg in server`, under a comment promising "every nested package that
+# carries its own manifest" - so the next package added would have been silently
+# unprovisioned, which is the same failure one package later.
+provision_all_package_roots() {
+  provision_node_modules ""
+  while IFS= read -r _manifest; do
+  [ -n "$_manifest" ] || continue
+  provision_node_modules "${_manifest%/package.json}"
+  done <<EOF_PKGS
+$(cd "$ROOT" 2>/dev/null && find . -name package.json \
+    -not -path '*/node_modules/*' -not -path './.git/*' \
+    -not -path './.cowork-trees/*' -not -path './.agent-trees/*' \
+    -mindepth 2 -maxdepth 3 2>/dev/null | sed 's|^\./||')
+EOF_PKGS
+  unset _manifest
+}
+
+# ── PRESENT IS NOT THE SAME AS USABLE (2026-08-25) ──
+#
+# A swarm agent lost a session to this: its provisioned server/node_modules
+# contained @rollup/rollup-darwin-arm64 as an EMPTY DIRECTORY, so vitest died
+# at startup with ERR_MODULE_NOT_FOUND and the tree looked fully provisioned by
+# every check we had. The empty directory came from the main clone - the repo
+# root had the real .node binary and server/ had the hollow shell - so every
+# tree cloned from it inherited a server test runner that could not start.
+#
+# That is the same lie as `[ -e node_modules ]`, one level down: the thing is
+# there, and it does not work. Platform-native optional dependencies are where
+# it bites, because npm installs exactly one per platform and a partial or
+# interrupted install leaves the directory without its binary.
+#
+# So verify the payload, not the path. Repair from whichever copy in this
+# repository actually has the binary.
+verify_native_deps() {
+  local dst="$1"
+  [ -d "$dst/node_modules" ] || return 0
+
+  # ONLY THIS PLATFORM'S PACKAGE. npm creates a directory for every platform in
+  # optionalDependencies and populates exactly one - the host's. So 23 of the 24
+  # @esbuild/* directories are empty ON PURPOSE, and a check that calls an empty
+  # directory broken invents two dozen faults and buries the one real one.
+  local plat
+  plat="$(node -p 'process.platform + "-" + process.arch' 2>/dev/null)" || return 0
+  [ -n "$plat" ] || return 0
+
+  local pkg name donor cand
+  for pkg in "$dst/node_modules/@rollup/rollup-$plat" "$dst/node_modules/@esbuild/$plat"; do
+    [ -d "$pkg" ] || continue
+
+    # HOLLOW is the signature, not "no .node" - rollup ships a .node and esbuild
+    # ships bin/esbuild, so testing for one file type invents a fault in the
+    # other. A package npm left half-installed has its manifest and nothing to
+    # run. Count the payload instead.
+    [ -n "$(find "$pkg" -type f ! -name 'package.json' ! -name 'README.md' ! -name 'LICENSE*' 2>/dev/null | head -1)" ] && continue
+
+    name="$(basename "$pkg")"
+    donor=""
+    for cand in "$ROOT/node_modules/@rollup/rollup-$plat" "$ROOT/node_modules/@esbuild/$plat" \
+                "$ROOT/server/node_modules/@rollup/rollup-$plat" "$ROOT/server/node_modules/@esbuild/$plat"; do
+      [ -d "$cand" ] || continue
+      [ "$(basename "$cand")" = "$name" ] || continue
+      [ -n "$(find "$cand" -type f ! -name 'package.json' ! -name 'README.md' ! -name 'LICENSE*' 2>/dev/null | head -1)" ] \
+        && { donor="$cand"; break; }
+    done
+
+    if [ -n "$donor" ]; then
+      rm -rf "$pkg" 2>/dev/null
+      cp -Rc "$donor" "$pkg" 2>/dev/null || cp -R "$donor" "$pkg" 2>/dev/null
+      echo "# native dep repaired: $name (it was installed empty)" >&2
+    else
+      echo "# native dep $name is empty and no good copy exists in this repo - run 'npm ci'" >&2
+    fi
+  done
+  return 0
+}
+
+verify_all_native_deps() {
+  verify_native_deps "$DIR"
+  [ -d "$DIR/server" ] && verify_native_deps "$DIR/server"
+  return 0
+}
+
+
 git -C "$ROOT" fetch origin main --quiet
 
 # ── SNAPSHOT EVERY OTHER TREE BEFORE TOUCHING ANYTHING ──────────────────────
@@ -81,6 +252,20 @@ if [ -d "$DIR" ] && git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then
     CUR=$(git -C "$DIR" branch --show-current)
     echo "# NOTE: $DIR has uncommitted changes on '$CUR'." >&2
     echo "# Leaving it exactly as it is. Commit or push that work first." >&2
+    # DEPENDENCIES ARE STILL REPAIRED ON THE WAY OUT (2026-08-25).
+    #
+    # This early return protects the agent's uncommitted WORK, which is right.
+    # But it used to skip provisioning too, and provisioning touches no tracked
+    # file, no branch and no index - it only adds node_modules that is missing.
+    # So the one moment an agent most needs a repair (mid-task, tests suddenly
+    # not running) was the one moment this script refused to give them one, and
+    # re-running it looked like a no-op.
+    #
+    # A swarm agent lost a session to exactly that: a hollow
+    # @rollup/rollup-darwin-arm64 in its server/node_modules, vitest dead at
+    # startup, and a workspace script that said "leaving it as it is" and did.
+    provision_all_package_roots
+    verify_all_native_deps
     [ "$MODE" = "--print-path" ] && echo "$DIR" || echo "cd '$DIR'"
     exit 0
   fi
@@ -118,34 +303,8 @@ bash "$ROOT/scripts/check-node-modules.sh" 2>&1 | sed "s/^/# /" >&2 || true
 # frequent moment anybody looks at this machine, so the scan happens here.
 bash "$ROOT/scripts/check-unpushed-work.sh" --quiet 2>&1 | sed "s/^/# /" >&2 || true
 
-# Share the main clone's dependencies. The alternative is an npm install per
-# tree - minutes each, gigabytes across 47 trees - or a test gate that silently
-# skips, which is how a red test reaches main and blocks the bundle for all.
-# node_modules: a COPY-ON-WRITE CLONE, never a symlink.
-#
-# 2026-08-23. This used to be `ln -s`, and a symlink is not a safe thing to hand
-# an agent, because npm WRITES THROUGH IT. `npm ci` deletes node_modules before
-# reinstalling, so one `npm ci` in one worktree deleted the MAIN CLONE's install
-# that all 79 trees share. tsc and vitest vanished everywhere at once, agents
-# reasonably concluded their own tree was broken, and ran npm ci again - which
-# is a loop that sustains itself. It gutted the shared tree three times in one
-# afternoon, and two separate agents reported it independently.
-#
-# `cp -Rc` is an APFS clone: about five seconds, and copy-on-write, so it costs
-# no real disk until something modifies it. Each tree now owns its node_modules
-# outright, which means `npm ci` in a worktree is simply SAFE - the thing agents
-# were doing all along.
-if [ ! -e "$DIR/node_modules" ] && [ -d "$ROOT/node_modules" ]; then
-  if cp -Rc "$ROOT/node_modules" "$DIR/node_modules" 2>/dev/null; then
-    echo "# node_modules: cloned from the main clone (copy-on-write, ~5s, no extra disk)" >&2
-  elif cp -R "$ROOT/node_modules" "$DIR/node_modules" 2>/dev/null; then
-    # Not APFS. Slower and it really does use the disk, but still ISOLATED,
-    # which is the property that matters.
-    echo "# node_modules: copied from the main clone (no copy-on-write here)" >&2
-  else
-    echo "# node_modules: could not be provisioned - run npm ci in this tree" >&2
-  fi
-fi
+provision_all_package_roots
+verify_all_native_deps
 
 echo "# worktree: $DIR" >&2
 echo "# branch:   $BRANCH  (from origin/main)" >&2
