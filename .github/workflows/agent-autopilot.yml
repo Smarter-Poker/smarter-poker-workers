@@ -204,6 +204,22 @@ jobs:
             DRAFT=$(echo "$pr"  | jq -r '.isDraft')
             AUTO=$(echo "$pr"   | jq -r 'if .autoMergeRequest then "yes" else "no" end')
             STATE=$(echo "$pr"  | jq -r '.mergeStateStatus')
+
+            # GitHub computes mergeability LAZILY. A bulk `gh pr list` returns
+            # "UNKNOWN" for every row until something asks about each pull
+            # request individually, so the `$STATE = DIRTY` test below did not
+            # fire and the conflicted majority fell through to the refresh path
+            # instead. MEASURED 2026-08-27 on one Club Arena sweep: all 100 open
+            # pull requests took "refreshing", every one of them conflicted —
+            # that is `gh pr update-branch` called 100 times a sweep on branches
+            # the API cannot fast-forward, which the comment below says must
+            # never happen. Re-asking costs one call per pull request and SAVES
+            # calls overall, because a conflicted PR then skips the compare, the
+            # run-list and the update-branch it used to make.
+            if [ "$STATE" = "UNKNOWN" ] || [ -z "$STATE" ] || [ "$STATE" = "null" ]; then
+              STATE=$(gh pr view "$N" --repo "$REPO" --json mergeStateStatus \
+                        --jq .mergeStateStatus 2>/dev/null || echo UNKNOWN)
+            fi
             BRANCH=$(echo "$pr" | jq -r '.headRefName')
             BASE=$(echo "$pr"   | jq -r '.baseRefName')
             HOLD=$(echo "$pr"   | jq -r '[.labels[].name] | map(select(.=="do-not-merge" or .=="hold" or .=="wip")) | length')

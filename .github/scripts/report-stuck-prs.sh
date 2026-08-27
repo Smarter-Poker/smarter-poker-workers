@@ -134,6 +134,18 @@ while read -r pr; do
              || date -u -d "$CREATED" +%s 2>/dev/null || echo "$NOW")) / 3600 ))
   [ "$AGE_H" -lt "$STUCK_AFTER_H" ] && continue
 
+  # Same lazy-mergeability trap as agent-autopilot.yml. Here it was worse: the
+  # `case` below ends in `*) continue ;;`, so an UNKNOWN state did not merely
+  # mis-classify a pull request, it DROPPED IT FROM THE REPORT ENTIRELY. This
+  # is the report that exists so a stranded pull request cannot go unnoticed,
+  # and it under-reported precisely when nothing else had warmed the cache —
+  # which is exactly when nobody was looking. Asked per pull request, after the
+  # draft/hold/age filters above so no call is wasted on a row we skip anyway.
+  if [ "$ST" = "UNKNOWN" ] || [ -z "$ST" ] || [ "$ST" = "null" ]; then
+    ST=$(gh pr view "$N" --repo "$REPO" --json mergeStateStatus \
+           --jq .mergeStateStatus 2>/dev/null || echo UNKNOWN)
+  fi
+
   case "$ST" in
     DIRTY)
       WHY="conflicts with the base branch"
@@ -157,6 +169,12 @@ while read -r pr; do
     BEHIND)
       WHY="behind its base and not refreshing"
       FIX="\`gh pr update-branch $N --repo $REPO\`" ;;
+    UNKNOWN|"")
+      # Still unknown after asking directly. Say so rather than dropping it:
+      # a pull request missing from this table reads as "nothing is stuck",
+      # and that silence is the failure this whole script exists to prevent.
+      WHY="mergeability unknown even when asked directly"
+      FIX="open the pull request and look — GitHub may still be computing, or the token cannot see it" ;;
     *)
       continue ;;
   esac
