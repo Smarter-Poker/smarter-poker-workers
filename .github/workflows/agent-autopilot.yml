@@ -216,10 +216,22 @@ jobs:
             # never happen. Re-asking costs one call per pull request and SAVES
             # calls overall, because a conflicted PR then skips the compare, the
             # run-list and the update-branch it used to make.
-            if [ "$STATE" = "UNKNOWN" ] || [ -z "$STATE" ] || [ "$STATE" = "null" ]; then
+            #
+            # ASKING ONCE IS NOT ENOUGH. GitHub computes mergeability
+            # ASYNCHRONOUSLY: the first request only STARTS the computation and
+            # returns UNKNOWN, and the answer lands a moment later. Measured
+            # 2026-08-27 after the single-ask version shipped — 20 of 99 pull
+            # requests resolved to DIRTY and 78 still fell through to a doomed
+            # `update-branch`. Ask, pause, ask again.
+            for _try in 1 2 3; do
+              case "$STATE" in
+                UNKNOWN|""|null) ;;
+                *) break ;;
+              esac
+              [ "$_try" = 1 ] || sleep 2
               STATE=$(gh pr view "$N" --repo "$REPO" --json mergeStateStatus \
                         --jq .mergeStateStatus 2>/dev/null || echo UNKNOWN)
-            fi
+            done
             BRANCH=$(echo "$pr" | jq -r '.headRefName')
             BASE=$(echo "$pr"   | jq -r '.baseRefName')
             HOLD=$(echo "$pr"   | jq -r '[.labels[].name] | map(select(.=="do-not-merge" or .=="hold" or .=="wip")) | length')
@@ -278,7 +290,13 @@ jobs:
               elif [ "${BEHIND:-0}" -ge 40 ]; then
                 REFRESH="very stale ($BEHIND behind)"
               fi
-              if [ "$REFRESH" != "no" ]; then
+              if [ "$REFRESH" != "no" ] && [ "$STATE" = "UNKNOWN" ]; then
+                # Still unknown after three asks. Refreshing is the ONLY action
+                # here that can do harm — on a conflicted branch it cannot
+                # succeed and it churns CI — so an unanswered question is not a
+                # licence to take it.
+                echo "#$N ($BRANCH): would refresh ($REFRESH) but mergeability is still unknown — not touching it."
+              elif [ "$REFRESH" != "no" ]; then
                 echo "#$N ($BRANCH): refreshing — $REFRESH."
                 gh pr update-branch "$N" --repo "$REPO" \
                   || echo "::warning::#$N could not fast-forward — leaving for an agent."
