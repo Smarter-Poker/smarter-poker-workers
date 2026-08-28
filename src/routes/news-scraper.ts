@@ -3,8 +3,8 @@
  *
  * Ported from pages/api/cron/news-scraper.js (1420 lines).
  *
- * Every 2 hours: pulls 6 sources (PokerNews/MSPT/CardPlayer/WSOP/
- * Poker.org/Pokerfuse) in parallel via Promise.allSettled; saves new
+ * Every 2 hours: pulls 7 sources (PokerNews/MSPT/CardPlayer/WSOP/
+ * Poker.org/Pokerfuse/PokerStars Blog) in parallel via Promise.allSettled; saves new
  * articles to poker_news (upsert on source_url, ignoreDuplicates=true);
  * mirror-posts each new article to social_posts as the news-poster
  * account. Archives poker_news rows older than RETENTION_DAYS=3.
@@ -134,6 +134,15 @@ const NEWS_SOURCES: NewsSource[] = [
     baseUrl: 'https://pokerfuse.com',
     icon: '🔥',
     category: 'industry',
+  },
+  {
+    box: 7,
+    name: 'PokerStars Blog',
+    type: 'scrape',
+    url: 'https://www.pokerstarsblog.com/',
+    baseUrl: 'https://www.pokerstarsblog.com',
+    icon: '♠️',
+    category: 'news',
   },
 ];
 
@@ -781,6 +790,39 @@ async function scrapePokerfuse(html: string, source: NewsSource): Promise<Articl
   return articles;
 }
 
+/**
+ * PokerStars exposes current editorial cards in its public homepage HTML but
+ * no working RSS endpoint. Parse only /poker/learn/news/ cards and their own
+ * data-src artwork; navigation, promotional and account links are ignored.
+ */
+export async function scrapePokerStarsBlog(html: string, source: NewsSource): Promise<Article[]> {
+  const articles: Article[] = [];
+  const seen = new Set<string>();
+  const cardPattern = /<a\s+href=["'](\/poker\/learn\/news\/[^"'#?]+\/?)["'][^>]*>([\s\S]*?)<\/a>/gi;
+
+  for (const match of html.matchAll(cardPattern)) {
+    if (articles.length >= CONFIG.MAX_ARTICLES_PER_SOURCE) break;
+    const path = match[1] ?? '';
+    const card = match[2] ?? '';
+    const titleMatch = card.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+    const title = cleanText(titleMatch?.[1]);
+    if (!path || title.length < 15) continue;
+
+    const url = resolveUrl(path, source.baseUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+
+    const imageMatch = card.match(/<img[^>]+data-src=["']([^"']+)["']/i)
+      ?? card.match(/<img[^>]+src=["']([^"']+)["']/i);
+    const candidateImage = resolveUrl(imageMatch?.[1], source.baseUrl);
+    const image = candidateImage && !candidateImage.startsWith('data:')
+      ? candidateImage
+      : getContextualFallbackImage(title);
+    articles.push({ url, title, image, source });
+  }
+  return articles;
+}
+
 async function scrapeCardPlayer(html: string, source: NewsSource): Promise<Article[]> {
   const articles: Article[] = [];
   const seen = new Set<string>();
@@ -951,6 +993,9 @@ async function scrapeSource(source: NewsSource): Promise<Article[]> {
         break;
       case 'Poker.org':
         articles = await scrapePokerOrg(html, source);
+        break;
+      case 'PokerStars Blog':
+        articles = await scrapePokerStarsBlog(html, source);
         break;
       default:
         break;
