@@ -384,8 +384,27 @@ function cleanText(text: string | null | undefined): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
     .replace(/&#39;/g, "'")
     .replace(/&#x27;/g, "'")
+    .replace(/&#(\d+);/g, (entity, rawCodePoint: string) => {
+      const codePoint = Number.parseInt(rawCodePoint, 10);
+      return Number.isInteger(codePoint)
+        && codePoint > 0
+        && codePoint <= 0x10ffff
+        && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    })
+    .replace(/&#x([\da-f]+);/gi, (entity, rawCodePoint: string) => {
+      const codePoint = Number.parseInt(rawCodePoint, 16);
+      return Number.isInteger(codePoint)
+        && codePoint > 0
+        && codePoint <= 0x10ffff
+        && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    })
     .replace(/\s+/g, ' ')
     .trim();
 }
