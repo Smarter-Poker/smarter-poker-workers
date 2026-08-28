@@ -16,7 +16,7 @@ describe('PokerStars Blog source', () => {
     const html = `
       <a href="/poker/learn/news/ept-barcelona-final-table/">
         <img data-src="https://cdn.example/ept.webp" />
-        <h3 class="h4">EPT Barcelona: Foxen &amp; Mateos reach the final table</h3>
+        <h3 class="h4">EPT Barcelona: Foxen &amp; Mateos reach the final table &#8217;26 &#x2013; live</h3>
       </a>
       <a href="/poker/deposit/"><h3 class="h4">Deposit now</h3></a>
     `;
@@ -24,7 +24,7 @@ describe('PokerStars Blog source', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       url: 'https://www.pokerstarsblog.com/poker/learn/news/ept-barcelona-final-table/',
-      title: 'EPT Barcelona: Foxen & Mateos reach the final table',
+      title: 'EPT Barcelona: Foxen & Mateos reach the final table ’26 – live',
       image: 'https://cdn.example/ept.webp',
     });
   });
