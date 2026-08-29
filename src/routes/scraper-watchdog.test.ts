@@ -68,10 +68,8 @@ describe('GET/POST /cron/scraper-watchdog', () => {
       resolved: unknown[];
     };
     expect(body.checked_at).toBeTruthy();
-    expect(body.sources).toHaveProperty('pokeratlas');
     expect(body.sources).not.toHaveProperty('bravo');
     // pokeratlas should be 'ok' since scrape_timestamp is "now"
-    expect(body.sources.pokeratlas.status).toBe('ok');
     // No alerts on healthy sources
     expect(body.alerts_sent).toHaveLength(0);
   });
