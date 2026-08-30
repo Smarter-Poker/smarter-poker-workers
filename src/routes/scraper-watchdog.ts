@@ -216,7 +216,7 @@ export async function scraperWatchdog(c: Context) {
     resolved: [],
   };
 
-  for (const source of []) { // pokeratlas retired 2026-08-29
+  for (const source of ['pokeratlas']) {
     try {
       const { data, count, error } = await supabase
         .from('venue_live_tables')
