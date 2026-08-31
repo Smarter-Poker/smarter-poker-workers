@@ -4,11 +4,10 @@
  * Ported from pages/api/cron/daily-challenges.js (146 lines).
  *
  * Daily at midnight UTC: generate a new training_daily_challenges row
- * with a rotated game, scaled level, weekend-boosted rewards. Idempotent
- * via an up-front check on challenge_date — if today's row exists, exit
- * with "already exists" message.
- *
- * Broadcasts a push notification to all profiles after insert (best-effort).
+ * with a rotated game, scaled level, weekend-boosted rewards, then enqueue
+ * Club Arena Daily Mission reset alerts for players who explicitly opted in.
+ * Both paths are idempotent and the alert RPC is retried even when the
+ * training row already exists, so a partial prior run self-heals.
  *
  * Auth: /cron/* middleware chain.
  */
@@ -28,11 +27,35 @@ const TRAINING_GAMES = [
   'tournament-icm',
 ];
 
+const ALERT_BATCH_SIZE = 1000;
+const MAX_ALERT_BATCHES = 100;
+
+async function enqueueMissionResetAlerts(
+  supabase: ReturnType<typeof getSupabase>,
+  challengeDate: string,
+): Promise<number> {
+  let total = 0;
+  for (let batch = 0; batch < MAX_ALERT_BATCHES; batch += 1) {
+    const { data, error } = await supabase.rpc('enqueue_daily_mission_reset_notifications', {
+      p_cycle_date: challengeDate,
+      p_limit: ALERT_BATCH_SIZE,
+    });
+    if (error) throw new Error(error.message || 'Daily Mission alert enqueue failed');
+    const inserted = Number(data);
+    if (!Number.isInteger(inserted) || inserted < 0) {
+      throw new Error('Daily Mission alert enqueue returned an invalid receipt');
+    }
+    total += inserted;
+    if (inserted < ALERT_BATCH_SIZE) return total;
+  }
+  throw new Error('Daily Mission alert enqueue exceeded the batch safety limit');
+}
+
 export async function dailyChallenges(c: Context) {
   try {
     const supabase = getSupabase();
     const today = new Date();
-    const challengeDate = today.toISOString().split('T')[0];
+    const challengeDate = today.toISOString().split('T')[0]!;
 
     const { data: existing } = await supabase
       .from('training_daily_challenges')
@@ -40,71 +63,56 @@ export async function dailyChallenges(c: Context) {
       .eq('challenge_date', challengeDate)
       .maybeSingle();
 
-    if (existing) {
-      return c.json({ message: 'Daily challenge already exists for today', challengeDate });
-    }
+    let trainingChallengeCreated = false;
+    let trainingChallenge: Record<string, unknown> | null = null;
 
-    const dayOfMonth = today.getDate();
-    const dayOfWeek = today.getDay();
-    const startOfYear = new Date(today.getFullYear(), 0, 0);
-    const dayOfYear = Math.floor((today.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24));
-    const gameIndex = dayOfYear % TRAINING_GAMES.length;
-    const gameId = TRAINING_GAMES[gameIndex] ?? TRAINING_GAMES[0]!;
-    const level = Math.min((dayOfMonth % 10) || 10, 10);
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-    const requiredAccuracy = isWeekend ? 90 : 85;
-    const bonusDiamonds = isWeekend ? 100 : 50;
+    if (!existing) {
+      const dayOfMonth = today.getDate();
+      const dayOfWeek = today.getDay();
+      const startOfYear = new Date(today.getFullYear(), 0, 0);
+      const dayOfYear = Math.floor(
+        (today.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24),
+      );
+      const gameIndex = dayOfYear % TRAINING_GAMES.length;
+      const gameId = TRAINING_GAMES[gameIndex] ?? TRAINING_GAMES[0]!;
+      const level = Math.min((dayOfMonth % 10) || 10, 10);
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+      const requiredAccuracy = isWeekend ? 90 : 85;
+      const bonusDiamonds = isWeekend ? 100 : 50;
 
-    const { error } = await supabase
-      .from('training_daily_challenges')
-      .insert({
-        challenge_date: challengeDate,
-        game_id: gameId,
-        level,
-        required_accuracy: requiredAccuracy,
-        bonus_diamonds: bonusDiamonds,
-      });
-
-    if (error) {
-      console.warn('[daily-challenges] insert error:', error.message);
-      return c.json({ error: error.message }, 500);
-    }
-
-    // Best-effort push broadcast
-    try {
-      const { data: profilesData } = await supabase.from('profiles').select('id');
-      const profiles = (profilesData ?? []) as Array<{ id: string }>;
-      if (profiles.length > 0) {
-        const targetUserIds = profiles.map((p) => p.id);
-        const baseUrl = process.env.WORLD_HUB_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'https://smarter.poker';
-        await fetch(`${baseUrl}/api/notifications/send`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''}`,
-          },
-          body: JSON.stringify({
-            title: 'New Daily Challenge! 🏆',
-            message: `Today's Challenge is Live! Test your skills in ${gameId.replace(/-/g, ' ')} for extra diamonds.`,
-            url: `${baseUrl}/hub/training/arena`,
-            externalUserIds: targetUserIds,
-            category: 'daily_challenges',
-          }),
+      const { error } = await supabase
+        .from('training_daily_challenges')
+        .insert({
+          challenge_date: challengeDate,
+          game_id: gameId,
+          level,
+          required_accuracy: requiredAccuracy,
+          bonus_diamonds: bonusDiamonds,
         });
-      }
-    } catch (e) {
-      console.warn('[daily-challenges] push broadcast error:', e instanceof Error ? e.message : e);
-    }
 
-    return c.json({
-      success: true,
-      challenge: {
+      if (error) {
+        console.warn('[daily-challenges] insert error:', error.message);
+        return c.json({ error: error.message }, 500);
+      }
+
+      trainingChallengeCreated = true;
+      trainingChallenge = {
         date: challengeDate,
         game: gameId,
         level,
         requiredAccuracy,
         bonusDiamonds,
-      },
+      };
+    }
+
+    const missionAlertsQueued = await enqueueMissionResetAlerts(supabase, challengeDate);
+
+    return c.json({
+      success: true,
+      challengeDate,
+      trainingChallengeCreated,
+      challenge: trainingChallenge,
+      missionAlertsQueued,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
