@@ -45,6 +45,8 @@ const mkHand = (i: number) => ({
 const hands = Array.from({ length: 40 }, (_, i) => mkHand(i));
 
 let horseLookupError: { message: string } | null = null;
+/** Sizes of every id batch passed to the profiles .in() lookup. */
+let horseLookupChunkSizes: number[] = [];
 let insertedRows: unknown[] = [];
 
 vi.mock('../lib/supabase.js', () => ({
@@ -53,7 +55,10 @@ vi.mock('../lib/supabase.js', () => ({
       if (table === 'profiles') {
         const c: Record<string, any> = {};
         c.select = vi.fn().mockReturnValue(c);
-        c.in = vi.fn().mockReturnValue(c);
+        c.in = vi.fn().mockImplementation((_col: string, ids: string[]) => {
+          horseLookupChunkSizes.push(ids.length);
+          return c;
+        });
         c.eq = vi.fn().mockResolvedValue(
           horseLookupError
             ? { data: null, error: horseLookupError }
@@ -62,11 +67,20 @@ vi.mock('../lib/supabase.js', () => ({
         return c;
       }
       if (table === 'hand_history') {
+        // 2026-09-01: the scan now pages with .order().range() instead of a
+        // single .limit(), because PostgREST clamped that limit to 1000 rows
+        // and the sweep had only ever seen 0.36% of a 24h window. The stub
+        // serves the whole fixture on the first page and an empty second page,
+        // which is what a short page (end of results) looks like to
+        // pagedSelect.
         const c: Record<string, any> = {};
         c.select = vi.fn().mockReturnValue(c);
         c.gte = vi.fn().mockReturnValue(c);
         c.lt = vi.fn().mockReturnValue(c);
-        c.limit = vi.fn().mockResolvedValue({ data: hands, error: null });
+        c.order = vi.fn().mockReturnValue(c);
+        c.range = vi.fn().mockImplementation((from: number) =>
+          Promise.resolve({ data: from === 0 ? hands : [], error: null }),
+        );
         return c;
       }
       // collusion_tracking
@@ -81,9 +95,20 @@ vi.mock('../lib/supabase.js', () => ({
   }),
 }));
 
-const makeCtx = () => {
+// 2026-09-01: the scan now resolves its window through resolveScanWindow(),
+// which reads c.req.query(). A context without req is no longer a valid stand-in
+// for a Hono context, so the stub grows one. `query` is passed through so a test
+// can exercise an explicit ?since=&until= rescan.
+const makeCtx = (query: Record<string, string> = {}) => {
   let captured: { body?: any; status?: number } = {};
   return {
+    req: {
+      method: 'GET',
+      query: () => query,
+      json: async () => {
+        throw new Error('no body');
+      },
+    },
     json: (body: unknown, status?: number) => {
       captured = { body, status: status ?? 200 };
       return captured;
@@ -96,6 +121,7 @@ describe('collusion-scan — horse-vs-horse suppression', () => {
   beforeEach(() => {
     horseLookupError = null;
     insertedRows = [];
+    horseLookupChunkSizes = [];
   });
 
   it('never writes a row where both players are horses', async () => {
@@ -120,6 +146,21 @@ describe('collusion-scan — horse-vs-horse suppression', () => {
     expect(body).toHaveProperty('suppressed_horse_pairs');
     expect(body).toHaveProperty('findings_after_horse_filter');
     expect(body.findings_after_horse_filter).toBe(insertedRows.length);
+  });
+
+  it('never asks for more ids in one lookup than PostgREST will accept', async () => {
+    // The lookup serialises every id into the query string. While the scan was
+    // capped at 1000 hands the list stayed small and one call worked; once it
+    // read the full window the list grew until PostgREST refused the request
+    // and the scan 500'd with "fetch failed". It is chunked now.
+    const { collusionScan } = await import('./collusion-scan.js');
+    await collusionScan(makeCtx());
+
+    expect(horseLookupChunkSizes.length).toBeGreaterThan(0);
+    for (const size of horseLookupChunkSizes) expect(size).toBeLessThanOrEqual(300);
+    // Every id still gets looked at - chunking must not drop the tail.
+    const total = horseLookupChunkSizes.reduce((a, b) => a + b, 0);
+    expect(total).toBe(3);
   });
 
   it('fails the scan when the horse lookup errors, rather than writing everything', async () => {
