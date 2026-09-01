@@ -107,26 +107,29 @@ given the window contained no humans, is the whole of the result. Whether
 horse-vs-horse collusion should be scored differently rather than dropped is
 Dan's call, not an agent's, and nothing here pre-empts it.
 
-## Also added
+## Staleness alerting: already covered, deliberately not duplicated
 
-`/cron/cron-staleness-watchdog`. Four sweeps went dark for 25 hours and nothing
-anywhere said so; the outage was noticed because a human observed that the horses
-had stopped posting. The watchdog groups `cron_execution_log` by job, derives
-each job's own normal cadence from its recent history (median gap over 14 days,
-so the outage's own hole cannot inflate the baseline), and writes a
-`cron_health_log` row for any job well past it. Cadence is derived rather than
-configured on purpose: a hardcoded table of expected intervals is a second copy
-of the dispatcher schedule, and a second copy drifts toward "everything looks
-fine". It covers every job on the dispatcher, money jobs included, so nothing
-else should add a second per-area version. The dispatcher entry is a companion
-PR in the World Hub repo.
+I checked for existing per-job staleness coverage before starting and found
+none: `v_system_health_cron` reflects only `pg_cron`, and nothing watched Open
+Claw. I built one, and while it was in flight
+`smarter-poker-workers#43` landed the handler and World Hub `#1226` landed the
+identical dispatcher entry. Mine is removed rather than kept. Two watchdogs for
+one job, or two schedule entries for one path, is precisely the drift a
+staleness watchdog exists to catch.
+
+What #43 covers is a job that stops running. What it cannot see is the other
+failure this investigation found: a job that runs on schedule, succeeds, and
+examines nothing. `collusion-scan` reported success and zero findings on every
+run for months while reading 1000 of ~280,000 hands. That is what
+`hands_truncated` and `hands_scanned` in this PR are for, and the two signals
+are complementary rather than overlapping.
 
 ## Verification
 
 - `npx tsc --noEmit` clean.
-- `npx vitest run`: 26 test files, 69 tests, all passing.
+- `npx vitest run`: 25 test files, 63 tests, all passing.
 - Both new modules covered: `src/lib/scanWindow.test.ts`,
-  `src/lib/pagedSelect.test.ts`, `src/routes/cron-staleness-watchdog.test.ts`.
+  `src/lib/pagedSelect.test.ts`.
 - `src/routes/collusion-scan.horse-filter.test.ts` updated in this commit: its
   Hono and Supabase stubs now provide `req.query()` and `.order().range()`,
   because the code under test genuinely uses both now.
