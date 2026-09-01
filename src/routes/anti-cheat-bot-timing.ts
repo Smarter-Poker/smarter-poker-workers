@@ -24,9 +24,12 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { resolveScanWindow, ScanWindowError, dedupeSinceFor } from '../lib/scanWindow.js';
+import { pagedSelect } from '../lib/pagedSelect.js';
 
 const LOOKBACK_DAYS = 7;
 const FLAG_DEDUPE_HOURS = 24;
+const MAX_SCAN_HANDS = 20_000;
 
 interface ScanResult {
   users_scanned: number;
@@ -68,8 +71,17 @@ function stdDev(deltas: number[]): { mean: number; std: number } {
 export async function antiCheatBotTiming(c: Context) {
   const supabase = getSupabase();
   const startedAt = new Date().toISOString();
-  const since = new Date(Date.now() - LOOKBACK_DAYS * 86400_000).toISOString();
-  const dedupeSince = new Date(Date.now() - FLAG_DEDUPE_HOURS * 3600_000).toISOString();
+
+  let scanWindow;
+  try {
+    scanWindow = await resolveScanWindow(c, LOOKBACK_DAYS * 24);
+  } catch (err) {
+    if (err instanceof ScanWindowError) return c.json({ ok: false, error: err.message }, 400);
+    throw err;
+  }
+  const since = scanWindow.start.toISOString();
+  const until = scanWindow.end.toISOString();
+  const dedupeSince = dedupeSinceFor(scanWindow, FLAG_DEDUPE_HOURS).toISOString();
 
   const result: ScanResult = {
     users_scanned: 0,
@@ -78,15 +90,26 @@ export async function antiCheatBotTiming(c: Context) {
     errors: [],
   };
 
-  const { data: hands, error } = await supabase
-    .from('hand_history')
-    .select('actions, ended_at')
-    .gte('created_at', since)
-    .not('actions', 'is', null)
-    .limit(20_000);
-
-  if (error) {
-    result.errors.push(`hand_history scan: ${error.message}`);
+  let hands: Array<{ actions: ActionRow[] | null }>;
+  let handsTruncated = false;
+  try {
+    const paged = await pagedSelect<{ actions: ActionRow[] | null }>(
+      () =>
+        supabase
+          .from('hand_history')
+          .select('actions, ended_at, created_at')
+          .gte('created_at', since)
+          .lt('created_at', until)
+          .not('actions', 'is', null)
+          .order('created_at', { ascending: false }),
+      MAX_SCAN_HANDS,
+    );
+    hands = paged.rows;
+    handsTruncated = paged.truncated;
+  } catch (readErr) {
+    result.errors.push(
+      `hand_history scan: ${readErr instanceof Error ? readErr.message : 'read failed'}`,
+    );
     return c.json({ ok: false, started_at: startedAt, ...result }, 500);
   }
 
@@ -105,7 +128,7 @@ export async function antiCheatBotTiming(c: Context) {
   // (action_time_seconds is 15s + 1 timebank 15s = 30s typical — anything
   // above 90s is a sit-out/disconnect, drop it).
   const byUserDeltas = new Map<string, number[]>();
-  for (const hand of (hands ?? []) as Array<{ actions: ActionRow[] | null }>) {
+  for (const hand of hands) {
     const actions = hand.actions ?? [];
     // Bucket this hand's actions by user
     const perHandByUser = new Map<string, number[]>();
@@ -164,6 +187,10 @@ export async function antiCheatBotTiming(c: Context) {
         continue;
       }
 
+      if (scanWindow.dryRun) {
+        result.flags_written += 1;
+        continue;
+      }
       const { error: insErr } = await supabase.from('anti_cheat_flags').insert({
         player_id: userId,
         flag_type: 'bot_timing',
@@ -193,6 +220,11 @@ export async function antiCheatBotTiming(c: Context) {
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     lookback_days: LOOKBACK_DAYS,
+    window: { start: since, end: until },
+    window_overridden: scanWindow.overridden,
+    hands_scanned: hands.length,
+    hands_truncated: handsTruncated,
+    dry_run: scanWindow.dryRun,
     ...result,
   });
 }

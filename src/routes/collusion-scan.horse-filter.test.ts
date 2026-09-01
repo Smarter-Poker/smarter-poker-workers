@@ -62,11 +62,20 @@ vi.mock('../lib/supabase.js', () => ({
         return c;
       }
       if (table === 'hand_history') {
+        // 2026-09-01: the scan now pages with .order().range() instead of a
+        // single .limit(), because PostgREST clamped that limit to 1000 rows
+        // and the sweep had only ever seen 0.36% of a 24h window. The stub
+        // serves the whole fixture on the first page and an empty second page,
+        // which is what a short page (end of results) looks like to
+        // pagedSelect.
         const c: Record<string, any> = {};
         c.select = vi.fn().mockReturnValue(c);
         c.gte = vi.fn().mockReturnValue(c);
         c.lt = vi.fn().mockReturnValue(c);
-        c.limit = vi.fn().mockResolvedValue({ data: hands, error: null });
+        c.order = vi.fn().mockReturnValue(c);
+        c.range = vi.fn().mockImplementation((from: number) =>
+          Promise.resolve({ data: from === 0 ? hands : [], error: null }),
+        );
         return c;
       }
       // collusion_tracking
@@ -81,9 +90,20 @@ vi.mock('../lib/supabase.js', () => ({
   }),
 }));
 
-const makeCtx = () => {
+// 2026-09-01: the scan now resolves its window through resolveScanWindow(),
+// which reads c.req.query(). A context without req is no longer a valid stand-in
+// for a Hono context, so the stub grows one. `query` is passed through so a test
+// can exercise an explicit ?since=&until= rescan.
+const makeCtx = (query: Record<string, string> = {}) => {
   let captured: { body?: any; status?: number } = {};
   return {
+    req: {
+      method: 'GET',
+      query: () => query,
+      json: async () => {
+        throw new Error('no body');
+      },
+    },
     json: (body: unknown, status?: number) => {
       captured = { body, status: status ?? 200 };
       return captured;

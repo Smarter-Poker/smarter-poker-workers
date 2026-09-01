@@ -62,6 +62,7 @@ import { commanderDailyAggregate } from './routes/commander-daily-aggregate.js';
 import { trainingDailyReport } from './routes/training-daily-report.js';
 import { freerollQualificationSync } from './routes/freeroll-qualification-sync.js';
 import { collusionScan } from './routes/collusion-scan.js';
+import { cronStalenessWatchdog } from './routes/cron-staleness-watchdog.js';
 import { triviaTournaments } from './routes/trivia-tournaments.js';
 import { triviaTournamentRounds } from './routes/trivia-tournament-rounds.js';
 import { horsesSocialFriends } from './routes/horses-social-friends.js';
@@ -265,6 +266,10 @@ app.get('/cron/training-daily-report', trainingDailyReport);
 app.post('/cron/training-daily-report', trainingDailyReport);
 app.get('/cron/freeroll-qualification-sync', freerollQualificationSync);
 app.post('/cron/freeroll-qualification-sync', freerollQualificationSync);
+// A scheduled job that stops running must not look like one with nothing to do.
+app.get('/cron/cron-staleness-watchdog', cronStalenessWatchdog);
+app.post('/cron/cron-staleness-watchdog', cronStalenessWatchdog);
+
 app.get('/cron/collusion-scan', collusionScan);
 app.post('/cron/collusion-scan', collusionScan);
 app.get('/cron/trivia-tournaments', triviaTournaments);
