@@ -112,6 +112,53 @@ so the only route that exists is `/health` and the reserved `/cron/_scaffold-pin
 - stdout → Docker json-file (10 MB × 7 rotation)
 - `/health` endpoint for readiness + liveness + monitors
 - PostHog for optional event emissions (reusing World Hub's project)
+- `cron_execution_log` — one row per `/cron/*` request (middleware in `src/index.ts`)
+- `cron_health_log` — current-state row per watchdog, keyed on `cron_name`
+
+### Auth-health monitor — `/cron/auth-health-monitor`
+
+The one check in this fleet that watches **production auth at runtime**.
+
+Background: the World Hub JWT verifier stayed hardcoded to HS256 after the
+Supabase project moved to ES256 signing keys. Local verification failed on
+every authenticated request; each one fell through to a live GoTrue
+`/auth/v1/user` call (~20M edge requests/24h) until it saturated the
+project-wide auth rate limit and caused a site-wide logout loop. It ran
+undetected for months. The regression guards that came out of it
+(World-Hub #1196/#1198/#1210/#1220, commander #77/#78) are all build-time and
+cannot see a key rotation, an env change, or a stale cached bundle.
+
+| check | needs a credential? | alerts when |
+| --- | --- | --- |
+| `jwks_algorithm_drift` | no | JWKS stops serving ES256, goes empty, or is unreachable |
+| `jwks_import_canary` | no | live key material fails `crypto.subtle.importKey` as ECDSA P-256 |
+| `gotrue_fallback_ratio` | yes | `/user` volume > 1,000/h or > 30% of auth traffic |
+| `signature_algorithm_errors` | yes | any `signing method HS256 is invalid` / `token signature is invalid` |
+| `refresh_token_failures` | yes | refresh not-found + bad-length > 100/h |
+| `credential_stuffing` | yes | `Possible abuse attempt` > 200/h (top offending IPs included) |
+
+The four credentialed checks read Supabase `auth_logs`, which is a log stream
+rather than a table and therefore **not** reachable through the service-role
+PostgREST client in `src/lib/supabase.ts`. They go through the Management API
+analytics endpoint and are gated on `SUPABASE_MANAGEMENT_API_TOKEN`. Without
+it they report `skipped`; the job still runs and still catches key drift.
+
+Thresholds are env-tunable — see `.env.example` and the reasoning comments in
+`src/lib/authHealth.ts`.
+
+Results land in `cron_health_log` (`cron_name='auth-health-monitor'`), a
+`[auth-health-monitor] AUTH-ALERT` line on stderr, and an SMS through
+`src/lib/scraperAlerts.ts` on `critical`.
+
+```bash
+# locally
+npm run dev
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  http://127.0.0.1:8081/cron/auth-health-monitor | jq
+
+# just the thresholds
+npx vitest run src/lib/authHealth.test.ts
+```
 
 ## What's intentionally NOT here
 
