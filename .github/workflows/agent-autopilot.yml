@@ -52,7 +52,14 @@ name: Agent Autopilot
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
+    # NO `synchronize` (removed 2026-09-01, cost audit). Auto-merge is enabled
+    # ONCE per PR and stays armed across branch pushes - GitHub does not
+    # disarm it on a new commit - so re-running this job on every push to the
+    # branch re-enabled something already enabled. Agents push ~2.1 times per
+    # branch; synchronize was most of this workflow's 3,292 August runs. The
+    # */30 sweep below still catches the rare PR whose auto-merge was
+    # genuinely disarmed (conflict resolved by force-push, reopened race).
+    types: [opened, reopened, ready_for_review]
   # NO push TRIGGER. Removed 2026-08-23.
   #
   # It fired a full sweep on every merge to main. Club Arena merges about
