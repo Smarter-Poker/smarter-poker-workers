@@ -127,7 +127,7 @@ are complementary rather than overlapping.
 ## Verification
 
 - `npx tsc --noEmit` clean.
-- `npx vitest run`: 25 test files, 63 tests, all passing.
+- `npx vitest run`: 25 test files, 70 tests, all passing (after merging main).
 - Both new modules covered: `src/lib/scanWindow.test.ts`,
   `src/lib/pagedSelect.test.ts`.
 - `src/routes/collusion-scan.horse-filter.test.ts` updated in this commit: its
