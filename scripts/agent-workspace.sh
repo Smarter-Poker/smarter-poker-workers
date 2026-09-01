@@ -252,6 +252,38 @@ if [ -d "$DIR" ] && git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then
     CUR=$(git -C "$DIR" branch --show-current)
     echo "# NOTE: $DIR has uncommitted changes on '$CUR'." >&2
     echo "# Leaving it exactly as it is. Commit or push that work first." >&2
+
+    # ── AND SAY HOW OLD IT IS, AND WHOSE IT IS (2026-08-31) ───────────────
+    #
+    # The two lines above protect the agent's uncommitted WORK, which is right,
+    # and they are also the lines that quietly hand them a STALE BASE. The
+    # fresh path below checks out from origin/main; this path deliberately does
+    # not, so a tree reused days later is still branched wherever it was
+    # branched, and nothing on screen says so.
+    #
+    # PR #2058 was built in exactly this state. The tree was 20 commits behind
+    # and held four modified files belonging to a previous session. Another PR
+    # had since changed an assertion in TournamentRecurringService.test.ts, so
+    # CI failed on a test the agent never touched and could not see - and the
+    # agent then guessed at the cause, which was the expensive part.
+    #
+    # This is a NOTE, not a refusal. Refusing here would strand exactly the
+    # uncommitted work this block exists to protect, and rebasing is the
+    # agent's call once their work is committed - never this script's, while
+    # their edits are still loose on the floor. Failures are swallowed: a
+    # missing upstream ref or a detached HEAD must never break a workspace
+    # claim over a courtesy message.
+    DIRTY_FILES=$(git -C "$DIR" status --porcelain | wc -l | tr -d ' ')
+    echo "# $DIRTY_FILES uncommitted file(s) here. Run 'git status' before you stage:" >&2
+    echo "# some of them may belong to whoever used this tree last, not to you." >&2
+    BEHIND=$(git -C "$DIR" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+    if [ "${BEHIND:-0}" -gt 0 ]; then
+      echo "# STALE BASE: this tree is $BEHIND commit(s) behind origin/main." >&2
+      if [ "${BEHIND:-0}" -ge 10 ]; then
+        echo "# That is far enough back to fail CI on tests you never touched." >&2
+      fi
+      echo "# Once your work is committed:  git -C '$DIR' rebase origin/main" >&2
+    fi
     # DEPENDENCIES ARE STILL REPAIRED ON THE WAY OUT (2026-08-25).
     #
     # This early return protects the agent's uncommitted WORK, which is right.
