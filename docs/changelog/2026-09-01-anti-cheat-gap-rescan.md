@@ -84,6 +84,14 @@ floor for real users is now measurable rather than structurally impossible.
 
 `anti_cheat_flags` contains 14 rows in its entire history, all `multi_account`.
 
+**4. The horse lookup could not survive the pagination fix.** `collusion-scan`
+resolves which flagged ids are horses with a single `.in('id', findingIds)`,
+which serialises every id into the query string. While the scan was capped at
+1000 hands that list stayed small and one call worked. Reading the full window
+made it large enough that PostgREST refused the request and the scan returned
+`horse lookup failed: TypeError: fetch failed`. Found by running the fixed scan
+against production before shipping it; the lookup is chunked at 300 ids now.
+
 ## Horses
 
 `collusion-scan` already drops pairs where **both** sides are horses, with the
@@ -116,7 +124,7 @@ PR in the World Hub repo.
 ## Verification
 
 - `npx tsc --noEmit` clean.
-- `npx vitest run`: 26 test files, 68 tests, all passing.
+- `npx vitest run`: 26 test files, 69 tests, all passing.
 - Both new modules covered: `src/lib/scanWindow.test.ts`,
   `src/lib/pagedSelect.test.ts`, `src/routes/cron-staleness-watchdog.test.ts`.
 - `src/routes/collusion-scan.horse-filter.test.ts` updated in this commit: its

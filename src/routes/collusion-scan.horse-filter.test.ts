@@ -45,6 +45,8 @@ const mkHand = (i: number) => ({
 const hands = Array.from({ length: 40 }, (_, i) => mkHand(i));
 
 let horseLookupError: { message: string } | null = null;
+/** Sizes of every id batch passed to the profiles .in() lookup. */
+let horseLookupChunkSizes: number[] = [];
 let insertedRows: unknown[] = [];
 
 vi.mock('../lib/supabase.js', () => ({
@@ -53,7 +55,10 @@ vi.mock('../lib/supabase.js', () => ({
       if (table === 'profiles') {
         const c: Record<string, any> = {};
         c.select = vi.fn().mockReturnValue(c);
-        c.in = vi.fn().mockReturnValue(c);
+        c.in = vi.fn().mockImplementation((_col: string, ids: string[]) => {
+          horseLookupChunkSizes.push(ids.length);
+          return c;
+        });
         c.eq = vi.fn().mockResolvedValue(
           horseLookupError
             ? { data: null, error: horseLookupError }
@@ -116,6 +121,7 @@ describe('collusion-scan — horse-vs-horse suppression', () => {
   beforeEach(() => {
     horseLookupError = null;
     insertedRows = [];
+    horseLookupChunkSizes = [];
   });
 
   it('never writes a row where both players are horses', async () => {
@@ -140,6 +146,21 @@ describe('collusion-scan — horse-vs-horse suppression', () => {
     expect(body).toHaveProperty('suppressed_horse_pairs');
     expect(body).toHaveProperty('findings_after_horse_filter');
     expect(body.findings_after_horse_filter).toBe(insertedRows.length);
+  });
+
+  it('never asks for more ids in one lookup than PostgREST will accept', async () => {
+    // The lookup serialises every id into the query string. While the scan was
+    // capped at 1000 hands the list stayed small and one call worked; once it
+    // read the full window the list grew until PostgREST refused the request
+    // and the scan 500'd with "fetch failed". It is chunked now.
+    const { collusionScan } = await import('./collusion-scan.js');
+    await collusionScan(makeCtx());
+
+    expect(horseLookupChunkSizes.length).toBeGreaterThan(0);
+    for (const size of horseLookupChunkSizes) expect(size).toBeLessThanOrEqual(300);
+    // Every id still gets looked at - chunking must not drop the tail.
+    const total = horseLookupChunkSizes.reduce((a, b) => a + b, 0);
+    expect(total).toBe(3);
   });
 
   it('fails the scan when the horse lookup errors, rather than writing everything', async () => {

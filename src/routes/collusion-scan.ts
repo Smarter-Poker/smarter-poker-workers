@@ -456,11 +456,19 @@ export async function collusionScan(c: Context) {
     // horse leaking chips to a human still surfaces.
     const findingIds = Array.from(new Set(findings.flatMap((f) => [f.player_a, f.player_b])));
     const horseIds = new Set<string>();
-    if (findingIds.length > 0) {
+    // Chunked because .in() serialises every id into the query string. While
+    // the scan was capped at 1000 hands this list stayed small and a single
+    // call worked; reading the full window made it large enough that PostgREST
+    // refused the request outright and the scan 500'd with "fetch failed".
+    // A findings list is at most a few thousand ids, so this is 1-2 extra
+    // round trips, not a paging loop.
+    const HORSE_LOOKUP_CHUNK = 300;
+    for (let i = 0; i < findingIds.length; i += HORSE_LOOKUP_CHUNK) {
+      const chunk = findingIds.slice(i, i + HORSE_LOOKUP_CHUNK);
       const { data: horseRows, error: horseErr } = await supabase
         .from('profiles')
         .select('id')
-        .in('id', findingIds)
+        .in('id', chunk)
         .eq('is_horse', true);
       if (horseErr) {
         // Fail the scan rather than fall back to the old behaviour. Falling
