@@ -76,6 +76,8 @@ import { rakebackPeriodSettle } from './routes/rakeback-period-settle.js';
 import { antiCheatMultiAccount } from './routes/anti-cheat-multi-account.js';
 import { antiCheatBotTiming } from './routes/anti-cheat-bot-timing.js';
 import { antiCheatChipDump } from './routes/anti-cheat-chip-dump.js';
+// Auth-health monitor — runtime watch on the JWT verification path.
+import { authHealthMonitor } from './routes/auth-health-monitor.js';
 
 // ─── Sentry — fire-and-forget error reporting ──────────────────────────────
 if (process.env.SENTRY_DSN) {
@@ -301,6 +303,13 @@ app.get('/cron/anti-cheat-bot-timing', antiCheatBotTiming);
 app.post('/cron/anti-cheat-bot-timing', antiCheatBotTiming);
 app.get('/cron/anti-cheat-chip-dump', antiCheatChipDump);
 app.post('/cron/anti-cheat-chip-dump', antiCheatChipDump);
+
+// ─── Auth-health monitor — runtime watch on the JWT verification path ──────
+// The ES256 outage ran for months because every guard we had was build-time.
+// This is the only check in the fleet that watches auth in production.
+// Suggested Open Claw schedule: every 15 minutes.
+app.get('/cron/auth-health-monitor', authHealthMonitor);
+app.post('/cron/auth-health-monitor', authHealthMonitor);
 
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
