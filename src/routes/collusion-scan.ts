@@ -28,8 +28,13 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { resolveScanWindow, ScanWindowError } from '../lib/scanWindow.js';
+import { pagedSelect } from '../lib/pagedSelect.js';
 
 const WINDOW_HOURS = 24;
+// The ceiling the original .limit(50000) was already asking for. PostgREST
+// silently clamped it to 1000; pagedSelect actually honours it.
+const MAX_SCAN_HANDS = 50_000;
 const MIN_HANDS_FOR_SIGNAL = 15;
 const CHIP_DUMP_LOSS_RATIO = 0.8;
 const TIMING_Z_SCORE = 2.5;
@@ -362,25 +367,45 @@ function scanWinRateAnomaly(hands: HandRow[]): Finding[] {
 export async function collusionScan(c: Context) {
   const supabase = getSupabase();
   const scanStart = Date.now();
-  const windowEnd = new Date();
-  const windowStart = new Date(windowEnd.getTime() - WINDOW_HOURS * 3600 * 1000);
+
+  // Window is the rolling last WINDOW_HOURS by default, but an explicit
+  // ?since=&until= lets a missed run be re-scanned over the period it should
+  // have covered. See src/lib/scanWindow.ts for why that exists.
+  let scanWindow;
+  try {
+    scanWindow = await resolveScanWindow(c, WINDOW_HOURS);
+  } catch (err) {
+    if (err instanceof ScanWindowError) return c.json({ error: err.message }, 400);
+    throw err;
+  }
+  const windowStart = scanWindow.start;
+  const windowEnd = scanWindow.end;
 
   try {
-    const { data: handsData, error: handErr } = await supabase
-      .from('hand_history')
-      .select(
-        'id, table_id, hand_number, started_at, ended_at, created_at, players, winners, actions, pot_size, big_blind, small_blind',
-      )
-      .gte('created_at', windowStart.toISOString())
-      .lt('created_at', windowEnd.toISOString())
-      .limit(50000);
-
-    if (handErr) {
-      console.warn('[collusion-scan] hand_history read error:', handErr.message);
-      return c.json({ error: handErr.message }, 500);
+    // Paged: a single .limit(50000) came back as 1000 rows and a 200, so this
+    // scan had only ever seen ~0.36% of a 24h window. See lib/pagedSelect.ts.
+    let handsRows: HandRow[];
+    let handsTruncated: boolean;
+    try {
+      const paged = await pagedSelect<HandRow>(
+        () =>
+          supabase
+            .from('hand_history')
+            .select(
+              'id, table_id, hand_number, started_at, ended_at, created_at, players, winners, actions, pot_size, big_blind, small_blind',
+            )
+            .gte('created_at', windowStart.toISOString())
+            .lt('created_at', windowEnd.toISOString())
+            .order('created_at', { ascending: false }),
+        MAX_SCAN_HANDS,
+      );
+      handsRows = paged.rows;
+      handsTruncated = paged.truncated;
+    } catch (readErr) {
+      const m = readErr instanceof Error ? readErr.message : 'hand_history read failed';
+      console.warn('[collusion-scan] hand_history read error:', m);
+      return c.json({ error: m }, 500);
     }
-
-    const handsRows = (handsData ?? []) as HandRow[];
 
     // Round 67 fix: action_log was always empty in production (legacy table
     // — no code ever wrote there). The TIMING_CORRELATION pattern silently
@@ -431,11 +456,19 @@ export async function collusionScan(c: Context) {
     // horse leaking chips to a human still surfaces.
     const findingIds = Array.from(new Set(findings.flatMap((f) => [f.player_a, f.player_b])));
     const horseIds = new Set<string>();
-    if (findingIds.length > 0) {
+    // Chunked because .in() serialises every id into the query string. While
+    // the scan was capped at 1000 hands this list stayed small and a single
+    // call worked; reading the full window made it large enough that PostgREST
+    // refused the request outright and the scan 500'd with "fetch failed".
+    // A findings list is at most a few thousand ids, so this is 1-2 extra
+    // round trips, not a paging loop.
+    const HORSE_LOOKUP_CHUNK = 300;
+    for (let i = 0; i < findingIds.length; i += HORSE_LOOKUP_CHUNK) {
+      const chunk = findingIds.slice(i, i + HORSE_LOOKUP_CHUNK);
       const { data: horseRows, error: horseErr } = await supabase
         .from('profiles')
         .select('id')
-        .in('id', findingIds)
+        .in('id', chunk)
         .eq('is_horse', true);
       if (horseErr) {
         // Fail the scan rather than fall back to the old behaviour. Falling
@@ -461,7 +494,7 @@ export async function collusionScan(c: Context) {
     }));
 
     let inserted = 0;
-    if (rows.length > 0) {
+    if (rows.length > 0 && !scanWindow.dryRun) {
       const { error: insErr, count } = await supabase
         .from('collusion_tracking')
         .insert(rows, { count: 'exact' });
@@ -475,6 +508,12 @@ export async function collusionScan(c: Context) {
     const durationMs = Date.now() - scanStart;
     return c.json({
       success: true,
+      dry_run: scanWindow.dryRun,
+      window_overridden: scanWindow.overridden,
+      // hand_history read is capped at 50k rows. When the cap is hit the scan
+      // saw only part of the window and the findings are a floor, not a total.
+      hands_truncated: handsTruncated,
+      max_scan_hands: MAX_SCAN_HANDS,
       scanned_hands: handsRows.length,
       scanned_actions: actionRows.length,
       findings: findings.length,

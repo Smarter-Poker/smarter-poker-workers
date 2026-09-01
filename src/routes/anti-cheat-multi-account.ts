@@ -31,6 +31,7 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { resolveScanWindow, ScanWindowError, dedupeSinceFor } from '../lib/scanWindow.js';
 
 const SCAN_WINDOW_HOURS = 24;
 const FLAG_DEDUPE_HOURS = 24; // don't re-flag the same (player, flag_type) within this window
@@ -50,8 +51,17 @@ interface IpGroup {
 export async function antiCheatMultiAccount(c: Context) {
   const supabase = getSupabase();
   const startedAt = new Date().toISOString();
-  const since = new Date(Date.now() - SCAN_WINDOW_HOURS * 3600_000).toISOString();
-  const dedupeSince = new Date(Date.now() - FLAG_DEDUPE_HOURS * 3600_000).toISOString();
+
+  let scanWindow;
+  try {
+    scanWindow = await resolveScanWindow(c, SCAN_WINDOW_HOURS);
+  } catch (err) {
+    if (err instanceof ScanWindowError) return c.json({ ok: false, error: err.message }, 400);
+    throw err;
+  }
+  const since = scanWindow.start.toISOString();
+  const until = scanWindow.end.toISOString();
+  const dedupeSince = dedupeSinceFor(scanWindow, FLAG_DEDUPE_HOURS).toISOString();
 
   const result: ScanResult = {
     pairs_scanned: 0,
@@ -62,17 +72,26 @@ export async function antiCheatMultiAccount(c: Context) {
 
   // 1. Pull recent sessions grouped by IP. auth.sessions.ip is the source of
   //    truth; fall back to action_audit_logs.ip_address if unavailable.
-  const { data: ipGroups, error: queryErr } = await supabase.rpc('detect_multi_account_ips', {
-    p_since: since,
-  } as Record<string, unknown>);
+  // detect_multi_account_ips(p_since) has no upper bound, so it can only ever
+  // answer "since X, up to now". For an explicit historical window we skip it
+  // and use the action_audit_logs path below, which honours both bounds. The
+  // default (non-overridden) call is unchanged.
+  const rpcUsable = !scanWindow.overridden;
+  const { data: ipGroups, error: queryErr } = rpcUsable
+    ? await supabase.rpc('detect_multi_account_ips', {
+        p_since: since,
+      } as Record<string, unknown>)
+    : { data: null, error: null };
 
-  // If the RPC doesn't exist yet, fall back to a query against action_audit_logs.
+  // If the RPC doesn't exist yet, or an explicit window bypassed it, fall back
+  // to a query against action_audit_logs.
   let groups: IpGroup[] = [];
   if (queryErr || !ipGroups) {
     const { data: rows } = await supabase
       .from('action_audit_logs')
       .select('ip_address, user_id')
       .gte('created_at', since)
+      .lt('created_at', until)
       .not('ip_address', 'is', null)
       .not('user_id', 'is', null)
       .limit(50_000);
@@ -119,6 +138,10 @@ export async function antiCheatMultiAccount(c: Context) {
         }
 
         const otherIds = g.user_ids.filter((id) => id !== playerId);
+        if (scanWindow.dryRun) {
+          result.flags_written += 1;
+          continue;
+        }
         const { error: insErr } = await supabase.from('anti_cheat_flags').insert({
           player_id: playerId,
           flag_type: 'multi_account',
@@ -149,6 +172,9 @@ export async function antiCheatMultiAccount(c: Context) {
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     window_hours: SCAN_WINDOW_HOURS,
+    window: { start: since, end: until },
+    window_overridden: scanWindow.overridden,
+    dry_run: scanWindow.dryRun,
     ...result,
   });
 }

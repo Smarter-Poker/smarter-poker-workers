@@ -34,12 +34,15 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { resolveScanWindow, ScanWindowError, dedupeSinceFor } from '../lib/scanWindow.js';
+import { pagedSelect } from '../lib/pagedSelect.js';
 
 const WINDOW_HOURS = 24;
 const FLAG_DEDUPE_HOURS = 24;
 const MIN_HANDS_TOGETHER = 30;
 const MIN_LOSS_RATIO = 0.8;
 const MIN_NET_CHIPS = 5000;
+const MAX_SCAN_HANDS = 50_000;
 
 interface ScanResult {
   pairs_scanned: number;
@@ -72,8 +75,17 @@ function uidOf(p: PlayerSeat | undefined | null): string | null {
 export async function antiCheatChipDump(c: Context) {
   const supabase = getSupabase();
   const startedAt = new Date().toISOString();
-  const since = new Date(Date.now() - WINDOW_HOURS * 3600_000).toISOString();
-  const dedupeSince = new Date(Date.now() - FLAG_DEDUPE_HOURS * 3600_000).toISOString();
+
+  let scanWindow;
+  try {
+    scanWindow = await resolveScanWindow(c, WINDOW_HOURS);
+  } catch (err) {
+    if (err instanceof ScanWindowError) return c.json({ ok: false, error: err.message }, 400);
+    throw err;
+  }
+  const since = scanWindow.start.toISOString();
+  const until = scanWindow.end.toISOString();
+  const dedupeSince = dedupeSinceFor(scanWindow, FLAG_DEDUPE_HOURS).toISOString();
 
   const result: ScanResult = {
     pairs_scanned: 0,
@@ -82,15 +94,26 @@ export async function antiCheatChipDump(c: Context) {
     errors: [],
   };
 
-  const { data: hands, error } = await supabase
-    .from('hand_history')
-    .select('id, players, winners, pot_size, created_at')
-    .gte('created_at', since)
-    .not('ended_at', 'is', null)
-    .limit(50_000);
-
-  if (error) {
-    result.errors.push(`hand_history scan: ${error.message}`);
+  let hands: HandRow[];
+  let handsTruncated = false;
+  try {
+    const paged = await pagedSelect<HandRow>(
+      () =>
+        supabase
+          .from('hand_history')
+          .select('id, players, winners, pot_size, created_at')
+          .gte('created_at', since)
+          .lt('created_at', until)
+          .not('ended_at', 'is', null)
+          .order('created_at', { ascending: false }),
+      MAX_SCAN_HANDS,
+    );
+    hands = paged.rows;
+    handsTruncated = paged.truncated;
+  } catch (readErr) {
+    result.errors.push(
+      `hand_history scan: ${readErr instanceof Error ? readErr.message : 'read failed'}`,
+    );
     return c.json({ ok: false, started_at: startedAt, ...result }, 500);
   }
 
@@ -112,7 +135,7 @@ export async function antiCheatChipDump(c: Context) {
   // outside this one pair.
   const userVsUserStats = new Map<string, { hands: number; wins: number }>();
 
-  for (const hand of (hands ?? []) as HandRow[]) {
+  for (const hand of hands) {
     const players = hand.players ?? [];
     const winners = (hand.winners ?? []) as PlayerSeat[];
     const winnerIds = new Set(winners.map(uidOf).filter(Boolean) as string[]);
@@ -215,6 +238,10 @@ export async function antiCheatChipDump(c: Context) {
         }
 
         const role = playerId === acc.giver ? 'giver' : 'receiver';
+        if (scanWindow.dryRun) {
+          result.flags_written += 1;
+          continue;
+        }
         const { error: insErr } = await supabase.from('anti_cheat_flags').insert({
           player_id: playerId,
           flag_type: 'chip_dump',
@@ -248,6 +275,11 @@ export async function antiCheatChipDump(c: Context) {
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     window_hours: WINDOW_HOURS,
+    window: { start: since, end: until },
+    window_overridden: scanWindow.overridden,
+    hands_scanned: hands.length,
+    hands_truncated: handsTruncated,
+    dry_run: scanWindow.dryRun,
     ...result,
   });
 }
