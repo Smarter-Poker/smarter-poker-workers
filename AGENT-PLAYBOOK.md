@@ -1,3 +1,21 @@
+# RULE 0 — "EM BARS" MEANS EM DASHES (—), NOT HAMBURGER BARS
+
+Dan, 2026-08-20: **"forbid the use of em bars anywhere."** He means the
+PUNCTUATION MARK, U+2014. It is a rule about the characters inside copy.
+
+It says nothing about artwork or icons, and **it does not ban the hamburger
+menu.** Misreading it as "horizontal bars are banned" has removed the hamburger
+from every page of the app twice in two days (#2321, then #2429 after #2401
+reverted the first). Both times Dan opened the app and found a different icon
+where his menu button used to be. Both times the agent that did it believed it
+was enforcing a house rule.
+
+**If the word "bars" leads you toward an icon, a raster, an SVG path or a
+header composite, you have misread it.** The hamburger is the menu. See
+`CLAUDE.md` §10.7 and `tests/approvedHamburgerGearGuard.law.test.ts`.
+
+---
+
 # RULE 1 — VERIFICATION PASS. Do not take your own word for it.
 
 Every claim below needs a command behind it, and you must paste the output.
