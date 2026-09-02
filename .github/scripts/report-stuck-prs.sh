@@ -282,8 +282,17 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
 
     # An agent/* branch under a day old is an agent that stopped one step
     # short. Finish the step for it; that is the whole point of Autopilot.
+    # ANY young orphan, not only agent/* (2026-09-02). The namespace test was
+    # the wrong proxy: CLAUDE.md 11.0 tells agents to use `fix/<slug>`, so most
+    # real work never had the prefix this looked for, and on 2026-09-02 three
+    # agents' finished work stranded because of it. The AGE gate is the real
+    # safety - a branch under a day old with commits ahead of main is somebody
+    # who stopped one step short today, whatever they named it. A months-old
+    # branch is still only reported, never opened. `rescue/*` joins the
+    # never-a-proposal namespaces above: those are recovery snapshots.
     case "$B" in
-      agent/*)
+      rescue/*) ;;
+      *)
         if [ "$AGE_H" -lt 24 ] && gh_write \
              "open a pull request for orphan branch $B (${AHEAD} commits, ${AGE_H}h old)" \
              pr create --repo "$REPO" --head "$B" --base "$DEFAULT_BRANCH" --fill; then
@@ -297,7 +306,7 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
     ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
   done < <(gh api "repos/${REPO}/branches" --paginate --jq '.[].name' 2>/dev/null)
 fi
-[ "$AUTO_OPENED" -gt 0 ] && echo "auto-opened $AUTO_OPENED pull request(s) for agent branches that were never proposed."
+[ "$AUTO_OPENED" -gt 0 ] && echo "auto-opened $AUTO_OPENED pull request(s) for branches that were never proposed."
 
 ORPHAN_SECTION=""
 if [ "$ORPHAN_COUNT" -gt 0 ]; then
