@@ -9,27 +9,31 @@
  * with no check of any kind that the account had ever paid for VIP.
  *
  * --- WHY THAT WAS WRONG --------------------------------------------------
- * `profiles.is_vip` / `vip_tier` are FEATURE-ENTITLEMENT flags, not proof of
- * payment. On 2026-09-01 that predicate selected 704 accounts:
+ * Not the eligibility rule. Dan decided on 2026-09-01 that EVERY VIP holder
+ * is paid the 500, horses included, so selecting on the entitlement is now
+ * correct policy. What was wrong is HOW this route did it:
  *
- *   1,000  horses granted lifetime VIP by the club-arena migration
- *          20260311_horses_lifetime_vip purely so the fleet would have VIP
- *          features
- *     162  humans granted lifetime VIP by hand
- *      12  humans inside the 30-day signup trial or a phone-verification
- *          grant, both of which write vip_tier without any payment
+ *   - a silent `.limit(100)`. There are 1,033 entitled accounts (1,000 horses
+ *     holding lifetime VIP from the club-arena migration
+ *     20260311_horses_lifetime_vip, 21 granted lifetime humans, 12 unexpired
+ *     monthly). This route pays the first 100 and reports success, every
+ *     month, so 90% of the fleet is silently skipped;
+ *   - no ordering, so which 100 get paid is arbitrary and not even stable
+ *     between runs;
+ *   - it bypasses `award_diamonds_v2` entirely, hand-rolling a
+ *     `diamond_transactions` lookup instead. No catalog-resolved amount, no
+ *     caps, none of the shared idempotency the rest of the economy relies on.
  *
- * Not one had a row in `vip_subscriptions`, and no diamond has ever been spent
- * on VIP on this platform. `.limit(100)` silently capped each run at
- * 100 x 500 = 50,000 diamonds ($500) a month, paid to non-payers, forever.
- * It had already paid 12 such accounts, 6,000 diamonds, in June and August.
+ * It had already paid 12 accounts, 6,000 diamonds, in June and August.
  *
  * --- WHAT REPLACES IT ----------------------------------------------------
- * `pages/api/cron/vip-stipend.js` in Smarter-Poker-World-Hub, which pays only
- * accounts holding a `vip_subscriptions` row with a non-null
- * `stripe_subscription_id` and a live Stripe status. Open Claw was repointed
- * at it on 2026-09-01 (World Hub PR #1242) and runs it daily; it is idempotent
- * per user per calendar month.
+ * `pages/api/cron/vip-stipend.js` in Smarter-Poker-World-Hub. It selects the
+ * same entitlement (`is_vip` AND (vip_tier = 'lifetime' OR vip_expires_at in
+ * the future)), pages through ALL of it rather than the first 100, and awards
+ * through `award_diamonds_v2` so the amount comes from
+ * `diamond_reward_catalog` and idempotency is one stipend per user per
+ * calendar month. Open Claw was repointed at it on 2026-09-01 (World Hub
+ * PR #1242).
  *
  * --- WHY THIS FILE STILL EXISTS ------------------------------------------
  * The monolith copy of this handler was DELETED on 2026-04-25 and that is
@@ -50,8 +54,8 @@ import type { Context } from 'hono';
 
 export async function vipDiamondStipend(c: Context) {
   console.warn(
-    '[vip-diamond-stipend] RETIRED route called. It paid 500 diamonds on ' +
-      'profiles.is_vip with no payment check and is permanently disabled. ' +
+    '[vip-diamond-stipend] RETIRED route called. It paid only 100 of the 1,033 ' +
+      'entitled accounts and bypassed award_diamonds_v2. Permanently disabled. ' +
       'Use /api/cron/vip-stipend on Vercel. Nothing was paid.',
   );
 
@@ -62,8 +66,8 @@ export async function vipDiamondStipend(c: Context) {
       paid: 0,
       error: 'This stipend route is retired and pays nothing.',
       reason:
-        'It credited 500 diamonds on profiles.is_vip with no proof of payment, ' +
-        'which selected trial grants, hand-granted lifetime VIP and the horse fleet.',
+        'It capped every run at 100 of 1,033 entitled accounts and bypassed ' +
+        'award_diamonds_v2, so amounts, caps and idempotency were all unenforced.',
       replacement: '/api/cron/vip-stipend (Smarter-Poker-World-Hub, Vercel)',
       retired_at: '2026-09-01',
     },
