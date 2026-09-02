@@ -55,6 +55,19 @@ BRANCHES=$(gh api --paginate "repos/$REPO/branches?per_page=100" \
 OPEN_PR_HEADS=$(gh pr list --repo "$REPO" --state open --limit 200 \
   --json headRefName --jq '.[].headRefName' 2>/dev/null || true)
 
+# Content that already shipped is not stranded, whatever the shas say. This
+# estate routinely re-creates the same content under a DIFFERENT sha (squash
+# merges, and the GitHub-MCP push path - CLAUDE.md section 12), so a merged
+# branch left undeleted stays "ahead of main" forever by commit count. The
+# tree hash sees through that: a squash merge writes the branch's RESULT tree
+# onto main, so a branch head whose tree matches any recent main commit's
+# tree has shipped in full. First live run in World Hub found 249 "stranded"
+# branches; this filter is what separates the truly lost ones from history.
+MAIN_TREES=$(gh api "repos/$REPO/commits?per_page=100" \
+  --jq '.[].commit.tree.sha' 2>/dev/null; \
+  gh api "repos/$REPO/commits?per_page=100&page=2" \
+  --jq '.[].commit.tree.sha' 2>/dev/null || true)
+
 for BR in $BRANCHES; do
   case "$BR" in main|master) continue ;; esac
   printf '%s' "$BR" | grep -qE "$EXEMPT_RE" && continue
@@ -62,16 +75,21 @@ for BR in $BRANCHES; do
   printf '%s\n' "$OPEN_PR_HEADS" | grep -qxF "$BR" && continue
 
   CMP=$(gh api "repos/$REPO/compare/main...$BR" \
-    --jq '{ahead: .ahead_by, at: .commits[-1].commit.committer.date}' 2>/dev/null || echo "")
+    --jq '{ahead: .ahead_by, at: .commits[-1].commit.committer.date, tree: .commits[-1].commit.tree.sha}' 2>/dev/null || echo "")
   [ -z "$CMP" ] && continue
   AHEAD=$(printf '%s' "$CMP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ahead") or 0)' 2>/dev/null || echo 0)
   [ "$AHEAD" -eq 0 ] && continue
+  TREE=$(printf '%s' "$CMP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tree") or "")' 2>/dev/null || echo "")
+  if [ -n "$TREE" ] && printf '%s\n' "$MAIN_TREES" | grep -qxF "$TREE"; then
+    continue  # this exact tree is on main: the content shipped under another sha
+  fi
   LAST=$(printf '%s' "$CMP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("at") or "")' 2>/dev/null || echo "")
   LAST_EPOCH=$(date -d "$LAST" +%s 2>/dev/null || date -jf '%Y-%m-%dT%H:%M:%SZ' "$LAST" +%s 2>/dev/null || echo 0)
   [ "$LAST_EPOCH" -eq 0 ] && continue
   [ "$LAST_EPOCH" -gt "$CUTOFF" ] && continue   # author may still be working
 
   COUNT=$((COUNT+1))
+  say "stranded: branch $BR ($AHEAD ahead, last touched $LAST, no PR)"
   ORPHANS="$ORPHANS
 - **Branch \`$BR\`** is $AHEAD commit(s) ahead of main with **no pull request**, last touched $LAST. Nothing will ever merge it. Open a PR (\`gh pr create --head $BR\`) or state that it is abandoned."
 done
@@ -87,10 +105,12 @@ while IFS=$'\t' read -r NUM MERGEABLE DRAFT UPDATED TITLE; do
   [ "$UP_EPOCH" -gt "$CUTOFF" ] && continue
   if [ "$MERGEABLE" = "CONFLICTING" ]; then
     COUNT=$((COUNT+1))
+    say "stranded: PR #$NUM conflicting ($TITLE)"
     ORPHANS="$ORPHANS
 - **PR #$NUM** (\"$TITLE\") has a **merge conflict** and has sat for over ${MIN_AGE_HOURS}h. Autopilot cannot land it; it needs \`git merge origin/main\` and a conflict resolution by its author."
   elif [ "$DRAFT" = "true" ]; then
     COUNT=$((COUNT+1))
+    say "stranded: PR #$NUM stale draft ($TITLE)"
     ORPHANS="$ORPHANS
 - **PR #$NUM** (\"$TITLE\") is a **draft** untouched for over ${MIN_AGE_HOURS}h. Autopilot ignores drafts; mark it ready or close it."
   fi
@@ -113,19 +133,34 @@ if [ "$COUNT" -eq 0 ]; then
   exit 0
 fi
 
-BODY="The hourly restart pipeline publishes whatever is ON main - it cannot publish work that never reaches main. The following work is currently stranded upstream of every watchdog:
+# GitHub caps an issue body at 65536 characters; the first World Hub sweep
+# built one past the cap from 249 findings and the create was refused - the
+# one failure mode this watchdog exists to prevent (stranded work nobody was
+# told about). Cap the detail list and summarize the overflow: a reader acts
+# on the first forty items the same way they would act on all of them.
+MAX_DETAIL=40
+if [ "$COUNT" -gt "$MAX_DETAIL" ]; then
+  ORPHANS=$(printf '%s\n' "$ORPHANS" | awk -v n="$MAX_DETAIL" '/^- /{c++} c<=n')
+  ORPHANS="$ORPHANS
+
+...and $(( COUNT - MAX_DETAIL )) more not listed - the run log of this sweep names every one."
+fi
+
+BODY="The hourly restart pipeline publishes whatever is ON main - it cannot publish work that never reaches main. The following work is currently stranded upstream of every watchdog ($COUNT piece(s) total):
 $ORPHANS
 
 **What each needs** is listed beside it. This issue updates itself: it closes on the first sweep that finds nothing stranded.
 
 *Filed by orphan-work-watchdog.sh (runs with publish-watchdog). It never merges or deletes anything itself - judging whether a conflicted branch is still wanted takes its author.*"
 
+# Failures speak: swallowing stderr here is how 249 stranded pieces went
+# unreported with a green step beside them.
 if [ -n "${EXISTING:-}" ]; then
-  gh issue comment "$EXISTING" --repo "$REPO" --body "$BODY" >/dev/null 2>&1 \
+  ERR=$(gh issue comment "$EXISTING" --repo "$REPO" --body "$BODY" 2>&1 >/dev/null) \
     && say "updated #$EXISTING ($COUNT stranded)" \
-    || say "::error::could not update the orphan-work issue - $COUNT piece(s) of work are stranded and nobody was told."
+    || say "::error::could not update the orphan-work issue ($ERR) - $COUNT piece(s) of work are stranded and nobody was told."
 else
-  gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$BODY" >/dev/null 2>&1 \
+  ERR=$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$BODY" 2>&1 >/dev/null) \
     && say "filed issue ($COUNT stranded)" \
-    || say "::error::could not file the orphan-work issue - $COUNT piece(s) of work are stranded and nobody was told."
+    || say "::error::could not file the orphan-work issue ($ERR) - $COUNT piece(s) of work are stranded and nobody was told."
 fi
