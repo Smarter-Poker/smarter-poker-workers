@@ -297,6 +297,47 @@ jobs:
               elif [ "${BEHIND:-0}" -ge 40 ]; then
                 REFRESH="very stale ($BEHIND behind)"
               fi
+
+              # A PULL REQUEST WITH NO CI RUN AT ALL IS DEAD, NOT WAITING (2026-09-02).
+              # LAST=none means ci.yml has never run for this branch - the head
+              # was pushed while a token was revoked, or the branch predates the
+              # workflow, or GitHub simply dropped the event. It matched neither
+              # refresh condition above, so it was "left to merge" - forever,
+              # because nothing will ever run its checks. Eight of the oldest
+              # open pull requests in Club Arena were in exactly that state,
+              # one of them for eight days. report-stuck-prs.sh has been naming
+              # these as NO CHECKS with the fix "push an empty commit" since
+              # August; this is that fix, done rather than reported.
+              #
+              # An empty commit on the head gives the branch a new sha, and
+              # `synchronize` runs CI on it. Made through the Git Data API so no
+              # checkout is needed. Guards: the PR must be older than 15
+              # minutes (CI on creation needs a moment), must not be DIRTY, and
+              # the current head must not already be one of these re-triggers
+              # (so a branch CI refuses to run on does not collect one empty
+              # commit per sweep forever - it stays reported instead).
+              if [ "$LAST" = "none" ] && [ "$STATE" != "DIRTY" ]; then
+                CREATED=$(gh pr view "$N" --repo "$REPO" --json createdAt --jq .createdAt 2>/dev/null || echo "")
+                AGE_MIN=999
+                if [ -n "$CREATED" ]; then
+                  C_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null || date -u -d "$CREATED" +%s 2>/dev/null || echo 0)
+                  AGE_MIN=$(( ( $(date -u +%s) - C_EPOCH ) / 60 ))
+                fi
+                HEAD_SHA=$(gh pr view "$N" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
+                HEAD_MSG=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || echo "")
+                if [ "$AGE_MIN" -ge 15 ] && [ -n "$HEAD_SHA" ] && ! printf '%s' "$HEAD_MSG" | grep -q '^ci: re-trigger checks'; then
+                  TREE=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.tree.sha' 2>/dev/null || echo "")
+                  NEW=$(gh api "repos/$REPO/git/commits" -X POST \
+                          -f message="ci: re-trigger checks - no CI run existed for $HEAD_SHA (autopilot, $(date -u +%Y-%m-%dT%H:%MZ))" \
+                          -f tree="$TREE" -f "parents[]=$HEAD_SHA" --jq .sha 2>/dev/null || echo "")
+                  if [ -n "$NEW" ] && gh api "repos/$REPO/git/refs/heads/$BRANCH" -X PATCH -f sha="$NEW" >/dev/null 2>&1; then
+                    echo "#$N ($BRANCH): had NO CI run for ${AGE_MIN}m - pushed an empty commit ($NEW) so checks run."
+                    continue
+                  else
+                    echo "::warning::#$N ($BRANCH): has no CI run and the re-trigger commit could not be written - see report-stuck-prs."
+                  fi
+                fi
+              fi
               if [ "$REFRESH" != "no" ] && [ "$STATE" = "UNKNOWN" ]; then
                 # Still unknown after three asks. Refreshing is the ONLY action
                 # here that can do harm — on a conflicted branch it cannot
