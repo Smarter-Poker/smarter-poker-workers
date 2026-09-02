@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ORPHAN WORK WATCHDOG — no commit gets left behind (estate rollout of
+# club-arena #2563 item 17).
+#
+# Dan, 2026-09-01: "HOW DO WE INSURE THAT NO WORK EVER GETS LOST, ORPHANED OR
+# NOT PUBLISHED?" The delivery pipeline watches everything DOWNSTREAM of a
+# merge; what nothing watched in this repo was the step before: a branch
+# pushed with no pull request, a PR autopilot cannot land (conflict), or a
+# draft forgotten after the work was finished. The script walks every branch
+# and open PR and files ONE self-updating issue naming each piece of stranded
+# work. It never merges, deletes, or rebases anything itself.
+#
+# In club-arena and World Hub the same script rides publish-watchdog.yml;
+# this repo has no publisher to ride, so it gets its own small schedule.
+# The script is byte-identical across all seven estate repos and is pinned
+# by estate-integrity's shared-file check — fix it in one repo, fix it in all.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Orphan Work Watchdog
+
+on:
+  schedule:
+    # Every three hours, offset from the top of the hour. MIN_AGE_HOURS=3 in
+    # the script means a sweep this often keeps worst-case detection ~6h,
+    # which is plenty for a repo without an hourly deploy train.
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: orphan-work-watchdog
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Nothing stranded upstream of a merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sweep branches and open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/orphan-work-watchdog.sh
