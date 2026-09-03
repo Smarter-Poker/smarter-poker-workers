@@ -41,6 +41,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history (2026-09-03): the sweep answers "how far ahead of
+          # main, and is this tree already on main" with git, not the API.
+          # A depth-1 checkout makes every branch look thousands of commits
+          # ahead and no tree ever matches.
+          fetch-depth: 0
 
       - name: Sweep branches and open pull requests
         env:
