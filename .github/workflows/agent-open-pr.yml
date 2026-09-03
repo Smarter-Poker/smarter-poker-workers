@@ -1,0 +1,193 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT OPEN PR — the missing first link of the Autopilot chain.
+#
+# Agent Autopilot's contract is "an agent's job ends when it opens a PR".
+# But several agent sandboxes can reach github.com (git) while api.github.com
+# is proxy-blocked, so they can PUSH a branch and then cannot PROPOSE it.
+# Until now their only route was report-stuck-prs.sh's orphan sweep, which by
+# design waits STUCK_AFTER_H (3h) before opening the PR — a 3-hour deploy
+# stall for work that is already green.
+#
+# This closes the gap: creating ANY branch opens the PR immediately.
+# Autopilot's `pull_request: opened` job then enables squash auto-merge, and
+# GitHub lands it when the required checks pass. No polling, no --admin, no
+# human clicking a button.
+#
+# TOKEN NOTE (same rule as agent-autopilot.yml): GH_PAT before GITHUB_TOKEN.
+# A PR created by GITHUB_TOKEN emits no pull_request events, so ci.yml and
+# Autopilot's fast path would never fire for it and the PR would sit
+# check-less and unmergeable. GH_PAT makes the opened PR behave exactly like
+# one a human opened. If only GITHUB_TOKEN is available the PR still gets
+# created (better stranded-visible than invisible) and the 10-minute sweep
+# picks it up.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Agent Open PR
+
+on:
+  # `create` AND `push` (2026-09-03). Between 2026-08-23 and today this was
+  # `create` only, for cost: it had fired on every push to agent/**, about 2.1
+  # pushes per branch, nineteen runs an hour, half of them booting a hosted
+  # runner to learn the pull request already existed, each billed as a whole
+  # minute. `create` fires once, when the branch is born, and the autopilot
+  # sweep was named as the net for the case where that one firing is missed.
+  #
+  # Two things changed. The job now runs on the estate's own runner
+  # (`vars.CI_RUNNER`), so a twenty-second run costs twenty seconds of a box
+  # we already pay for. And the net turned out to be a `schedule:` job that
+  # GitHub was delivering about one time in ten - so a branch born at main's
+  # own sha (an interrupted first push, an agent pushing twice, a worktree
+  # pushed before its first commit) had nothing to open a pull request for at
+  # `create`, got nothing at `push`, and waited on a sweep that was not coming.
+  # Measured 2026-09-03: fix/a-pin-that-reads-a-file-runs-when-that-file-changes
+  # was pushed with a real commit at 01:23 and still had no pull request at
+  # 01:40, with the sweep last seen at 23:40.
+  #
+  # So both events ask the same two questions - is there an open pull request,
+  # and is there anything to put in one - and the second guard is what keeps
+  # `push` from opening empty pull requests or duplicates.
+  create:
+  push:
+    branches-ignore:
+      - main
+      - 'backup/**'
+      - 'ci-marker/**'
+      - 'build/**'
+      - 'dependabot/**'
+      - 'renovate/**'
+      - 'sentry-autofix/**'
+      - 'revert-*'
+
+permissions:
+  # contents: write is for the ci-marker result branch below, nothing else.
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: agent-open-pr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  open-pr:
+    # `create` fires for tags as well as branches, and for every branch in the
+    # repo - the `on:` block for `create` takes no filters, so it goes here.
+    # ANY BRANCH, not only agent/* (2026-09-02). CLAUDE.md 11.0 tells every
+    # agent to claim a worktree as `fix/<slug>`, and the AGENT-PLAYBOOK says the
+    # job ends when a pull request exists. This gate only opened one for
+    # `agent/*`, so an agent that did exactly what the docs said pushed a
+    # `fix/...` branch and got nothing - and on 2026-09-02, when every PAT on
+    # the Mac was revoked at once, that was three agents' finished work
+    # stranded with no route to main. The docs and the automation disagreed and
+    # the docs won, silently.
+    #
+    # Excluded: the default branch, and the namespaces that are never proposals
+    # (backups, CI markers, dependabot, reverts). Everything else is somebody's
+    # work waiting to ship, and a pull request is how it ships.
+    if: >-
+      github.ref_type == 'branch'
+      && github.ref_name != github.event.repository.default_branch
+      && !startsWith(github.ref_name, 'backup/')
+      && !startsWith(github.ref_name, 'ci-marker/')
+      && !startsWith(github.ref_name, 'build/')
+      && !startsWith(github.ref_name, 'dependabot/')
+      && !startsWith(github.ref_name, 'renovate/')
+      && !startsWith(github.ref_name, 'sentry-autofix/')
+      && !startsWith(github.ref_name, 'revert-')
+    name: Open a PR for this branch
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: `gh pr create --fill` computes its title/body from
+          # `base...head`, and a depth-1 checkout has no base ref — the run
+          # fails with "unknown revision origin/main". Same lesson
+          # agent-apply-patch.yml already carries.
+          fetch-depth: 0
+
+      - name: Mint a GitHub App installation token
+        # Same order of preference as agent-autopilot.yml, for the same
+        # reasons: the App first (no expiry cliff, full PR scopes), GH_PAT
+        # second, GITHUB_TOKEN last (works, but emits no pull_request events,
+        # so the sweep has to rescue the PR on its next pass).
+        id: app-token
+        if: vars.AUTOPILOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.AUTOPILOT_APP_ID }}
+          private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
+
+      - name: Open the pull request if none exists
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          LOG=/tmp/open-pr.log
+          {
+            echo "run: $GITHUB_RUN_ID at $(date -u +%FT%TZ) for $BRANCH"
+            DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>&1) \
+              && echo "default branch: $DEFAULT_BRANCH" \
+              || { echo "repo view FAILED: $DEFAULT_BRANCH"; DEFAULT_BRANCH=main; }
+            EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length' 2>&1) \
+              || { echo "pr list FAILED: $EXISTING"; EXISTING=0; }
+            AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..origin/$BRANCH" 2>/dev/null || echo 1)  # unknown = try; gh refuses an empty PR itself
+            if [ "$EXISTING" != "0" ]; then
+              echo "A PR for $BRANCH is already open — nothing to do."
+            elif [ "$AHEAD" = "0" ]; then
+              echo "$BRANCH has no commits beyond $DEFAULT_BRANCH yet — nothing to open a PR for. The next push will ask again."
+            # --fill takes title/body from the branch's commits, which is where
+            # agents already write their summaries. If the preferred token
+            # cannot create PRs (the fine-grained PAT lacks that scope on some
+            # repos), fall through to GITHUB_TOKEN rather than failing silently.
+            elif OUT=$(gh pr create --repo "$REPO" --head "$BRANCH" --base "$DEFAULT_BRANCH" --fill 2>&1); then
+              echo "opened: $OUT"
+            else
+              echo "preferred token could not open the PR: $OUT"
+              OUT2=$(GH_TOKEN="$GH_TOKEN_FALLBACK" gh pr create --repo "$REPO" --head "$BRANCH" --base "$DEFAULT_BRANCH" --fill 2>&1) \
+                && echo "opened with GITHUB_TOKEN (sweep must rescue events): $OUT2" \
+                || echo "GITHUB_TOKEN also FAILED: $OUT2"
+            fi
+          } | tee "$LOG"
+
+          # Publish the outcome where a git-only agent can read it: a
+          # ci-marker/* branch (excluded from the orphan sweep by name).
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan _openpr_result
+          git rm -rfq . 2>/dev/null || true
+          mkdir -p .agent && cp "$LOG" .agent/open-pr-result.txt
+          git add .agent/open-pr-result.txt
+          git commit -q -m "marker: agent-open-pr result for $BRANCH"
+
+          # 2026-08-25: this push FAILED THE WHOLE CHECK on a ref race.
+          #
+          #   ! [remote rejected] HEAD -> ci-marker/agent-open-pr-result
+          #     (cannot lock ref ...: is at <a> but expected <b>)
+          #
+          # Several agents push branches within seconds of each other, so two
+          # runs of this workflow reach this line at once and both try to move
+          # the SAME single marker ref. `-f` does not help: the failure is the
+          # ref LOCK, not a non-fast-forward. The step then exited 1 and the PR
+          # showed a red "Agent Open PR" — after the job had already done its
+          # actual work and logged "a PR is already open, nothing to do".
+          #
+          # Retry a few times (the window is milliseconds), and if it still
+          # will not land, SAY SO AND CARRY ON. This branch is a convenience
+          # log for git-only agents; the PR itself is the real output, and a
+          # missing log must never be reported as a failed check.
+          for attempt in 1 2 3; do
+            if git push -f origin HEAD:refs/heads/ci-marker/agent-open-pr-result 2>&1; then
+              echo "marker published (attempt $attempt)"
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "marker ref busy after 3 attempts - another agent's run won the race."
+              echo "This is not a failure: the PR outcome above is the real result."
+            else
+              sleep $((attempt * 3))
+              git fetch origin "+refs/heads/ci-marker/agent-open-pr-result:refs/remotes/origin/ci-marker/agent-open-pr-result" 2>/dev/null || true
+            fi
+          done
