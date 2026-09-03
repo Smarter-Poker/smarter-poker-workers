@@ -20,6 +20,11 @@
 # one a human opened. If only GITHUB_TOKEN is available the PR still gets
 # created (better stranded-visible than invisible) and the 10-minute sweep
 # picks it up.
+#
+# OUTPUT NOTE (2026-09-03): the run's log goes to the job summary and nowhere
+# else. This workflow used to force-push its log to a `ci-marker/*` branch;
+# every one of those pushes was a failed Vercel deployment. The step below
+# says why, and why that branch must never come back.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Agent Open PR
 
@@ -58,8 +63,11 @@ on:
       - 'revert-*'
 
 permissions:
-  # contents: write is for the ci-marker result branch below, nothing else.
-  contents: write
+  # contents: read is enough: this job checks out and reads history. It held
+  # contents: write for a `ci-marker/*` result branch until 2026-09-03; that
+  # branch is gone (see the end of the step below) and the write bit went
+  # with it.
+  contents: read
   pull-requests: write
 
 concurrency:
@@ -152,42 +160,39 @@ jobs:
             fi
           } | tee "$LOG"
 
-          # Publish the outcome where a git-only agent can read it: a
-          # ci-marker/* branch (excluded from the orphan sweep by name).
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan _openpr_result
-          git rm -rfq . 2>/dev/null || true
-          mkdir -p .agent && cp "$LOG" .agent/open-pr-result.txt
-          git add .agent/open-pr-result.txt
-          git commit -q -m "marker: agent-open-pr result for $BRANCH [skip ci]"
-
-          # 2026-08-25: this push FAILED THE WHOLE CHECK on a ref race.
+          # THE RESULT GOES TO THE JOB SUMMARY, NOT TO A BRANCH (2026-09-03).
           #
-          #   ! [remote rejected] HEAD -> ci-marker/agent-open-pr-result
-          #     (cannot lock ref ...: is at <a> but expected <b>)
+          # Until today this step published $LOG by force-pushing an ORPHAN
+          # commit to `ci-marker/agent-open-pr-result`, "where a git-only agent
+          # can read it". Nothing in the estate ever read it: not one script,
+          # workflow or document fetched that ref. It had a cost nobody was
+          # counting. Vercel's GitHub App builds EVERY branch push on a linked
+          # repo; an orphan commit holding one text file has no app to build;
+          # so every pull request in World Hub, PepNationLab and Commander
+          # produced one failed deployment, in 7 to 16 seconds. Measured
+          # 2026-09-03: every ERROR on all three Vercel projects was this one
+          # ref. A skip-ci tag in the commit message did not help (Vercel
+          # honours it on its own CI path, not on GitHub App deployments), and
+          # a vercel.json guard only stops the build after the deployment has
+          # already been created.
           #
-          # Several agents push branches within seconds of each other, so two
-          # runs of this workflow reach this line at once and both try to move
-          # the SAME single marker ref. `-f` does not help: the failure is the
-          # ref LOCK, not a non-fast-forward. The step then exited 1 and the PR
-          # showed a red "Agent Open PR" — after the job had already done its
-          # actual work and logged "a PR is already open, nothing to do".
+          # The ref was also a shared write: two branches pushed within seconds
+          # of each other raced on its lock, and a retry loop lived here only
+          # to hide that.
           #
-          # Retry a few times (the window is milliseconds), and if it still
-          # will not land, SAY SO AND CARRY ON. This branch is a convenience
-          # log for git-only agents; the PR itself is the real output, and a
-          # missing log must never be reported as a failed check.
-          for attempt in 1 2 3; do
-            if git push -f origin HEAD:refs/heads/ci-marker/agent-open-pr-result 2>&1; then
-              echo "marker published (attempt $attempt)"
-              break
-            fi
-            if [ "$attempt" = 3 ]; then
-              echo "marker ref busy after 3 attempts - another agent's run won the race."
-              echo "This is not a failure: the PR outcome above is the real result."
-            else
-              sleep $((attempt * 3))
-              git fetch origin "+refs/heads/ci-marker/agent-open-pr-result:refs/remotes/origin/ci-marker/agent-open-pr-result" 2>/dev/null || true
-            fi
-          done
+          # So: no branch. The log goes to the run's job summary, which the
+          # Actions UI and `gh run view <id>` both show. A git-only agent has a
+          # better witness than any marker: `git ls-remote origin
+          # 'refs/pull/*/head'` lists the head sha of every pull request, and a
+          # branch whose sha appears there HAS one. The pull request is the
+          # real output; the marker was only ever a copy of this log.
+          #
+          # NEVER bring the branch push back. A new reader of this log gets the
+          # summary or a pull request comment, not a ref.
+          {
+            echo '### Agent Open PR'
+            echo
+            echo '```'
+            cat "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

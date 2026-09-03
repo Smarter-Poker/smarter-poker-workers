@@ -20,6 +20,9 @@
 #    2. A pull request that autopilot cannot merge - a merge conflict with a
 #       branch that landed first ("dirty"), or a red check the author never
 #       saw. Autopilot retries the mergeable ones; the dirty ones sit.
+#       (This case was WRITTEN but never fired until 2026-09-03 - see the
+#       pass itself for why, and for what thirty-one stranded pull requests
+#       were sitting unreported behind it.)
 #    3. A draft PR forgotten after the work was finished.
 #
 #  This walks every branch and open PR and files ONE self-updating issue
@@ -39,84 +42,154 @@ ISSUE_TITLE="Orphan work watchdog: commits exist that nothing will ever publish"
 # A branch is not orphaned while its author might still be mid-session.
 MIN_AGE_HOURS="${MIN_AGE_HOURS:-3}"
 # Branches that are allowed to trail main forever.
-EXEMPT_RE='^(main|master|gh-pages|backup/|_rescue|dependabot/)'
+# `ci-marker/` joins the list 2026-09-03: that namespace is not work. It is
+# where agent-open-pr.yml force-pushes its own result log as an ORPHAN commit
+# (`git checkout --orphan`, one text file). It is ahead of main by
+# construction, forever, and reporting it as stranded work is noise that
+# crowds out the findings a human would act on.
+EXEMPT_RE='^(main|master|gh-pages|backup/|_rescue|dependabot/|ci-marker/)'
 
 say() { printf '%s\n' "$*"; }
 
 NOW=$(date -u +%s)
 CUTOFF=$(( NOW - MIN_AGE_HOURS * 3600 ))
+# TWO STREAMS, AND THE ACTIONABLE ONE IS NOT THE ONE THAT GETS TRUNCATED
+# (2026-09-03). There is one detail cap (MAX_DETAIL, for GitHub's 65536-char
+# issue body) and the branch pass runs first, so on this repo - 428 stranded
+# branches, most of them April `sentry-autofix/*` and August `rescue/*` - the
+# branch findings filled all forty slots and anything the pull-request pass
+# found was appended after the cutoff and silently dropped.
+#
+# A conflicted pull request is FINISHED work one rebase from shipping. A
+# branch with no PR may be an abandoned attempt. They are not the same
+# urgency, so they no longer share a queue: PR findings are listed first and
+# in full, branches take what detail room is left.
+PR_ORPHANS=""
+PR_COUNT=0
 ORPHANS=""
 COUNT=0
 
 # ── 1. Branches ahead of main with no open pull request ─────────────────────
 # Paginated: this repo runs hundreds of agent branches.
-BRANCHES=$(gh api --paginate "repos/$REPO/branches?per_page=100" \
-  --jq '.[].name' 2>/dev/null || true)
-OPEN_PR_HEADS=$(gh pr list --repo "$REPO" --state open --limit 200 \
-  --json headRefName --jq '.[].headRefName' 2>/dev/null || true)
+# THE BRANCH WALK IS LOCAL (2026-09-03). This used to call
+# `gh api compare/main...$BR` once per branch, plus two python processes per
+# branch, for every branch in the repository. With ~400 branches (July and
+# August `patch/*` and `rescue/*` included) that is over six minutes, which is
+# the job's timeout: every scheduled watchdog run since 2026-09-02 19:17 died
+# of SIGTERM in this loop, was recorded as "cancelled", and never reached the
+# stuck-PR pass below. The workflow checks main out with full history, so
+# every question here is answerable by git in a few seconds with no API at all.
+git fetch -q origin '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null || true
 
-# Content that already shipped is not stranded, whatever the shas say. This
-# estate routinely re-creates the same content under a DIFFERENT sha (squash
-# merges, and the GitHub-MCP push path - CLAUDE.md section 12), so a merged
-# branch left undeleted stays "ahead of main" forever by commit count. The
-# tree hash sees through that: a squash merge writes the branch's RESULT tree
-# onto main, so a branch head whose tree matches any recent main commit's
-# tree has shipped in full. First live run in World Hub found 249 "stranded"
-# branches; this filter is what separates the truly lost ones from history.
-MAIN_TREES=$(gh api "repos/$REPO/commits?per_page=100" \
-  --jq '.[].commit.tree.sha' 2>/dev/null; \
-  gh api "repos/$REPO/commits?per_page=100&page=2" \
-  --jq '.[].commit.tree.sha' 2>/dev/null || true)
-
-for BR in $BRANCHES; do
-  case "$BR" in main|master) continue ;; esac
+# THE PULL-REQUEST LIST IS NOT OPTIONAL (2026-09-03). It is the difference
+# between "stranded" and "proposed". When it cannot be read, nothing below can
+# be trusted: every proposed branch reads as unproposed, and the conflicted-PR
+# pass finds nothing. That is what every run of this sweep had done in the two
+# repos whose workflow granted the token no `pull-requests: read`: the last
+# one filed 416 "branches with no pull request", 148 of which had one, and 0
+# stuck pull requests, while 16 sat conflicted. A list that fails is an error,
+# spoken, and the sweep stops rather than filing fiction with a green step.
+if ! OPEN_PR_HEADS=$(gh pr list --repo "$REPO" --state open --limit 200 \
+  --json headRefName --jq '.[].headRefName' 2>&1); then
+  say "::error::could not list open pull requests: $OPEN_PR_HEADS"
+  say "::error::the token needs pull-requests: read. Without the list this sweep cannot tell stranded from proposed, so it reports nothing rather than everything."
+  exit 1
+fi
+MAIN_TREES=$(git log -200 --format=%T origin/main 2>/dev/null || true)
+while read -r BR LAST_EPOCH LAST; do
+  [ -z "${BR:-}" ] && continue
+  case "$BR" in main|master|HEAD) continue ;; esac
   printf '%s' "$BR" | grep -qE "$EXEMPT_RE" && continue
-  # Already has an open PR? Autopilot's problem, checked in pass 2.
   printf '%s\n' "$OPEN_PR_HEADS" | grep -qxF "$BR" && continue
-
-  CMP=$(gh api "repos/$REPO/compare/main...$BR" \
-    --jq '{ahead: .ahead_by, at: .commits[-1].commit.committer.date, tree: .commits[-1].commit.tree.sha}' 2>/dev/null || echo "")
-  [ -z "$CMP" ] && continue
-  AHEAD=$(printf '%s' "$CMP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ahead") or 0)' 2>/dev/null || echo 0)
+  AHEAD=$(git rev-list --count "origin/main..origin/$BR" 2>/dev/null || echo 0)
   [ "$AHEAD" -eq 0 ] && continue
-  TREE=$(printf '%s' "$CMP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tree") or "")' 2>/dev/null || echo "")
+  TREE=$(git rev-parse "origin/$BR^{tree}" 2>/dev/null || echo "")
   if [ -n "$TREE" ] && printf '%s\n' "$MAIN_TREES" | grep -qxF "$TREE"; then
     continue  # this exact tree is on main: the content shipped under another sha
   fi
-  LAST=$(printf '%s' "$CMP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("at") or "")' 2>/dev/null || echo "")
-  LAST_EPOCH=$(date -d "$LAST" +%s 2>/dev/null || date -jf '%Y-%m-%dT%H:%M:%SZ' "$LAST" +%s 2>/dev/null || echo 0)
-  [ "$LAST_EPOCH" -eq 0 ] && continue
+  [ "${LAST_EPOCH:-0}" -eq 0 ] && continue
   [ "$LAST_EPOCH" -gt "$CUTOFF" ] && continue   # author may still be working
-
   COUNT=$((COUNT+1))
   say "stranded: branch $BR ($AHEAD ahead, last touched $LAST, no PR)"
   ORPHANS="$ORPHANS
 - **Branch \`$BR\`** is $AHEAD commit(s) ahead of main with **no pull request**, last touched $LAST. Nothing will ever merge it. Open a PR (\`gh pr create --head $BR\`) or state that it is abandoned."
-done
+done <<EOF_BRANCHES
+$(git for-each-ref refs/remotes/origin --format='%(refname:lstrip=3) %(committerdate:unix) %(committerdate:iso-strict)' 2>/dev/null)
+EOF_BRANCHES
 
-# ── 2. Open pull requests that autopilot cannot land ────────────────────────
-PRS=$(gh pr list --repo "$REPO" --state open --limit 200 \
-  --json number,title,mergeable,isDraft,updatedAt \
-  --jq '.[] | [.number, .mergeable, .isDraft, .updatedAt, .title] | @tsv' 2>/dev/null || true)
+# Everything counted so far is a branch; the pull-request pass adds to COUNT
+# after this line.
+COUNT_BRANCHES=$COUNT
 
-while IFS=$'\t' read -r NUM MERGEABLE DRAFT UPDATED TITLE; do
+# ── 2. Open pull requests that cannot land ──────────────────────────────────
+#
+# THIS PASS HAD NEVER ONCE FIRED (found 2026-09-03). It asked `gh pr list` for
+# `mergeable` and compared it to "CONFLICTING". GitHub does not compute
+# mergeability for a LIST query - it computes it lazily, when a single pull
+# request is fetched - so the field comes back UNKNOWN (REST: `null`) for
+# every row, every time. Measured on this repo the same day: all 100 open
+# pull requests reported `mergeable_state: null` from the list, and the very
+# same PRs fetched one at a time reported `dirty` - #2548 had been conflicted
+# and stranded since 2026-09-02, #2842 and #2838 since that morning.
+#
+# So the watchdog reported 428 branches and ZERO pull requests, while the
+# conflicted pull requests - finished work, one rebase from shipping, exactly
+# what case 2 in this file's header promises to catch - sat unreported.
+#
+# Fetching each pull request individually is what forces the computation. It
+# costs one API call per open PR past the cutoff, and GitHub answers `null`
+# while it is still thinking, so a `null` is retried once after a short pause
+# rather than being read as "fine".
+if ! PRS=$(gh pr list --repo "$REPO" --state open --limit 200 \
+  --json number,title,isDraft,updatedAt \
+  --jq '.[] | [.number, .isDraft, .updatedAt, .title] | @tsv' 2>&1); then
+  say "::error::could not list open pull requests for the stuck-PR pass: $PRS"
+  exit 1
+fi
+
+# A bound on the API work, so this pass can never be the reason the job is
+# killed the way the branch walk was on 2026-09-02. Oldest first - the ones
+# that have been stranded longest are the ones worth the call.
+MAX_PR_PROBES="${MAX_PR_PROBES:-80}"
+PROBED=0
+
+while IFS=$'\t' read -r NUM DRAFT UPDATED TITLE; do
   [ -z "${NUM:-}" ] && continue
   UP_EPOCH=$(date -d "$UPDATED" +%s 2>/dev/null || date -jf '%Y-%m-%dT%H:%M:%SZ' "$UPDATED" +%s 2>/dev/null || echo 0)
   [ "$UP_EPOCH" -gt "$CUTOFF" ] && continue
-  if [ "$MERGEABLE" = "CONFLICTING" ]; then
-    COUNT=$((COUNT+1))
-    say "stranded: PR #$NUM conflicting ($TITLE)"
-    ORPHANS="$ORPHANS
-- **PR #$NUM** (\"$TITLE\") has a **merge conflict** and has sat for over ${MIN_AGE_HOURS}h. Autopilot cannot land it; it needs \`git merge origin/main\` and a conflict resolution by its author."
-  elif [ "$DRAFT" = "true" ]; then
-    COUNT=$((COUNT+1))
+
+  # A draft needs no probe: autopilot ignores drafts whatever their mergeability.
+  if [ "$DRAFT" = "true" ]; then
+    PR_COUNT=$((PR_COUNT+1))
     say "stranded: PR #$NUM stale draft ($TITLE)"
-    ORPHANS="$ORPHANS
+    PR_ORPHANS="$PR_ORPHANS
 - **PR #$NUM** (\"$TITLE\") is a **draft** untouched for over ${MIN_AGE_HOURS}h. Autopilot ignores drafts; mark it ready or close it."
+    continue
+  fi
+
+  [ "$PROBED" -ge "$MAX_PR_PROBES" ] && continue
+  PROBED=$((PROBED+1))
+  STATE=$(gh api "repos/$REPO/pulls/$NUM" --jq '.mergeable_state // "unknown"' 2>/dev/null || echo unknown)
+  if [ "$STATE" = "unknown" ]; then
+    sleep 2
+    STATE=$(gh api "repos/$REPO/pulls/$NUM" --jq '.mergeable_state // "unknown"' 2>/dev/null || echo unknown)
+  fi
+
+  # `dirty` is the REST spelling of CONFLICTING. Every other state - blocked
+  # (waiting on checks), behind, unstable, clean - is autopilot's job, not a
+  # stranding, and `unknown` after two asks is GitHub being slow rather than
+  # evidence of anything.
+  if [ "$STATE" = "dirty" ]; then
+    PR_COUNT=$((PR_COUNT+1))
+    say "stranded: PR #$NUM conflicting ($TITLE)"
+    PR_ORPHANS="$PR_ORPHANS
+- **PR #$NUM** (\"$TITLE\") has a **merge conflict** and has sat for over ${MIN_AGE_HOURS}h. Autopilot cannot land it; it needs \`git merge origin/main\` and a conflict resolution by its author."
   fi
 done <<EOF_PRS
 $PRS
 EOF_PRS
+
+COUNT=$((COUNT + PR_COUNT))
 
 # ── 3. File or resolve the issue ────────────────────────────────────────────
 EXISTING=$(gh issue list --repo "$REPO" --state open --limit 100 --json number,title \
@@ -138,15 +211,29 @@ fi
 # one failure mode this watchdog exists to prevent (stranded work nobody was
 # told about). Cap the detail list and summarize the overflow: a reader acts
 # on the first forty items the same way they would act on all of them.
+# The pull-request findings are listed FIRST and never truncated: they are
+# finished work one rebase from shipping, and there are only ever a handful.
+# The branch findings take whatever detail room is left. Before 2026-09-03 the
+# two shared one queue and the branches - 428 of them, most from April and
+# August - filled it entirely.
 MAX_DETAIL=40
-if [ "$COUNT" -gt "$MAX_DETAIL" ]; then
-  ORPHANS=$(printf '%s\n' "$ORPHANS" | awk -v n="$MAX_DETAIL" '/^- /{c++} c<=n')
+BRANCH_ROOM=$(( MAX_DETAIL - PR_COUNT ))
+[ "$BRANCH_ROOM" -lt 5 ] && BRANCH_ROOM=5
+if [ "$COUNT_BRANCHES" -gt "$BRANCH_ROOM" ]; then
+  ORPHANS=$(printf '%s\n' "$ORPHANS" | awk -v n="$BRANCH_ROOM" '/^- /{c++} c<=n')
   ORPHANS="$ORPHANS
 
-...and $(( COUNT - MAX_DETAIL )) more not listed - the run log of this sweep names every one."
+...and $(( COUNT_BRANCHES - BRANCH_ROOM )) more branches not listed - the run log of this sweep names every one."
 fi
 
-BODY="The hourly restart pipeline publishes whatever is ON main - it cannot publish work that never reaches main. The following work is currently stranded upstream of every watchdog ($COUNT piece(s) total):
+BODY="The hourly restart pipeline publishes whatever is ON main - it cannot publish work that never reaches main. The following work is currently stranded upstream of every watchdog ($COUNT piece(s) total: $PR_COUNT pull request(s), $COUNT_BRANCHES branch(es)).
+
+### Pull requests that cannot land
+A conflicted pull request is finished work that only needs \`git merge origin/main\` and a conflict resolution. These are listed in full.
+${PR_ORPHANS:-
+- none}
+
+### Branches with no pull request
 $ORPHANS
 
 **What each needs** is listed beside it. This issue updates itself: it closes on the first sweep that finds nothing stranded.
@@ -157,10 +244,10 @@ $ORPHANS
 # unreported with a green step beside them.
 if [ -n "${EXISTING:-}" ]; then
   ERR=$(gh issue comment "$EXISTING" --repo "$REPO" --body "$BODY" 2>&1 >/dev/null) \
-    && say "updated #$EXISTING ($COUNT stranded)" \
+    && say "updated #$EXISTING ($COUNT stranded: $PR_COUNT PR(s), $COUNT_BRANCHES branch(es))" \
     || say "::error::could not update the orphan-work issue ($ERR) - $COUNT piece(s) of work are stranded and nobody was told."
 else
   ERR=$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$BODY" 2>&1 >/dev/null) \
-    && say "filed issue ($COUNT stranded)" \
+    && say "filed issue ($COUNT stranded: $PR_COUNT PR(s), $COUNT_BRANCHES branch(es))" \
     || say "::error::could not file the orphan-work issue ($ERR) - $COUNT piece(s) of work are stranded and nobody was told."
 fi
