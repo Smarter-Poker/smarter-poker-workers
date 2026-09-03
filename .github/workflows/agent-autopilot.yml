@@ -49,6 +49,13 @@
 # read check runs on some repos, which is why `gh pr checks` 403s there today.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Agent Autopilot
+# RUNNER (2026-09-03): `vars.CI_RUNNER` routes both jobs to the estate's own
+# runners where the repository has them (Club Arena: estate-ci-1/2, World Hub:
+# estate-ci-3). A repo without the variable runs on ubuntu-latest exactly as
+# before. Measured 2026-09-02: this workflow was ~30 hosted wall-minutes a day
+# PER REPO - the sweep every 30 minutes plus a run per pull-request event -
+# the largest hosted item left after the CI suites moved. Byte-identical in all
+# seven repos (estate-integrity), so the fallback is what makes one file fit all.
 
 on:
   pull_request:
@@ -122,7 +129,7 @@ jobs:
       github.event_name == 'pull_request'
       && github.event.pull_request.draft == false
       && github.actor != 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Checkout
@@ -170,7 +177,7 @@ jobs:
   sweep:
     name: Sweep open PRs (queue + keep fresh)
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - name: Checkout
