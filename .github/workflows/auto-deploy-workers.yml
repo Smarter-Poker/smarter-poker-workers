@@ -1,0 +1,105 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTO-DEPLOY WORKERS ON MERGE (2026-09-03)
+#
+# Until today this repo had no deploy path a merge could reach. release.yml
+# builds an image on a v* tag and then tells a human to run
+# scripts/deploy-workers.sh from Dan's Mac. The last tag was 2026-08-20; on
+# 2026-09-03 the VM was running 2026-08-31's build while main carried
+# thirteen newer commits, one of which was the /cron/cron-staleness-watchdog
+# route that the Hetzner dispatcher had been calling into a 404 every fifteen
+# minutes for thirty hours. Merged, tested, and not running is the failure
+# this estate exists to prevent (AGENT-PLAYBOOK).
+#
+# This is scripts/deploy-workers.sh --build-on-server, run by CI on every
+# merge that touches the service: git archive -> tarball to the VM -> docker
+# build on the VM with the commit sha as the image revision label -> compose
+# up -> /health -> the running container must report THIS sha or the run
+# fails. The GHCR path is not used: it has returned 401 since 2026-08-18.
+#
+# Credentials: WORKERS_SSH_PRIVATE_KEY is the workers-deploy@smarter.poker
+# key the VM already trusts (the same key deploy-workers.sh uses from the
+# Mac). WORKERS_HOST_KEY pins the VM's ed25519 host key so a fresh runner
+# never trusts-on-first-use.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Auto-Deploy Workers (on merge)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - '.github/workflows/auto-deploy-workers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-deploy-workers
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build on the VM and cut over
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the deploy key and pin the host key
+        env:
+          KEY: ${{ secrets.WORKERS_SSH_PRIVATE_KEY }}
+          HOST_KEY: ${{ secrets.WORKERS_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/workers_ed25519
+          chmod 600 ~/.ssh/workers_ed25519
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Ship the tree, build on the VM, cut over, verify the revision
+        env:
+          HOST: ${{ secrets.WORKERS_HOST }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i $HOME/.ssh/workers_ed25519 -o BatchMode=yes -o ConnectTimeout=25 root@$HOST"
+          SHORT=${SHA:0:11}
+          IMAGE=ghcr.io/smarter-poker/smarter-poker-workers
+          SERVICE=smarter-poker-workers
+
+          echo "::group::Ship tree $SHORT"
+          git archive --format=tar HEAD | $SSH 'rm -rf /opt/workers-build && mkdir -p /opt/workers-build && tar -x -C /opt/workers-build'
+          echo "::endgroup::"
+
+          echo "::group::Build on the VM"
+          $SSH "cd /opt/workers-build && docker build --label org.opencontainers.image.revision=$SHORT -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -40 /tmp/workers-build.log; exit 2; }"
+          echo "::endgroup::"
+
+          echo "::group::Cut over"
+          $SSH "cd /opt/workers && sudo -u workers docker compose up -d --no-build"
+          echo "::endgroup::"
+
+          echo "::group::Verify"
+          for i in $(seq 1 12); do
+            REV=$($SSH "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE | head -1) 2>/dev/null" || echo "")
+            HEALTH=$($SSH 'curl -fsS -m 3 http://127.0.0.1:8081/health 2>/dev/null || echo ""')
+            if [ "$REV" = "$SHORT" ] && printf '%s' "$HEALTH" | grep -q '"status":"ok"'; then
+              echo "running $REV, healthy: $HEALTH"
+              echo "### Workers deployed" >> "$GITHUB_STEP_SUMMARY"
+              echo "Revision \`$SHORT\` is running on the VM and /health is ok." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the container reports revision '$REV' (wanted $SHORT); health: $HEALTH"
+          $SSH "docker logs $SERVICE --tail 60 2>&1 || true"
+          exit 1
+          echo "::endgroup::"

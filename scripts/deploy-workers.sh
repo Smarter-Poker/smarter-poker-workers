@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# NOTE (2026-09-03): merges to main now deploy THEMSELVES via
+# .github/workflows/auto-deploy-workers.yml (the --build-on-server path below,
+# run by CI, with a revision check). This script remains for a manual deploy of
+# a non-main tree or a re-run when the workflow cannot reach the VM.
 # deploy-workers.sh — deploy the latest workers container to the Hetzner CPX21 VM
 #
 # Usage:
