@@ -160,7 +160,7 @@ jobs:
           git rm -rfq . 2>/dev/null || true
           mkdir -p .agent && cp "$LOG" .agent/open-pr-result.txt
           git add .agent/open-pr-result.txt
-          git commit -q -m "marker: agent-open-pr result for $BRANCH"
+          git commit -q -m "marker: agent-open-pr result for $BRANCH [skip ci]"
 
           # 2026-08-25: this push FAILED THE WHOLE CHECK on a ref race.
           #
