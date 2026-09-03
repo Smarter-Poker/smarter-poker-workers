@@ -108,7 +108,7 @@ gh_write() {
   return 1
 }
 
-PRS=$(gh pr list --repo "$REPO" --state open --limit 100 \
+PRS=$(gh pr list --repo "$REPO" --state open --limit 1000 \
         --json number,title,headRefName,mergeStateStatus,isDraft,labels,createdAt,updatedAt,author \
       2>/dev/null || echo '[]')
 
@@ -195,7 +195,7 @@ ORPHANS=""
 ORPHAN_COUNT=0
 AUTO_OPENED=0
 if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
-  EVER=$(gh pr list --repo "$REPO" --state all --limit 500 --json headRefName \
+  EVER=$(gh pr list --repo "$REPO" --state all --limit 2000 --json headRefName \
            --jq '.[].headRefName' 2>/dev/null | sort -u)
 
   # WHEN EACH BRANCH'S PULL REQUEST FINISHED.
@@ -210,7 +210,7 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
   # So a branch that has MOVED SINCE its pull request closed is orphaned too.
   # Keyed by branch, taking the most recent PR, because a branch can carry
   # several over its life.
-  CLOSED_AT=$(gh pr list --repo "$REPO" --state all --limit 500 \
+  CLOSED_AT=$(gh pr list --repo "$REPO" --state all --limit 2000 \
                 --json headRefName,mergedAt,closedAt \
                 --jq '[.[] | select((.mergedAt // .closedAt) != null)]
                       | group_by(.headRefName)
@@ -301,6 +301,27 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
       rescue/*) ;;
       *)
         if [ "$AGE_H" -lt 24 ]; then
+          # EXACT last look before creating anything. Everything above this
+          # point decided "never proposed" from a LIST, and a list can be
+          # truncated - `--state all` was capped at 500 in a repo with
+          # thousands of pull requests, so a branch whose PR was simply old
+          # read as one that never had a PR at all, and the remedy for that
+          # misreading is to open a SECOND one. The limits are higher now, but
+          # a cap that is merely larger is still a cap. This asks GitHub about
+          # this one branch by name, which cannot truncate.
+          EXISTING=$(gh api "repos/${REPO}/pulls?state=all&head=${REPO%%/*}:${B}&per_page=1" \
+                       --jq 'length' 2>/dev/null || echo "unknown")
+          if [ "$EXISTING" = "unknown" ]; then
+            echo "::warning::could not confirm whether $B already has a pull request - not opening one."
+            ORPHANS="${ORPHANS}| \`${B}\` | ${AHEAD} | ${BEHIND} | ${AGE_H}h | could not verify, open by hand | [open a PR](https://github.com/${REPO}/compare/${DEFAULT_BRANCH}...${B}?expand=1) |
+"
+            ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
+            continue
+          fi
+          if [ "$EXISTING" != "0" ]; then
+            # It has one after all; the list lied. Nothing to do.
+            continue
+          fi
           SUBJECT=$(gh api "repos/${REPO}/commits/${B}" --jq '.commit.message | split("\n")[0]' 2>/dev/null || echo "")
           [ -n "$SUBJECT" ] || SUBJECT="$B"
           if gh_write \

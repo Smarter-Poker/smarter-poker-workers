@@ -210,7 +210,7 @@ jobs:
             echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured. See the token note at the top of this workflow."
           fi
 
-          PRS=$(gh pr list --repo "$REPO" --state open --limit 100 \
+          PRS=$(gh pr list --repo "$REPO" --state open --limit 1000 \
                   --json number,isDraft,labels,mergeStateStatus,autoMergeRequest,headRefName,baseRefName)
 
           echo "$PRS" | jq -c '.[]' | while read -r pr; do
@@ -397,7 +397,7 @@ jobs:
             echo ""
             echo "| PR | branch | state | auto-merge |"
             echo "|----|--------|-------|------------|"
-            gh pr list --repo "$REPO" --state open --limit 100 \
+            gh pr list --repo "$REPO" --state open --limit 1000 \
               --json number,headRefName,mergeStateStatus,autoMergeRequest \
               --jq '.[] | "| #\(.number) | \(.headRefName) | \(.mergeStateStatus) | \(if .autoMergeRequest then "queued" else "NOT QUEUED" end) |"'
           } >> "$GITHUB_STEP_SUMMARY"
