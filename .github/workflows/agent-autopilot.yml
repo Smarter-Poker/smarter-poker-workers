@@ -23,7 +23,7 @@
 # GITHUB_TOKEN is the LAST resort, never the choice. A merge produced by
 # GITHUB_TOKEN does NOT trigger downstream workflows, so a GITHUB_TOKEN
 # auto-merge would land the commit on main and then never fire
-# `build-for-world-hub.yml` — merged but never published, which is
+# `publish-club-arena.yml` — merged but never published, which is
 # indistinguishable from a regression.
 #
 # The order of preference is:
@@ -157,7 +157,7 @@ jobs:
         run: |
           set -uo pipefail
           if [ "$PUBLISHING_TOKEN" != "true" ]; then
-            echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured, so this run falls back to GITHUB_TOKEN. A merge made with GITHUB_TOKEN does NOT trigger build-for-world-hub.yml: the commit lands on main and never publishes. Set vars.AUTOPILOT_APP_ID + secrets.AUTOPILOT_APP_PRIVATE_KEY, or secrets.GH_PAT."
+            echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured, so this run falls back to GITHUB_TOKEN. A merge made with GITHUB_TOKEN does NOT trigger publish-club-arena.yml: the commit lands on main and never publishes. Set vars.AUTOPILOT_APP_ID + secrets.AUTOPILOT_APP_PRIVATE_KEY, or secrets.GH_PAT."
           fi
           case ",$LABELS," in
             *,do-not-merge,*|*,hold,*|*,wip,*)
