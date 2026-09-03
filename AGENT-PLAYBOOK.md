@@ -530,7 +530,9 @@ Worth knowing, because it has caused a false alarm:
 - **A red "Production" badge** on a repo that is not supposed to deploy. Club
   Arena carried one for a day from a forbidden `vercel --prod` workflow. If you
   see one here, it is a bug to fix, not a deploy to retry — Club Arena
-  publishes only through the World Hub sync.
+  publishes only through `publish-club-arena.yml`, which rsyncs the bundle to
+  its own origin at `ca-static.smarter.poker`. It has not published through the
+  World Hub repo since 2026-09-02.
 
 If you want to know the true state of anything, ask the API:
 
