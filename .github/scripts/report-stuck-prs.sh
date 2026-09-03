@@ -290,14 +290,27 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
     # who stopped one step short today, whatever they named it. A months-old
     # branch is still only reported, never opened. `rescue/*` joins the
     # never-a-proposal namespaces above: those are recovery snapshots.
+    # NOT `--fill` (2026-09-03). `--fill` builds the title and body from the
+    # branch's commits in the LOCAL clone, and the sweep's checkout never has
+    # the branch - it is a fetch-depth-1 checkout of main. So every attempt
+    # this net ever made failed with "unknown revision or path not in the
+    # working tree" (World Hub sweep, 2026-09-03 00:28, is the log), the
+    # ::error fired, and the branch stayed unproposed. The tip's subject comes
+    # from the API instead, and the body says who opened it and why.
     case "$B" in
       rescue/*) ;;
       *)
-        if [ "$AGE_H" -lt 24 ] && gh_write \
-             "open a pull request for orphan branch $B (${AHEAD} commits, ${AGE_H}h old)" \
-             pr create --repo "$REPO" --head "$B" --base "$DEFAULT_BRANCH" --fill; then
-          AUTO_OPENED=$((AUTO_OPENED + 1))
-          continue
+        if [ "$AGE_H" -lt 24 ]; then
+          SUBJECT=$(gh api "repos/${REPO}/commits/${B}" --jq '.commit.message | split("\n")[0]' 2>/dev/null || echo "")
+          [ -n "$SUBJECT" ] || SUBJECT="$B"
+          if gh_write \
+               "open a pull request for orphan branch $B (${AHEAD} commits, ${AGE_H}h old)" \
+               pr create --repo "$REPO" --head "$B" --base "$DEFAULT_BRANCH" \
+                 --title "$SUBJECT" \
+                 --body "Opened by report-stuck-prs (Agent Autopilot sweep): \`${B}\` was ${AHEAD} commit(s) ahead of \`${DEFAULT_BRANCH}\`, ${AGE_H}h old, ${WHY_ORPHAN}. Autopilot will queue it; the author owns the review."; then
+            AUTO_OPENED=$((AUTO_OPENED + 1))
+            continue
+          fi
         fi ;;
     esac
 
@@ -320,7 +333,7 @@ Either no pull request has ever existed for these, or one did and **the branch w
 
 | branch | commits it has | commits it is missing | last commit | why | |
 |---|---|---|---|---|---|
-$(printf '%s' "$ORPHANS" | head -60)
+$(head -60 <<<"$ORPHANS")
 The **missing** column is the size of the job: a branch a few commits behind is a merge, one that is hundreds behind is a rebase and probably a rewrite.
 
 Judge each one: open a pull request, or delete the branch. Leaving it is the option that looks like nothing happening and is actually work quietly going nowhere."
