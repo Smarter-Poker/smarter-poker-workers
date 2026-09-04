@@ -12,7 +12,7 @@
  *                       window instead of a resumable tail.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { pagedSelectKeyset, type KeysetRow } from './pagedSelectKeyset.js';
+import { SERVER_MAX_ROWS, pagedSelectKeyset, type KeysetRow } from './pagedSelectKeyset.js';
 
 interface Row extends KeysetRow {
   n: number;
@@ -154,5 +154,142 @@ describe('pagedSelectKeyset', () => {
     await expect(
       pagedSelectKeyset(build, { maxRows: 100, budgetMs: 60_000 }),
     ).rejects.toThrow('boom');
+  });
+});
+
+describe('pagedSelectKeyset - the two limits nobody had exercised', () => {
+  it('refuses a page size PostgREST would silently clamp', async () => {
+    // `complete` is inferred from a SHORT PAGE. Ask for 5,000 and the server
+    // returns 1,000 with a 200; every full page then reads as short, the loop
+    // stops after one page, and the run calls the window COMPLETE and moves
+    // the mark past everything it never read. The inference is only sound
+    // while the page size is one the server will honour, and today that
+    // holds by exact coincidence - 1000 is both.
+    await expect(
+      pagedSelectKeyset(() => ({}) as any, {
+        maxRows: 10_000,
+        budgetMs: 1_000,
+        pageSize: SERVER_MAX_ROWS + 1,
+      }),
+    ).rejects.toThrow(/pageSize/);
+  });
+
+  it('reads nothing and reports nothing covered when the budget is already spent', async () => {
+    // The branch the caller relies on to keep the mark exactly where it was.
+    // Reachable in production when a container is under load and the run
+    // starts late; unreachable with the real clock, which is why it needs an
+    // injected one rather than being assumed dead and deleted.
+    let calls = 0;
+    const r = await pagedSelectKeyset(
+      () => {
+        calls += 1;
+        return {} as any;
+      },
+      // The clock reads t0 when the loop starts and t0+500 at the first
+      // budget check, so the budget is already spent before page one.
+      { maxRows: 10, budgetMs: 100, now: (() => { let n = 0; return () => (n++ === 0 ? 1_000_000 : 1_000_500); })() },
+    );
+    expect(calls).toBe(0);
+    expect(r.rows).toHaveLength(0);
+    expect(r.cursorEnd).toBeNull();
+    expect(r.hitBudget).toBe(true);
+    expect(r.complete).toBe(false);
+  });
+});
+
+describe('a single page cannot hang the whole read', () => {
+  it('fails the page rather than waiting forever, and says which page', async () => {
+    // THE DEFECT THIS PINS. The overall budget is checked BETWEEN pages, so a
+    // page that never answers is never noticed: the loop cannot reach its own
+    // check. On 2026-09-04 a run sat at `running` for ten minutes while the
+    // identical read completed in 37 seconds from a laptop, and nothing said
+    // which call it was on.
+    let call = 0;
+    await expect(
+      pagedSelectKeyset<{ id: string; created_at: string }>(
+        () => {
+          call += 1;
+          // Page 1 answers; page 2 never does.
+          if (call === 1) {
+            return {
+              limit: () =>
+                Promise.resolve({
+                  data: Array.from({ length: 1000 }, (_, i) => ({
+                    id: `id-${i}`,
+                    created_at: '2026-09-04T00:00:00Z',
+                  })),
+                  error: null,
+                }),
+            } as any;
+          }
+          return { limit: () => new Promise(() => {}) } as any;
+        },
+        { maxRows: 5_000, budgetMs: 600_000, pageDeadlineMs: 40 },
+      ),
+    ).rejects.toThrow(/page 2 .* did not answer within 40ms/);
+    expect(call).toBe(2);
+  });
+});
+
+describe('onPage keeps peak memory flat in maxRows', () => {
+  it('folds each page and retains none of it', async () => {
+    // The rows must reach the caller exactly once, in order, and the result
+    // must not also hold them - otherwise the fold saves nothing, which is
+    // the whole point of it.
+    const page = (n: number, from: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `id-${String(from + i).padStart(4, '0')}`,
+        created_at: new Date(1_700_000_000_000 + (from + i) * 1000).toISOString(),
+      }));
+    let served = 0;
+    const seen: string[] = [];
+    const r = await pagedSelectKeyset<{ id: string; created_at: string }>(
+      () => ({
+        limit: (n: number) => {
+          const batch = served >= 2500 ? [] : page(Math.min(n, 2500 - served), served);
+          served += batch.length;
+          return Promise.resolve({ data: batch, error: null });
+        },
+      }) as any,
+      {
+        maxRows: 5_000,
+        budgetMs: 60_000,
+        onPage: (batch) => {
+          for (const row of batch) seen.push(row.id);
+        },
+      },
+    );
+
+    expect(seen).toHaveLength(2500);
+    expect(seen[0]).toBe('id-0000');
+    expect(seen[2499]).toBe('id-2499');
+    // Retained nothing, and still counted everything.
+    expect(r.rows).toHaveLength(0);
+    expect(r.count).toBe(2500);
+    expect(r.complete).toBe(true);
+  });
+
+  it('still stops on the row cap when it is not retaining rows', async () => {
+    // The cap used to be measured against the retained array. With onPage
+    // that array is empty, so a cap read from it would never fire and the
+    // read would run to the end of the window - the unbounded read this whole
+    // change set exists to remove.
+    let served = 0;
+    const r = await pagedSelectKeyset<{ id: string; created_at: string }>(
+      () => ({
+        limit: (n: number) => {
+          const batch = Array.from({ length: n }, (_, i) => ({
+            id: `id-${served + i}`,
+            created_at: new Date(1_700_000_000_000 + (served + i) * 1000).toISOString(),
+          }));
+          served += batch.length;
+          return Promise.resolve({ data: batch, error: null });
+        },
+      }) as any,
+      { maxRows: 2_500, budgetMs: 60_000, onPage: () => {} },
+    );
+    expect(r.count).toBe(2_500);
+    expect(r.hitRowCap).toBe(true);
+    expect(r.complete).toBe(false);
   });
 });

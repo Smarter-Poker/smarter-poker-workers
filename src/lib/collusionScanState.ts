@@ -26,6 +26,14 @@
  * the advance rule so no caller can rewind it or jump it past now.
  */
 import { getSupabase } from './supabase.js';
+import { withDeadline } from './withDeadline.js';
+
+/**
+ * Ceiling for the two bookkeeping calls. Both are single-row operations on a
+ * one-row table; if either takes thirty seconds it is hung, not busy, and a
+ * hung one used to take the whole handler down with it silently.
+ */
+const STATE_CALL_DEADLINE_MS = 30_000;
 
 /**
  * The most ground one run may cover.
@@ -37,6 +45,26 @@ import { getSupabase } from './supabase.js';
  */
 export const MAX_SPAN_HOURS = 6;
 
+/**
+ * How far back from `now` the window's END is held, and why it is not zero.
+ *
+ * `hand_history.created_at` defaults to `now()`, which in Postgres is the
+ * TRANSACTION START time, not the commit time. A hand that starts at 12:00:00
+ * and commits at 12:00:00.4 is stamped 12:00:00 and becomes visible 400ms
+ * later. A window ending at exactly `now` therefore reads rows that are
+ * already committed, moves the mark past them, and the next window starts
+ * AFTER the timestamp of hands that were still in flight - so those hands are
+ * never read by anything, forever, and nothing reports a gap because both runs
+ * completed cleanly.
+ *
+ * That is the same silent-hole failure as the 106,238 hands scanWindow.ts
+ * exists for, in miniature, once per run. Sixty seconds is far beyond any
+ * observed hand-insert latency here (p99 well under a second) and costs only
+ * that the scan trails a minute behind live, which no integrity finding is
+ * time-critical enough to care about.
+ */
+export const COMMIT_LAG_MS = 60_000;
+
 export interface ScanState {
   lastWindowEnd: Date;
   lastSuccessAt: Date | null;
@@ -46,7 +74,11 @@ export interface ScanState {
 /** Read the mark. Throws rather than guessing: a wrong window is worse than no scan. */
 export async function readScanState(): Promise<ScanState> {
   const supabase = getSupabase();
-  const { data, error } = await supabase.rpc('fn_ca_collusion_scan_state');
+  const { data, error } = await withDeadline(
+    supabase.rpc('fn_ca_collusion_scan_state'),
+    STATE_CALL_DEADLINE_MS,
+    'fn_ca_collusion_scan_state',
+  );
   if (error) throw new Error(`scan state read failed: ${error.message}`);
   if (!data || typeof data !== 'object') {
     throw new Error('scan state read returned no payload');
@@ -74,11 +106,16 @@ export async function readScanState(): Promise<ScanState> {
  */
 export function windowFromState(state: ScanState, now: Date = new Date()): { start: Date; end: Date } {
   const start = state.lastWindowEnd;
+  // The ceiling is now MINUS the commit lag, never now itself: a hand in
+  // flight carries a created_at that is already inside the window but is not
+  // yet visible to read. See COMMIT_LAG_MS.
+  const ceiling = new Date(now.getTime() - COMMIT_LAG_MS);
   const capped = new Date(start.getTime() + MAX_SPAN_HOURS * 3600_000);
-  const end = capped.getTime() < now.getTime() ? capped : now;
-  // A mark ahead of now (clock skew, or a hand-edited row) must not produce a
-  // backwards window, which PostgREST would happily read as "no rows" and the
-  // scan would report as a clean bill of health.
+  const end = capped.getTime() < ceiling.getTime() ? capped : ceiling;
+  // A mark ahead of the ceiling (clock skew, a hand-edited row, or simply a
+  // run inside the last minute) must not produce a backwards window, which
+  // PostgREST reads as "no rows" and the scan would report as a clean bill of
+  // health. An empty window is the honest answer there.
   return { start, end: end.getTime() > start.getTime() ? end : start };
 }
 
@@ -86,30 +123,56 @@ export function windowFromState(state: ScanState, now: Date = new Date()): { sta
  * Move the mark, and only ever over ground actually read.
  *
  * `coveredTo` is the window end when the read completed, or the last row's
- * timestamp when it stopped on a budget - so an interrupted run leaves a
- * contiguous unscanned tail rather than a hole, and the next run picks it up.
+ * timestamp when it stopped early - so an interrupted run leaves a contiguous
+ * unscanned tail rather than a hole, and the next run picks it up.
  *
- * Best effort by design: the findings are already written by the time this
- * runs, and failing the whole scan because a bookkeeping write failed would
- * turn a good run into a retry that re-does the work.
+ * `moreToRead` IS NOT "the time budget ran out". It was called `budgetHit`
+ * and the caller passed only the budget flag, which was wrong in the most
+ * common case there is: a six-hour catch-up span holds ~148,000 hands against
+ * a 40,000-row ceiling, so EVERY catch-up run stops on the ROW CAP, in about
+ * seven seconds, nowhere near the budget. The flag was therefore false for the
+ * entire ~18 hours of a catch-up, and the console - which renders it as
+ * `catching_up` - showed a detector calmly up to date while it was a day
+ * behind. The honest question is "is there more in this window than this run
+ * read", whichever limit bound first, so that is the question the field asks
+ * now.
+ *
+ * IT RETURNS ok:false RATHER THAN THROWING, and the caller must treat that as
+ * a failed run. A findings write that lands while the mark does not is not a
+ * success: the next run re-reads the same window, re-inserts the same
+ * findings, and does that forever while every log row says `success`. This
+ * used to answer 200.
  */
 export async function advanceScanState(args: {
   coveredTo: Date;
   scannedHands: number;
   findings: number;
   durationMs: number;
-  budgetHit: boolean;
+  /** True when the window holds more than this run read, for any reason. */
+  moreToRead: boolean;
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const supabase = getSupabase();
-    const { error } = await supabase.rpc('fn_ca_collusion_scan_advance', {
+    const { data, error } = await withDeadline(
+      supabase.rpc('fn_ca_collusion_scan_advance', {
       p_window_end: args.coveredTo.toISOString(),
       p_scanned_hands: args.scannedHands,
       p_findings: args.findings,
       p_duration_ms: args.durationMs,
-      p_budget_hit: args.budgetHit,
-    });
+        p_budget_hit: args.moreToRead,
+      }),
+      STATE_CALL_DEADLINE_MS,
+      'fn_ca_collusion_scan_advance',
+    );
     if (error) throw new Error(error.message);
+    // The RPC answers {ok:false, reason} when it matched no row - a missing
+    // state row, or a row somebody deleted. A transport-level success with a
+    // refusal inside it is still a refusal.
+    const payload = (data ?? null) as { ok?: unknown; reason?: unknown } | null;
+    if (!payload || payload.ok !== true) {
+      const reason = payload && typeof payload.reason === 'string' ? payload.reason : 'unknown';
+      throw new Error(`advance refused: ${reason}`);
+    }
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'advance failed';
