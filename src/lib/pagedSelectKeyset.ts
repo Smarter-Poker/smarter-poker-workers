@@ -38,6 +38,7 @@
  * anything and never would be" gap scanWindow.ts was written to close.
  */
 import type { PostgrestFilterBuilder } from '@supabase/postgrest-js';
+import { withDeadline } from './withDeadline.js';
 
 export const PAGE_SIZE = 1000;
 
@@ -57,6 +58,13 @@ export const PAGE_SIZE = 1000;
  * arrived at from the other direction.
  */
 export const SERVER_MAX_ROWS = 1000;
+
+/**
+ * Default ceiling on a single page. Measured: a 1,000-row page of
+ * hand_history with its JSONB attached is under 900ms from a laptop, so
+ * thirty seconds means hung, not busy.
+ */
+export const DEFAULT_PAGE_DEADLINE_MS = 30_000;
 
 export interface KeysetRow {
   id: string;
@@ -82,6 +90,18 @@ export interface KeysetOptions {
   maxRows: number;
   /** Wall-clock budget in ms. The loop checks it BEFORE each page. */
   budgetMs: number;
+  /**
+   * Ceiling on ONE page.
+   *
+   * The overall budget is checked BETWEEN pages, so it bounds a slow read and
+   * does nothing at all about a hung one: if page 27 never answers, the loop
+   * never reaches the next check and the whole handler waits forever. That is
+   * not hypothetical - it is the shape of the run that sat at `running` for
+   * ten minutes on 2026-09-04 while the same read completed in 37s from a
+   * laptop. A budget that only applies when the thing is making progress is
+   * not a budget.
+   */
+  pageDeadlineMs?: number;
   pageSize?: number;
   /** Injectable for tests. */
   now?: () => number;
@@ -131,7 +151,11 @@ export async function pagedSelectKeyset<T extends KeysetRow>(
     }
 
     const want = Math.min(pageSize, opts.maxRows - rows.length);
-    const { data, error } = await build(cursorCreatedAt, cursorId).limit(want);
+    const { data, error } = await withDeadline(
+      build(cursorCreatedAt, cursorId).limit(want),
+      opts.pageDeadlineMs ?? DEFAULT_PAGE_DEADLINE_MS,
+      `page ${pages + 1} (${want} rows after ${cursorCreatedAt ?? 'the window start'})`,
+    );
     pages += 1;
     if (error) throw new Error(error.message);
 
