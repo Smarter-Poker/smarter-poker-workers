@@ -26,6 +26,14 @@
  * the advance rule so no caller can rewind it or jump it past now.
  */
 import { getSupabase } from './supabase.js';
+import { withDeadline } from './withDeadline.js';
+
+/**
+ * Ceiling for the two bookkeeping calls. Both are single-row operations on a
+ * one-row table; if either takes thirty seconds it is hung, not busy, and a
+ * hung one used to take the whole handler down with it silently.
+ */
+const STATE_CALL_DEADLINE_MS = 30_000;
 
 /**
  * The most ground one run may cover.
@@ -66,7 +74,11 @@ export interface ScanState {
 /** Read the mark. Throws rather than guessing: a wrong window is worse than no scan. */
 export async function readScanState(): Promise<ScanState> {
   const supabase = getSupabase();
-  const { data, error } = await supabase.rpc('fn_ca_collusion_scan_state');
+  const { data, error } = await withDeadline(
+    supabase.rpc('fn_ca_collusion_scan_state'),
+    STATE_CALL_DEADLINE_MS,
+    'fn_ca_collusion_scan_state',
+  );
   if (error) throw new Error(`scan state read failed: ${error.message}`);
   if (!data || typeof data !== 'object') {
     throw new Error('scan state read returned no payload');
@@ -141,13 +153,17 @@ export async function advanceScanState(args: {
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const supabase = getSupabase();
-    const { data, error } = await supabase.rpc('fn_ca_collusion_scan_advance', {
+    const { data, error } = await withDeadline(
+      supabase.rpc('fn_ca_collusion_scan_advance', {
       p_window_end: args.coveredTo.toISOString(),
       p_scanned_hands: args.scannedHands,
       p_findings: args.findings,
       p_duration_ms: args.durationMs,
-      p_budget_hit: args.moreToRead,
-    });
+        p_budget_hit: args.moreToRead,
+      }),
+      STATE_CALL_DEADLINE_MS,
+      'fn_ca_collusion_scan_advance',
+    );
     if (error) throw new Error(error.message);
     // The RPC answers {ok:false, reason} when it matched no row - a missing
     // state row, or a row somebody deleted. A transport-level success with a

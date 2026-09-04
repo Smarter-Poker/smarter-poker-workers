@@ -52,6 +52,7 @@ import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 import { resolveScanWindow, ScanWindowError } from '../lib/scanWindow.js';
 import { pagedSelectKeyset } from '../lib/pagedSelectKeyset.js';
+import { withDeadline } from '../lib/withDeadline.js';
 import {
   advanceScanState,
   readScanState,
@@ -85,6 +86,17 @@ const MAX_SCAN_HANDS = 40_000;
  * HONEST PARTIAL result instead of never returning.
  */
 const READ_BUDGET_MS = 90_000;
+
+/**
+ * Ceiling for every call the scan makes that the read budget does NOT cover.
+ *
+ * The read was budgeted and reported; the horse lookup, the findings insert
+ * and the advance were not, so any one of them could hang the handler with no
+ * error and no clue which it was. Measured against this workload the slowest
+ * of them is a 300-id profiles lookup at 695ms, so thirty seconds is a wide
+ * margin and still well inside the dispatcher's 120s client timeout.
+ */
+const CALL_DEADLINE_MS = 30_000;
 const MIN_HANDS_FOR_SIGNAL = 15;
 const CHIP_DUMP_LOSS_RATIO = 0.8;
 const TIMING_Z_SCORE = 2.5;
@@ -475,6 +487,19 @@ export async function collusionScan(c: Context) {
     });
   }
 
+  /**
+   * WHERE THE TIME WENT, per phase, reported in the response and therefore
+   * into cron_execution_log.result.
+   *
+   * Added after a run sat at `running` for ten minutes and the only way to
+   * find out which call it was on was to reproduce the whole handler locally
+   * against 40,000 real hands. The read had a budget and reported it; nothing
+   * else reported anything. A run that takes too long must be able to say
+   * which part took it.
+   */
+  const timings: Record<string, number> = {};
+  let phaseAt = Date.now();
+
   try {
     // Paged: a single .limit(50000) came back as 1000 rows and a 200, so this
     // scan had only ever seen ~0.36% of a 24h window. See lib/pagedSelect.ts.
@@ -525,6 +550,8 @@ export async function collusionScan(c: Context) {
         },
         { maxRows: MAX_SCAN_HANDS, budgetMs: READ_BUDGET_MS },
       );
+      timings.read_ms = Date.now() - phaseAt;
+      phaseAt = Date.now();
       handsRows = paged.rows;
       readBudgetHit = paged.hitBudget;
       readComplete = paged.complete;
@@ -586,6 +613,9 @@ export async function collusionScan(c: Context) {
     //
     // Only BOTH-horse pairs are dropped. A horse/human pair is retained, so a
     // horse leaking chips to a human still surfaces.
+    timings.analyse_ms = Date.now() - phaseAt;
+    phaseAt = Date.now();
+
     const findingIds = Array.from(new Set(findings.flatMap((f) => [f.player_a, f.player_b])));
     const horseIds = new Set<string>();
     // Chunked because .in() serialises every id into the query string. While
@@ -597,11 +627,11 @@ export async function collusionScan(c: Context) {
     const HORSE_LOOKUP_CHUNK = 300;
     for (let i = 0; i < findingIds.length; i += HORSE_LOOKUP_CHUNK) {
       const chunk = findingIds.slice(i, i + HORSE_LOOKUP_CHUNK);
-      const { data: horseRows, error: horseErr } = await supabase
-        .from('profiles')
-        .select('id')
-        .in('id', chunk)
-        .eq('is_horse', true);
+      const { data: horseRows, error: horseErr } = await withDeadline(
+        supabase.from('profiles').select('id').in('id', chunk).eq('is_horse', true),
+        CALL_DEADLINE_MS,
+        `horse lookup (${chunk.length} ids)`,
+      );
       if (horseErr) {
         // Fail the scan rather than fall back to the old behaviour. Falling
         // back would quietly resume writing ~170k horse-vs-horse rows, which
@@ -611,6 +641,10 @@ export async function collusionScan(c: Context) {
       }
       for (const r of horseRows ?? []) horseIds.add((r as { id: string }).id);
     }
+    timings.horse_lookup_ms = Date.now() - phaseAt;
+    timings.horse_lookup_calls = Math.ceil(findingIds.length / HORSE_LOOKUP_CHUNK);
+    phaseAt = Date.now();
+
     const humanFindings = findings.filter(
       (f) => !(horseIds.has(f.player_a) && horseIds.has(f.player_b)),
     );
@@ -627,15 +661,19 @@ export async function collusionScan(c: Context) {
 
     let inserted = 0;
     if (rows.length > 0 && !scanWindow.dryRun) {
-      const { error: insErr, count } = await supabase
-        .from('collusion_tracking')
-        .insert(rows, { count: 'exact' });
+      const { error: insErr, count } = await withDeadline(
+        supabase.from('collusion_tracking').insert(rows, { count: 'exact' }),
+        CALL_DEADLINE_MS,
+        `collusion_tracking insert (${rows.length} rows)`,
+      );
       if (insErr) {
         console.warn('[collusion-scan] insert error:', insErr.message);
         return c.json({ error: insErr.message, findings: rows.length }, 500);
       }
       inserted = count ?? rows.length;
     }
+    timings.insert_ms = Date.now() - phaseAt;
+    phaseAt = Date.now();
 
     // ── ADVANCE THE MARK, over read ground only ───────────────────────────
     //
@@ -681,6 +719,8 @@ export async function collusionScan(c: Context) {
         moreToRead: !readComplete,
       });
 
+      timings.advance_ms = Date.now() - phaseAt;
+
       // A findings write that lands while the mark does not is NOT a success.
       // Answering 200 here means the next run re-reads the same window,
       // re-inserts the same findings and does it forever, with every row in
@@ -712,6 +752,7 @@ export async function collusionScan(c: Context) {
       // TRUE when this run read less of its window than the window contains,
       // whichever limit bound first. The findings are then a floor, not a
       // total, and the remainder is the next run's first job.
+      timings,
       hands_truncated: handsTruncated,
       read_complete: readComplete,
       read_budget_hit: readBudgetHit,

@@ -196,3 +196,37 @@ describe('pagedSelectKeyset - the two limits nobody had exercised', () => {
     expect(r.complete).toBe(false);
   });
 });
+
+describe('a single page cannot hang the whole read', () => {
+  it('fails the page rather than waiting forever, and says which page', async () => {
+    // THE DEFECT THIS PINS. The overall budget is checked BETWEEN pages, so a
+    // page that never answers is never noticed: the loop cannot reach its own
+    // check. On 2026-09-04 a run sat at `running` for ten minutes while the
+    // identical read completed in 37 seconds from a laptop, and nothing said
+    // which call it was on.
+    let call = 0;
+    await expect(
+      pagedSelectKeyset<{ id: string; created_at: string }>(
+        () => {
+          call += 1;
+          // Page 1 answers; page 2 never does.
+          if (call === 1) {
+            return {
+              limit: () =>
+                Promise.resolve({
+                  data: Array.from({ length: 1000 }, (_, i) => ({
+                    id: `id-${i}`,
+                    created_at: '2026-09-04T00:00:00Z',
+                  })),
+                  error: null,
+                }),
+            } as any;
+          }
+          return { limit: () => new Promise(() => {}) } as any;
+        },
+        { maxRows: 5_000, budgetMs: 600_000, pageDeadlineMs: 40 },
+      ),
+    ).rejects.toThrow(/page 2 .* did not answer within 40ms/);
+    expect(call).toBe(2);
+  });
+});
