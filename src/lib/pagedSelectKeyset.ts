@@ -41,6 +41,23 @@ import type { PostgrestFilterBuilder } from '@supabase/postgrest-js';
 
 export const PAGE_SIZE = 1000;
 
+/**
+ * PostgREST's `db-max-rows`, which this project has set to 1000.
+ *
+ * IT IS NOT A HINT. Ask for 50,000 rows and the server returns 1,000 with a
+ * 200 - that silent clamp is what had the collusion scan reading 0.36% of its
+ * window while reporting success. `complete` here is derived from a SHORT PAGE
+ * ("I asked for N and got fewer, so the window is exhausted"), and that
+ * inference is only sound while N is a size the server will actually honour.
+ * At `pageSize` 1000 it holds because 1000 IS the clamp - by exact
+ * coincidence, which is not a thing to leave load-bearing and undeclared.
+ * Raise the clamp and the assertion below tells you; raise the page size past
+ * it and every full page reads as short, so a run stops after 1,000 rows and
+ * calls the window COMPLETE. That is the "hands nobody ever examined" failure,
+ * arrived at from the other direction.
+ */
+export const SERVER_MAX_ROWS = 1000;
+
 export interface KeysetRow {
   id: string;
   created_at: string;
@@ -83,6 +100,13 @@ export async function pagedSelectKeyset<T extends KeysetRow>(
   opts: KeysetOptions,
 ): Promise<KeysetResult<T>> {
   const pageSize = opts.pageSize ?? PAGE_SIZE;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > SERVER_MAX_ROWS) {
+    // Refuse rather than silently under-read. See SERVER_MAX_ROWS.
+    throw new Error(
+      `pagedSelectKeyset: pageSize ${pageSize} must be 1..${SERVER_MAX_ROWS} ` +
+        `(PostgREST clamps beyond that, and a clamped page reads as the end of the window)`,
+    );
+  }
   const now = opts.now ?? ((): number => Date.now());
   const started = now();
 

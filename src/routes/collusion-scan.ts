@@ -25,6 +25,28 @@
  * straight. Ported at parity (still .insert()).
  *
  * Auth: /cron/* middleware chain.
+ *
+ * WHAT ONE RUN NOW SEES, AND WHAT THAT COSTS (2026-09-04)
+ * ------------------------------------------------------
+ * The scheduled path no longer reads a rolling 24 hours. It resumes from
+ * `ca_collusion_scan_state` and covers only what has happened since the last
+ * run - about thirty minutes - which is the whole reason it completes at all
+ * now. Every threshold above ("over >=15 hands", ">=30 hands together") counts
+ * hands a pair shared INSIDE ONE RUN'S WINDOW, and those numbers were chosen
+ * when one window was a day.
+ *
+ * So the detector is less sensitive than it was, in a specific and stateable
+ * way: a pair that shares 40 hands spread evenly over an evening never has 30
+ * of them inside a single run, and nothing aggregates a pair across runs yet.
+ * Pairs playing a long session at one table - which is what every one of the
+ * 18 CHIP_DUMP rows looks like - still trigger.
+ *
+ * That is disclosed rather than hidden: the response carries
+ * `detection_span_minutes` and `detection_thresholds.aggregates_across_runs:
+ * false`, and the console renders it. Closing it properly means a rolling
+ * per-pair counter table so a signal can accumulate across runs, which is
+ * Phase 5 detector work and is written down in PHASE5-CONTRACTS section 1
+ * rather than left as an unstated regression.
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
@@ -476,7 +498,19 @@ export async function collusionScan(c: Context) {
             .select(
               'id, table_id, hand_number, started_at, ended_at, created_at, players, winners, actions, pot_size, big_blind, small_blind',
             )
-            .gte('created_at', windowStart.toISOString())
+            // THE CURSOR MUST APPEAR AS A PLAIN >= TOO, not only inside the
+            // .or() below. PostgREST turns an `or=(...)` into a boolean
+            // expression the planner will not use as an index condition, so
+            // page 40 was a Filter over the whole window rather than an Index
+            // Cond: measured 154.9ms and 21,099 buffers against 8.6ms and 964
+            // for the same page with this line - and getting worse with depth,
+            // because every page re-scanned everything before it. This one
+            // line is what makes the read O(page) instead of O(window x pages).
+            //
+            // It is a WIDENING of the .or() below, never a replacement: >= the
+            // cursor still includes the cursor row itself and every row tied
+            // with it, and the .or() is what makes the boundary strict.
+            .gte('created_at', afterCreatedAt ?? windowStart.toISOString())
             .lt('created_at', windowEnd.toISOString());
           if (afterCreatedAt !== null && afterId !== null) {
             // (created_at, id) strictly after the cursor. `id` breaks every
@@ -618,10 +652,19 @@ export async function collusionScan(c: Context) {
     let coveredTo = windowEnd;
     if (resumed && !scanWindow.dryRun) {
       if (!readComplete && readCursorEnd) {
+        // The last row actually read. JS truncates the microseconds Postgres
+        // keeps, and it truncates DOWN, so the mark lands at or before that
+        // row - the next window re-reads it rather than stepping over it.
+        // Re-reading a handful of rows costs a duplicate finding; stepping
+        // over them loses the hand forever, and only one of those two is
+        // recoverable.
         const cursor = new Date(readCursorEnd);
         if (!Number.isNaN(cursor.getTime())) coveredTo = cursor;
       } else if (!readComplete && !readCursorEnd) {
-        // Bounded out before reading anything at all. Cover nothing.
+        // Bounded out before reading a single row. Cover nothing: the mark
+        // stays exactly where it was and the whole window is the next run's.
+        // Reachable when the budget is already spent on entry, which is what
+        // a container under load looks like.
         coveredTo = windowStart;
       }
       advanced = await advanceScanState({
@@ -629,8 +672,36 @@ export async function collusionScan(c: Context) {
         scannedHands: handsRows.length,
         findings: humanFindings.length,
         durationMs: Date.now() - scanStart,
-        budgetHit: readBudgetHit,
+        // NOT readBudgetHit. A catch-up span holds ~148,000 hands against a
+        // 40,000-row ceiling, so it stops on the ROW CAP in seconds and never
+        // touches the budget - and the console renders this flag as
+        // `catching_up`. Asking "is there more in this window than I read"
+        // covers both limits and is the question the operator is actually
+        // asking. See advanceScanState.
+        moreToRead: !readComplete,
       });
+
+      // A findings write that lands while the mark does not is NOT a success.
+      // Answering 200 here means the next run re-reads the same window,
+      // re-inserts the same findings and does it forever, with every row in
+      // cron_execution_log saying `success` - a detector stuck in place
+      // reporting health, which is the one failure PHASE5-CONTRACTS section 0
+      // exists to forbid.
+      if (!advanced.ok) {
+        console.warn('[collusion-scan] mark did not advance:', advanced.error);
+        return c.json(
+          {
+            error: `scan completed but the mark did not advance: ${advanced.error ?? 'unknown'}`,
+            state_advanced: false,
+            scanned_hands: handsRows.length,
+            findings: humanFindings.length,
+            inserted,
+            window: { start: windowStart.toISOString(), end: windowEnd.toISOString() },
+            duration_ms: Date.now() - scanStart,
+          },
+          500,
+        );
+      }
     }
 
     const durationMs = Date.now() - scanStart;
@@ -650,9 +721,27 @@ export async function collusionScan(c: Context) {
       max_span_hours: MAX_SPAN_HOURS,
       resumed,
       seconds_behind_at_start: secondsBehindAtStart,
-      covered_to: coveredTo.toISOString(),
+      // NULL when nothing advanced - an operator's ?since= rescan and a dry
+      // run both leave the mark alone, and reporting a covered_to there reads
+      // as though the live scan had moved.
+      covered_to: advanced ? coveredTo.toISOString() : null,
       state_advanced: advanced ? advanced.ok : false,
       state_advance_error: advanced?.error ?? null,
+      // WHAT THE THRESHOLDS SAW. Every pattern below counts hands a pair
+      // shared WITHIN THIS RUN's window, and those minimums were chosen when
+      // one run was 24 hours. A resumed run is ~30 minutes, so a pair whose
+      // shared hands are spread across runs is not yet aggregated by
+      // anything and cannot trigger. Stated here, and rendered by the
+      // console, because an integrity surface may never imply it is watching
+      // something it is not (PHASE5-CONTRACTS section 0).
+      detection_span_minutes: Math.round(
+        (windowEnd.getTime() - windowStart.getTime()) / 60_000,
+      ),
+      detection_thresholds: {
+        min_shared_hands: MIN_HANDS_FOR_SIGNAL,
+        win_rate_min_shared_hands: 30,
+        aggregates_across_runs: false,
+      },
       scanned_hands: handsRows.length,
       scanned_actions: actionRows.length,
       findings: findings.length,
