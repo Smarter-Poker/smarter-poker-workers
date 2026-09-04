@@ -67,20 +67,28 @@ vi.mock('../lib/supabase.js', () => ({
         return c;
       }
       if (table === 'hand_history') {
-        // 2026-09-01: the scan now pages with .order().range() instead of a
-        // single .limit(), because PostgREST clamped that limit to 1000 rows
-        // and the sweep had only ever seen 0.36% of a 24h window. The stub
-        // serves the whole fixture on the first page and an empty second page,
-        // which is what a short page (end of results) looks like to
-        // pagedSelect.
+        // 2026-09-04: the scan pages on a KEYSET of (created_at, id) with a
+        // wall-clock budget, not .range(). OFFSET paging over a window where
+        // thousands of rows share a millisecond is not a total order, and an
+        // unbudgeted read is what stopped this scan returning at all when the
+        // platform went from 136k to 770k hands a day.
+        //
+        // The stub serves the whole fixture on the first page. `limit(n)` with
+        // n > fixture length is a SHORT page, which is what "the window is
+        // exhausted" looks like to pagedSelectKeyset - so `complete` is true
+        // and the caller may advance its mark to the window end.
         const c: Record<string, any> = {};
+        let served = false;
         c.select = vi.fn().mockReturnValue(c);
         c.gte = vi.fn().mockReturnValue(c);
         c.lt = vi.fn().mockReturnValue(c);
+        c.or = vi.fn().mockReturnValue(c);
         c.order = vi.fn().mockReturnValue(c);
-        c.range = vi.fn().mockImplementation((from: number) =>
-          Promise.resolve({ data: from === 0 ? hands : [], error: null }),
-        );
+        c.limit = vi.fn().mockImplementation(() => {
+          const page = served ? [] : hands;
+          served = true;
+          return Promise.resolve({ data: page, error: null });
+        });
         return c;
       }
       // collusion_tracking
@@ -91,7 +99,24 @@ vi.mock('../lib/supabase.js', () => ({
       });
       return c;
     },
-    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
+    // The scheduled path resumes from ca_collusion_scan_state rather than
+    // reading a rolling window, and it FAILS rather than falling back when the
+    // state cannot be read - falling back would quietly restore the 48x
+    // overlap that killed the scan. So the stub has to answer the state read.
+    rpc: vi.fn().mockImplementation((fn: string) => {
+      if (fn === 'fn_ca_collusion_scan_state') {
+        return Promise.resolve({
+          data: {
+            ok: true,
+            last_window_end: new Date(Date.now() - 30 * 60_000).toISOString(),
+            last_success_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+            seconds_behind: 1800,
+          },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: { ok: true }, error: null });
+    }),
   }),
 }));
 
