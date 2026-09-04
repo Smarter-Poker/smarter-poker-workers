@@ -108,6 +108,8 @@ app.use('/cron/*', requireCronSecret);
 // path as job_name, fire-and-forget on errors so logging never blocks
 // the underlying job.
 import { getSupabase as _getSupabaseForLog } from './lib/supabase.js';
+import { readResultSummary } from './lib/cronResultSummary.js';
+
 app.use('/cron/*', async (c, next) => {
   const jobName = new URL(c.req.url).pathname;
   const startedAt = new Date().toISOString();
@@ -127,12 +129,14 @@ app.use('/cron/*', async (c, next) => {
   const t0 = Date.now();
   let resStatus: 'success' | 'error' = 'success';
   let errMsg: string | null = null;
+  let result: Record<string, unknown> = {};
   try {
     await next();
     if (c.res && c.res.status >= 400) {
       resStatus = 'error';
       errMsg = `HTTP ${c.res.status}`;
     }
+    result = await readResultSummary(c.res);
   } catch (err) {
     resStatus = 'error';
     errMsg = err instanceof Error ? err.message : String(err);
@@ -153,6 +157,7 @@ app.use('/cron/*', async (c, next) => {
           completed_at: new Date().toISOString(),
           duration_ms: Date.now() - t0,
           error: errMsg,
+          result,
         })
         .eq('id', logRowId)
         .then(({ error }) => {
