@@ -503,7 +503,8 @@ export async function collusionScan(c: Context) {
   try {
     // Paged: a single .limit(50000) came back as 1000 rows and a 200, so this
     // scan had only ever seen ~0.36% of a 24h window. See lib/pagedSelect.ts.
-    let handsRows: HandRow[];
+    const handsRows: HandRow[] = [];
+    const actionRows: ActionRow[] = [];
     let handsTruncated: boolean;
     let readBudgetHit = false;
     let readComplete = false;
@@ -548,11 +549,58 @@ export async function collusionScan(c: Context) {
             .order('created_at', { ascending: true })
             .order('id', { ascending: true });
         },
-        { maxRows: MAX_SCAN_HANDS, budgetMs: READ_BUDGET_MS },
+        {
+          maxRows: MAX_SCAN_HANDS,
+          budgetMs: READ_BUDGET_MS,
+          // FOLD EACH PAGE, DO NOT ACCUMULATE IT. The detectors need six
+          // small fields per hand; `actions` is needed only to derive
+          // actionRows and is the bulk of the payload. Converting here and
+          // dropping the JSONB immediately keeps peak memory flat in
+          // MAX_SCAN_HANDS instead of growing with it. See the onPage note in
+          // lib/pagedSelectKeyset.ts for what this is fixing and how much of
+          // that is inferred rather than measured.
+          onPage: (batch) => {
+            for (const h of batch) {
+              for (const a of (Array.isArray(h.actions) ? h.actions : []) as Array<
+                Record<string, unknown>
+              >) {
+                const uid = (a.userId ?? a.user_id ?? a.id) as string | undefined;
+                const tsRaw = (a.timestamp ?? a.ts ?? a.time) as number | undefined;
+                if (!uid || typeof tsRaw !== 'number') continue;
+                actionRows.push({
+                  id: `${h.id}:${tsRaw}:${uid}`,
+                  table_id: h.table_id,
+                  hand_id: h.id,
+                  user_id: uid,
+                  created_at: new Date(tsRaw).toISOString(),
+                  street: ((a.stage ?? a.street) as string | undefined) ?? null,
+                  action: (a.action as string | undefined) ?? null,
+                });
+              }
+              // The slim record the four detectors actually read. `actions`
+              // is deliberately absent: nothing downstream touches it again,
+              // and holding it is what made a run's footprint scale with the
+              // window.
+              handsRows.push({
+                id: h.id,
+                table_id: h.table_id,
+                hand_number: h.hand_number,
+                started_at: h.started_at,
+                ended_at: h.ended_at,
+                created_at: h.created_at,
+                players: h.players,
+                winners: h.winners,
+                actions: null,
+                pot_size: h.pot_size,
+                big_blind: h.big_blind,
+                small_blind: h.small_blind,
+              });
+            }
+          },
+        },
       );
       timings.read_ms = Date.now() - phaseAt;
       phaseAt = Date.now();
-      handsRows = paged.rows;
       readBudgetHit = paged.hitBudget;
       readComplete = paged.complete;
       readCursorEnd = paged.cursorEnd;
@@ -568,26 +616,10 @@ export async function collusionScan(c: Context) {
 
     // Round 67 fix: action_log was always empty in production (legacy table
     // — no code ever wrote there). The TIMING_CORRELATION pattern silently
-    // starved on every scan. Now we synthesize per-action rows from
-    // hand_history.actions[] JSONB which IS populated by every hand.
-    const actionRows: ActionRow[] = [];
-    for (const h of handsRows) {
-      const arr = Array.isArray(h.actions) ? h.actions : [];
-      for (const a of arr as Array<Record<string, unknown>>) {
-        const uid = (a.userId ?? a.user_id ?? a.id) as string | undefined;
-        const tsRaw = (a.timestamp ?? a.ts ?? a.time) as number | undefined;
-        if (!uid || typeof tsRaw !== 'number') continue;
-        actionRows.push({
-          id: `${h.id}:${tsRaw}:${uid}`,
-          table_id: h.table_id,
-          hand_id: h.id,
-          user_id: uid,
-          created_at: new Date(tsRaw).toISOString(),
-          street: ((a.stage ?? a.street) as string | undefined) ?? null,
-          action: (a.action as string | undefined) ?? null,
-        });
-      }
-    }
+    // starved on every scan, so per-action rows are synthesized from
+    // hand_history.actions[] JSONB, which IS populated by every hand. That
+    // now happens in the onPage fold above, as each page arrives, so the raw
+    // JSONB is never held for the whole window.
 
     const findings: Finding[] = [
       ...scanChipDump(handsRows),

@@ -230,3 +230,66 @@ describe('a single page cannot hang the whole read', () => {
     expect(call).toBe(2);
   });
 });
+
+describe('onPage keeps peak memory flat in maxRows', () => {
+  it('folds each page and retains none of it', async () => {
+    // The rows must reach the caller exactly once, in order, and the result
+    // must not also hold them - otherwise the fold saves nothing, which is
+    // the whole point of it.
+    const page = (n: number, from: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `id-${String(from + i).padStart(4, '0')}`,
+        created_at: new Date(1_700_000_000_000 + (from + i) * 1000).toISOString(),
+      }));
+    let served = 0;
+    const seen: string[] = [];
+    const r = await pagedSelectKeyset<{ id: string; created_at: string }>(
+      () => ({
+        limit: (n: number) => {
+          const batch = served >= 2500 ? [] : page(Math.min(n, 2500 - served), served);
+          served += batch.length;
+          return Promise.resolve({ data: batch, error: null });
+        },
+      }) as any,
+      {
+        maxRows: 5_000,
+        budgetMs: 60_000,
+        onPage: (batch) => {
+          for (const row of batch) seen.push(row.id);
+        },
+      },
+    );
+
+    expect(seen).toHaveLength(2500);
+    expect(seen[0]).toBe('id-0000');
+    expect(seen[2499]).toBe('id-2499');
+    // Retained nothing, and still counted everything.
+    expect(r.rows).toHaveLength(0);
+    expect(r.count).toBe(2500);
+    expect(r.complete).toBe(true);
+  });
+
+  it('still stops on the row cap when it is not retaining rows', async () => {
+    // The cap used to be measured against the retained array. With onPage
+    // that array is empty, so a cap read from it would never fire and the
+    // read would run to the end of the window - the unbounded read this whole
+    // change set exists to remove.
+    let served = 0;
+    const r = await pagedSelectKeyset<{ id: string; created_at: string }>(
+      () => ({
+        limit: (n: number) => {
+          const batch = Array.from({ length: n }, (_, i) => ({
+            id: `id-${served + i}`,
+            created_at: new Date(1_700_000_000_000 + (served + i) * 1000).toISOString(),
+          }));
+          served += batch.length;
+          return Promise.resolve({ data: batch, error: null });
+        },
+      }) as any,
+      { maxRows: 2_500, budgetMs: 60_000, onPage: () => {} },
+    );
+    expect(r.count).toBe(2_500);
+    expect(r.hitRowCap).toBe(true);
+    expect(r.complete).toBe(false);
+  });
+});
