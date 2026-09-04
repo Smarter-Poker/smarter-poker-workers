@@ -12,7 +12,7 @@
  *                       window instead of a resumable tail.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { pagedSelectKeyset, type KeysetRow } from './pagedSelectKeyset.js';
+import { SERVER_MAX_ROWS, pagedSelectKeyset, type KeysetRow } from './pagedSelectKeyset.js';
 
 interface Row extends KeysetRow {
   n: number;
@@ -154,5 +154,45 @@ describe('pagedSelectKeyset', () => {
     await expect(
       pagedSelectKeyset(build, { maxRows: 100, budgetMs: 60_000 }),
     ).rejects.toThrow('boom');
+  });
+});
+
+describe('pagedSelectKeyset - the two limits nobody had exercised', () => {
+  it('refuses a page size PostgREST would silently clamp', async () => {
+    // `complete` is inferred from a SHORT PAGE. Ask for 5,000 and the server
+    // returns 1,000 with a 200; every full page then reads as short, the loop
+    // stops after one page, and the run calls the window COMPLETE and moves
+    // the mark past everything it never read. The inference is only sound
+    // while the page size is one the server will honour, and today that
+    // holds by exact coincidence - 1000 is both.
+    await expect(
+      pagedSelectKeyset(() => ({}) as any, {
+        maxRows: 10_000,
+        budgetMs: 1_000,
+        pageSize: SERVER_MAX_ROWS + 1,
+      }),
+    ).rejects.toThrow(/pageSize/);
+  });
+
+  it('reads nothing and reports nothing covered when the budget is already spent', async () => {
+    // The branch the caller relies on to keep the mark exactly where it was.
+    // Reachable in production when a container is under load and the run
+    // starts late; unreachable with the real clock, which is why it needs an
+    // injected one rather than being assumed dead and deleted.
+    let calls = 0;
+    const r = await pagedSelectKeyset(
+      () => {
+        calls += 1;
+        return {} as any;
+      },
+      // The clock reads t0 when the loop starts and t0+500 at the first
+      // budget check, so the budget is already spent before page one.
+      { maxRows: 10, budgetMs: 100, now: (() => { let n = 0; return () => (n++ === 0 ? 1_000_000 : 1_000_500); })() },
+    );
+    expect(calls).toBe(0);
+    expect(r.rows).toHaveLength(0);
+    expect(r.cursorEnd).toBeNull();
+    expect(r.hitBudget).toBe(true);
+    expect(r.complete).toBe(false);
   });
 });
