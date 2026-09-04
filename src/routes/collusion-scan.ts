@@ -29,12 +29,40 @@
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 import { resolveScanWindow, ScanWindowError } from '../lib/scanWindow.js';
-import { pagedSelect } from '../lib/pagedSelect.js';
+import { pagedSelectKeyset } from '../lib/pagedSelectKeyset.js';
+import {
+  advanceScanState,
+  readScanState,
+  windowFromState,
+  MAX_SPAN_HOURS,
+} from '../lib/collusionScanState.js';
 
+/**
+ * The rolling default, kept ONLY for an explicit ?since=/?until= call that
+ * omits one side. The scheduled path no longer uses a rolling window at all -
+ * it resumes from ca_collusion_scan_state - because a 30-minute cron over a
+ * 24-hour window re-read every hand 48 times, and at 770,000 hands a day that
+ * stopped returning entirely. See src/lib/collusionScanState.ts.
+ */
 const WINDOW_HOURS = 24;
-// The ceiling the original .limit(50000) was already asking for. PostgREST
-// silently clamped it to 1000; pagedSelect actually honours it.
-const MAX_SCAN_HANDS = 50_000;
+
+/**
+ * Row ceiling for one run. Unchanged in spirit, lower in fact: with an
+ * incremental window a normal run reads ~15,000 hands, and this is the guard
+ * against a catch-up run trying to read a whole span at once.
+ */
+const MAX_SCAN_HANDS = 40_000;
+
+/**
+ * Wall-clock budget for the READ phase.
+ *
+ * The dispatcher's client timeout is 120s and it does NOT cancel the worker,
+ * so a run that overruns is invisible until the container's stale sweeper
+ * marks it `killed` thirty minutes later. Ninety seconds leaves room for the
+ * analysis and the writes inside that 120s, and a run that hits it returns a
+ * HONEST PARTIAL result instead of never returning.
+ */
+const READ_BUDGET_MS = 90_000;
 const MIN_HANDS_FOR_SIGNAL = 15;
 const CHIP_DUMP_LOSS_RATIO = 0.8;
 const TIMING_Z_SCORE = 2.5;
@@ -378,29 +406,99 @@ export async function collusionScan(c: Context) {
     if (err instanceof ScanWindowError) return c.json({ error: err.message }, 400);
     throw err;
   }
-  const windowStart = scanWindow.start;
-  const windowEnd = scanWindow.end;
+
+  // THE SCHEDULED PATH RESUMES; only an explicit since/until overrides.
+  //
+  // A rolling window on a 30-minute cron re-read every hand 48 times, which is
+  // what killed this scan when volume quintupled. Resuming from the mark makes
+  // the cost proportional to the platform's RATE: ~15,000 hands a run rather
+  // than ~700,000.
+  //
+  // An operator rescanning a historical gap still gets exactly the window they
+  // asked for, and does NOT move the mark - a backfill must not make the live
+  // scan skip forward over hands it never read.
+  let windowStart = scanWindow.start;
+  let windowEnd = scanWindow.end;
+  let resumed = false;
+  let secondsBehindAtStart: number | null = null;
+
+  if (!scanWindow.overridden) {
+    try {
+      const state = await readScanState();
+      const w = windowFromState(state);
+      windowStart = w.start;
+      windowEnd = w.end;
+      resumed = true;
+      secondsBehindAtStart = state.secondsBehind;
+    } catch (stateErr) {
+      // FAIL, do not fall back to the rolling window. Falling back would
+      // quietly restore the exact shape that stopped this scan returning, and
+      // it would look like a healthy run while doing it.
+      const msg = stateErr instanceof Error ? stateErr.message : 'scan state unavailable';
+      console.warn('[collusion-scan] state read failed:', msg);
+      return c.json({ error: `scan state unavailable: ${msg}` }, 503);
+    }
+  }
+
+  // Nothing new. Not an error, and not a finding: the platform has simply not
+  // played a hand since the last run. Reported explicitly so an empty result
+  // is never confused with a clean one.
+  if (windowEnd.getTime() <= windowStart.getTime()) {
+    return c.json({
+      success: true,
+      resumed,
+      no_new_hands: true,
+      window: { start: windowStart.toISOString(), end: windowEnd.toISOString() },
+      duration_ms: Date.now() - scanStart,
+    });
+  }
 
   try {
     // Paged: a single .limit(50000) came back as 1000 rows and a 200, so this
     // scan had only ever seen ~0.36% of a 24h window. See lib/pagedSelect.ts.
     let handsRows: HandRow[];
     let handsTruncated: boolean;
+    let readBudgetHit = false;
+    let readComplete = false;
+    let readCursorEnd: string | null = null;
+    let readPages = 0;
     try {
-      const paged = await pagedSelect<HandRow>(
-        () =>
-          supabase
+      // KEYSET, ASCENDING, BUDGETED. OFFSET paging over a window where
+      // thousands of rows share a millisecond is not a total order - two pages
+      // can repeat a row and skip another - and an unbudgeted read is what
+      // stopped this scan returning at all. Ascending so an interrupted run
+      // leaves a contiguous unscanned TAIL the next run resumes from, rather
+      // than a hole in the middle.
+      const paged = await pagedSelectKeyset<HandRow>(
+        (afterCreatedAt, afterId) => {
+          let q = supabase
             .from('hand_history')
             .select(
               'id, table_id, hand_number, started_at, ended_at, created_at, players, winners, actions, pot_size, big_blind, small_blind',
             )
             .gte('created_at', windowStart.toISOString())
-            .lt('created_at', windowEnd.toISOString())
-            .order('created_at', { ascending: false }),
-        MAX_SCAN_HANDS,
+            .lt('created_at', windowEnd.toISOString());
+          if (afterCreatedAt !== null && afterId !== null) {
+            // (created_at, id) strictly after the cursor. `id` breaks every
+            // tie, so no row is read twice and none is skipped.
+            q = q.or(
+              `created_at.gt.${afterCreatedAt},and(created_at.eq.${afterCreatedAt},id.gt.${afterId})`,
+            );
+          }
+          return q
+            .order('created_at', { ascending: true })
+            .order('id', { ascending: true });
+        },
+        { maxRows: MAX_SCAN_HANDS, budgetMs: READ_BUDGET_MS },
       );
       handsRows = paged.rows;
-      handsTruncated = paged.truncated;
+      readBudgetHit = paged.hitBudget;
+      readComplete = paged.complete;
+      readCursorEnd = paged.cursorEnd;
+      readPages = paged.pages;
+      // Truncated means "there is more in this window than this run read",
+      // whichever limit bound first.
+      handsTruncated = !paged.complete;
     } catch (readErr) {
       const m = readErr instanceof Error ? readErr.message : 'hand_history read failed';
       console.warn('[collusion-scan] hand_history read error:', m);
@@ -505,15 +603,56 @@ export async function collusionScan(c: Context) {
       inserted = count ?? rows.length;
     }
 
+    // ── ADVANCE THE MARK, over read ground only ───────────────────────────
+    //
+    // A completed read covers the whole window, so the mark goes to
+    // windowEnd. A read that stopped on its budget or its row cap covers only
+    // as far as the last row it actually saw, so the mark goes THERE and the
+    // next run picks up the tail. That is the difference between "there is
+    // more to do" and "some hands were never examined by anything", and the
+    // second is the failure scanWindow.ts was written to close.
+    //
+    // Never on a dry run, and never on an operator's historical rescan: a
+    // backfill must not push the live scan forward over hands it never read.
+    let advanced: { ok: boolean; error?: string } | null = null;
+    let coveredTo = windowEnd;
+    if (resumed && !scanWindow.dryRun) {
+      if (!readComplete && readCursorEnd) {
+        const cursor = new Date(readCursorEnd);
+        if (!Number.isNaN(cursor.getTime())) coveredTo = cursor;
+      } else if (!readComplete && !readCursorEnd) {
+        // Bounded out before reading anything at all. Cover nothing.
+        coveredTo = windowStart;
+      }
+      advanced = await advanceScanState({
+        coveredTo,
+        scannedHands: handsRows.length,
+        findings: humanFindings.length,
+        durationMs: Date.now() - scanStart,
+        budgetHit: readBudgetHit,
+      });
+    }
+
     const durationMs = Date.now() - scanStart;
     return c.json({
       success: true,
       dry_run: scanWindow.dryRun,
       window_overridden: scanWindow.overridden,
-      // hand_history read is capped at 50k rows. When the cap is hit the scan
-      // saw only part of the window and the findings are a floor, not a total.
+      // TRUE when this run read less of its window than the window contains,
+      // whichever limit bound first. The findings are then a floor, not a
+      // total, and the remainder is the next run's first job.
       hands_truncated: handsTruncated,
+      read_complete: readComplete,
+      read_budget_hit: readBudgetHit,
+      read_pages: readPages,
+      read_budget_ms: READ_BUDGET_MS,
       max_scan_hands: MAX_SCAN_HANDS,
+      max_span_hours: MAX_SPAN_HOURS,
+      resumed,
+      seconds_behind_at_start: secondsBehindAtStart,
+      covered_to: coveredTo.toISOString(),
+      state_advanced: advanced ? advanced.ok : false,
+      state_advance_error: advanced?.error ?? null,
       scanned_hands: handsRows.length,
       scanned_actions: actionRows.length,
       findings: findings.length,
