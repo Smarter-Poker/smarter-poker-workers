@@ -296,8 +296,37 @@ jobs:
               # named something else (PepNationLab ships from `production`), and
               # wrong for any PR that targets a release branch.
               BEHIND=$(gh api "repos/$REPO/compare/${BASE}...$BRANCH" --jq '.behind_by' 2>/dev/null || echo 0)
-              LAST=$(gh run list --repo "$REPO" --branch "$BRANCH" --workflow ci.yml --limit 1 \
-                       --json conclusion --jq '.[0].conclusion // "none"' 2>/dev/null || echo none)
+              # THIS FILE IS BYTE-IDENTICAL IN SEVEN REPOS AND ONLY ONE OF THEM
+              # HAS A ci.yml (corrected 2026-09-04). It used to ask
+              # `gh run list --workflow ci.yml`, which in the World Hub - whose
+              # gate is build-safety-gate.yml - answered "none" for EVERY pull
+              # request, so the "no CI run at all" branch below pushed an empty
+              # re-trigger commit onto every World Hub pull request older than
+              # fifteen minutes, on every sweep after every real push: a second
+              # full copy of thirteen workflows, on six runners, and a later
+              # merge (the new head restarts auto-merge's wait). Five landed in
+              # one day. The same would happen in any repo whose gate is not
+              # literally named ci.yml.
+              #
+              # Two questions, answered without naming a workflow:
+              #   HAS_RUNS  - did ANY pull_request-event workflow run for this
+              #               head? That is what "no CI run at all" means.
+              #   LAST      - are the checks THE RULESET REQUIRES red? Read from
+              #               the ruleset and the PR's own rollup, so a
+              #               permanently red optional suite (World Hub's E2E
+              #               has been red on main for a day) cannot make every
+              #               behind-by-one pull request refresh on every sweep.
+              HEAD_FOR_RUNS=$(gh pr view "$N" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
+              HAS_RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_FOR_RUNS&event=pull_request&per_page=1" \
+                           --jq '.total_count' 2>/dev/null || echo 0)
+              REQUIRED=$(gh api "repos/$REPO/rules/branches/$BASE" \
+                           --jq '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | join("\n")' 2>/dev/null || echo "")
+              RED_REQUIRED=$(gh pr view "$N" --repo "$REPO" --json statusCheckRollup \
+                           --jq '[.statusCheckRollup[] | select((.conclusion // .state) | ascii_upcase | IN("FAILURE","ERROR","TIMED_OUT","CANCELLED")) | (.name // .context)] | .[]' 2>/dev/null \
+                           | grep -Fxf <(printf '%s\n' "$REQUIRED") | head -1 || true)
+              if [ "${HAS_RUNS:-0}" = "0" ] && [ -z "$RED_REQUIRED" ]; then LAST=none
+              elif [ -n "$RED_REQUIRED" ]; then LAST=failure
+              else LAST=other; fi
               REFRESH=no
               if [ "${BEHIND:-0}" -gt 0 ] && [ "$LAST" = "failure" ]; then
                 REFRESH="stale red checks ($BEHIND behind)"
@@ -306,7 +335,7 @@ jobs:
               fi
 
               # A PULL REQUEST WITH NO CI RUN AT ALL IS DEAD, NOT WAITING (2026-09-02).
-              # LAST=none means ci.yml has never run for this branch - the head
+              # LAST=none means no pull_request workflow has run for this head - it
               # was pushed while a token was revoked, or the branch predates the
               # workflow, or GitHub simply dropped the event. It matched neither
               # refresh condition above, so it was "left to merge" - forever,
@@ -373,6 +402,66 @@ jobs:
       # the repo that is indistinguishable from the feature regressing.
       # PepNationLab was carrying six of them - the oldest 68 days old - and
       # nothing anywhere said so.
+      # ── REAP WORKFLOW RUNS THAT CAN NEVER FINISH ─────────────────────────
+      #
+      # Two kinds of run sit in `queued` forever and neither clears itself:
+      #
+      #   1. ORPHANS. A workflow file is deleted while runs of it are queued.
+      #      GitHub can no longer resolve the definition, so the run cannot
+      #      start, cannot be cancelled (409) and cannot be deleted (403). On
+      #      2026-09-04 there were EIGHT of these from `Build for World Hub
+      #      Sync` - the retired Club Arena sync path - aged 37 to 58 hours.
+      #      They consume no runner, but every human and agent reading the
+      #      queue counts them, and capacity looks worse than it is. One of
+      #      those readers was an agent that then drew the wrong conclusion.
+      #
+      #   2. GENUINELY STUCK runs, queued far longer than any real job takes,
+      #      usually because their runner died mid-assignment.
+      #
+      # This cancels what can be cancelled and NAMES what cannot, so nobody has
+      # to go hunting by hand. Nothing here can cancel healthy work: the
+      # threshold is deliberately well past the slowest real job.
+      - name: Reap workflow runs that can never finish
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STUCK_MINUTES: '45'
+        run: |
+          set -uo pipefail
+          NOW=$(date -u +%s)
+          STUCK=0; KILLED=0; ORPHANED=""
+          RUNS=$(gh api "repos/$REPO/actions/runs?status=queued&per_page=100" \
+                   --jq '.workflow_runs[] | [.id, .created_at, .name, .head_branch] | @tsv' 2>/dev/null) || {
+            echo "could not list queued runs - skipping the sweep rather than guessing."; exit 0; }
+          while IFS=$'\t' read -r id created name branch; do
+            [ -z "${id:-}" ] && continue
+            AGE=$(( (NOW - $(date -u -d "$created" +%s 2>/dev/null || echo "$NOW")) / 60 ))
+            [ "$AGE" -lt "$STUCK_MINUTES" ] && continue
+            STUCK=$((STUCK+1))
+            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null 2>&1; then
+              KILLED=$((KILLED+1)); echo "cancelled #$id ($name, ${AGE}m, $branch)"
+            else
+              ORPHANED="$ORPHANED\n  - \`$name\` run $id, ${AGE}m old, branch \`$branch\`"
+              echo "ORPHAN #$id ($name, ${AGE}m) - cannot cancel; its workflow file is gone"
+            fi
+          done <<< "$RUNS"
+
+          {
+            echo "### Stuck-run sweep"
+            echo
+            echo "- queued longer than ${STUCK_MINUTES}m: **$STUCK**"
+            echo "- cancelled: **$KILLED**"
+            if [ -n "$ORPHANED" ]; then
+              echo "- **permanently orphaned (workflow file deleted while queued):**"
+              echo -e "$ORPHANED"
+              echo
+              echo "  These consume no runner. They cannot be cancelled or deleted through the API."
+              echo "  To clear them, restore a stub workflow file at the same path so GitHub can"
+              echo "  resolve and fail them, then delete it again. Otherwise they age out on their own."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Name the pull requests that cannot merge on their own
         if: always()
         env:
