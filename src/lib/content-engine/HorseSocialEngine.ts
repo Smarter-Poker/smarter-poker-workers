@@ -1120,14 +1120,19 @@ export async function reactToComments(maxReactions = 15) {
     const horseIds = allHorses.map(h => h.profile_id);
 
     // Get recent comments from other horses (need post_id for social_interactions write)
-    const { data: recentComments } = await getSupabase()
+    // 2026-09-05: `.in('author_id', horseIds)` put 1,000 UUIDs into a GET query
+    // string; PostgREST refused it and this step returned reacted: 0 on every
+    // fire. Read the recent comments and filter with a Set instead.
+    const horseIdSet = new Set(horseIds);
+    const { data: recentCommentsRaw, error: recentCommentsErr } = await getSupabase()
         .from('social_comments')
         .select('id, post_id, author_id')
-        .in('author_id', horseIds)
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(200);
+    if (recentCommentsErr) console.warn('[reactToComments] comments read failed:', recentCommentsErr.message);
+    const recentComments = (recentCommentsRaw ?? []).filter(c => horseIdSet.has(c.author_id)).slice(0, 50);
 
-    if (!recentComments?.length) return { reacted: 0 };
+    if (!recentComments.length) return { reacted: 0 };
 
     let reacted = 0;
 
