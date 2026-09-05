@@ -15,7 +15,9 @@
  *   content_asset_use(asset_key, horse_id, post_id, used_at)
  *     UNIQUE (asset_key, horse_id): one horse can never post one asset twice,
  *     enforced by the database, not by code that has to remember to check.
- *     Platform-wide reuse is a window (ASSET_GLOBAL_DAYS).
+ *     Platform-wide reuse is a window (ASSET_GLOBAL_DAYS, 30 days: the rule
+ *     the audit set, and with 150 poker clips anything longer empties the
+ *     poker pool outright until Phase 4).
  *
  *   horse_phrase_ledger(phrase_norm, horse_id, post_id, used_at)
  *     Same caption never twice from one horse inside PHRASE_HORSE_DAYS, never
@@ -31,7 +33,7 @@
  */
 import { getSupabase } from '../supabase.js';
 
-export const ASSET_GLOBAL_DAYS = 90;
+export const ASSET_GLOBAL_DAYS = 30;
 export const PHRASE_HORSE_DAYS = 90;
 export const PHRASE_GLOBAL_HOURS = 48;
 
