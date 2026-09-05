@@ -54,16 +54,45 @@ detector; 1,000/1,000 socialized), dispatcher schedule.
 
 - `npx tsc --noEmit`: clean. `npx vitest run`: 35 files, 152 tests, all
   green. `npm run build`: dist/index.mjs.
-- Migrations probed in one rolled-back transaction against production:
-  not_ready_before=1000, touched=1000/1000, assets=5020, phrases=5400,
-  not_ready_after=0; existing hand-written bios and voices untouched.
-- Production numbers after the dispatcher deploy are recorded in the
-  programme doc's Phase 1 section once observed.
+- Migrations probed in one rolled-back transaction against production, then
+  applied: 1,000/1,000 horses socialized, `fn_horses_not_social_ready()`
+  returns 0 rows, ledgers seeded with 5,020 asset rows and 5,400 phrases.
+- The born-social trigger was proved with a rolled-back insert of a fresh
+  horse: it came back with alias, voice, timezone, personality, bio, city,
+  favourite game and `social_profile_completed = true`.
+
+## The day it went live (UTC, 2026-09-05)
+
+The first fire at 09:10 found 26 horses due and posted 5. Everything after
+that was a supply problem the new telemetry made visible, fixed in five
+follow-up merges the same day:
+
+| Merge | What the numbers said | Fix |
+| --- | --- | --- |
+| #74 | 18 of 26 failed "All poker clips already posted": the ledger correctly refused all 150 hard-coded poker clips | Preferred category, then the other; asset window 30 days |
+| #75 | `horses-social-all` spent its whole 55s in likes and skipped everything else, on every fire on record | `likePosts` breaks at its cap; deadline 540s; hourly caps 40/20/12/20 |
+| #76 | 11:10 to 19:10 posted 0: "No valid sports clips found" while every clip answered 200 from inside the container | `youtubeValidity()` ok/bad/unknown with 429 backoff, one RSS fetch per feed per run |
+| #77 | reactions returned 0 on every fire: `.in('author_id', 1000 uuids)` in a GET | filter locally; same fix for `acceptFriendRequests` |
+| #78 | still 0: telemetry showed 24 x 404, 11 x 401 and under ten fresh candidates per horse; the unordered `.limit(200)` returned January's shorts | newest 400 of the horse's sources, widen to the platform's newest 600 when thin |
+
+By 20:35: 47 posts from 47 different horses since 09:00, 34 of them posting
+for the first time ever, every one through the fleet route; 270 distinct
+horses commented since 10:30 (59 in the whole previous week); 440 likes;
+the 20:30 engagement fire did 40 likes, 20 comments, 12 replies and 20
+reactions in one hour.
 
 ## Still open after this phase
 
-- The caption pools are still 13 to 21 lines. With ~235 posts a day the
-  phrase ledger will report collisions; that count is the Phase 2 yardstick.
+- Poker supply is exhausted: two RSS feeds and 150 clips are all inside the
+  ledger window, so the mix is sports-heavy until Phase 5 gives poker a
+  real pool. The `by_type` counts in every run show it.
+- The caption pools are still 13 to 21 lines; Phase 2 replaces them.
+- DMs: `HorseMessengerEngine` reads `social_messages`, a table that does not
+  exist. Skipped on every fire; Phase 3b decides the DM product.
 - `content_settings` is writable only by service_role; the admin panel's
   toggle still does not reach it. SQL flips it. Phase 10 wires the panel.
 - 144 native reels remain `queued` since 08-14 (Phase 4).
+- World Hub `deploy-openclaw.yml` deploys the dispatcher and then fails its
+  last step because the repo's `CRON_SECRET` secret is stale (a human copies
+  it from the Vercel env). The dispatcher itself deployed and runs on the
+  host's secret.

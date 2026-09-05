@@ -25,7 +25,11 @@ import { publishForHorse, takeSupplyStats, type PublishResult } from '../lib/con
 
 export const MAX_POSTS_PER_RUN = 80;
 const DEADLINE_MS = 540_000;
-const CONCURRENCY = 2;
+// One at a time. Two workers picking assets concurrently both saw the same
+// clip as fresh and both posted it (4 repeats on 2026-09-05); the ledger's
+// unique index is per (asset, horse), so it cannot referee a cross-horse
+// race. ~30 horses an hour at 2 to 5 seconds each is well inside the budget.
+const CONCURRENCY = 1;
 
 export async function horsePosts(c: Context) {
   const startedAt = Date.now();
