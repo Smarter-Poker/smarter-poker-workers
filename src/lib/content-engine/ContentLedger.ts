@@ -76,16 +76,14 @@ export function normalizePhrase(text: string | null | undefined): string {
     .trim();
 }
 
-interface AssetUseRow {
-  asset_key: string;
-  horse_id: string;
-  used_at: string;
-}
-
 /**
  * Of the candidate keys, return the ones this horse has never used and the
- * platform has not used inside ASSET_GLOBAL_DAYS. Chunks the IN list so a
- * 200-clip candidate set is two requests, not one 8KB URL.
+ * platform has not used inside ASSET_GLOBAL_DAYS.
+ *
+ * Two bounded reads per chunk: rows inside the platform window (any horse),
+ * and rows for this horse (any time). The first version read every row for
+ * every key in the chunk, which for popular clips can exceed PostgREST's
+ * 1,000-row page and silently drop the rows that matter (the recent ones).
  */
 export async function filterUnusedAssets(
   keys: string[],
@@ -98,19 +96,18 @@ export async function filterUnusedAssets(
   const supa = getSupabase();
   for (let i = 0; i < unique.length; i += 150) {
     const chunk = unique.slice(i, i + 150);
-    const { data, error } = await supa
-      .from('content_asset_use')
-      .select('asset_key, horse_id, used_at')
-      .in('asset_key', chunk);
-    if (error) {
+    const [recent, mine] = await Promise.all([
+      supa.from('content_asset_use').select('asset_key').in('asset_key', chunk).gte('used_at', since),
+      supa.from('content_asset_use').select('asset_key').in('asset_key', chunk).eq('horse_id', horseId),
+    ]);
+    if (recent.error || mine.error) {
       // A ledger read failing must not stop the fleet; it degrades to the
       // pre-ledger behaviour for this call and says so.
-      console.warn('[content-ledger] asset read failed:', error.message);
+      console.warn('[content-ledger] asset read failed:', recent.error?.message ?? mine.error?.message);
       continue;
     }
-    for (const row of (data ?? []) as AssetUseRow[]) {
-      if (row.horse_id === horseId || row.used_at >= since) usable.delete(row.asset_key);
-    }
+    for (const row of (recent.data ?? []) as { asset_key: string }[]) usable.delete(row.asset_key);
+    for (const row of (mine.data ?? []) as { asset_key: string }[]) usable.delete(row.asset_key);
   }
   return usable;
 }
@@ -132,26 +129,44 @@ export async function recordAssetUse(
 /**
  * True when the phrase was used by this horse inside PHRASE_HORSE_DAYS or by
  * any horse inside PHRASE_GLOBAL_HOURS.
+ *
+ * Two existence queries, not one page. The first version read 50 rows for
+ * the phrase with no ORDER BY and looked for a recent one among them; a
+ * caption from a 21-line pool has hundreds of ledger rows in 90 days, so the
+ * page never contained today's and four captions repeated inside one run
+ * on 2026-09-05 21:10 while the result claimed collided: 0. The same shape
+ * of bug the audit found in the old 48h dedup.
  */
 export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): Promise<boolean> {
   if (!phraseNorm) return false;
-  const horseSince = new Date(Date.now() - PHRASE_HORSE_DAYS * 86_400_000).toISOString();
+  const supa = getSupabase();
   const globalSince = new Date(Date.now() - PHRASE_GLOBAL_HOURS * 3_600_000).toISOString();
-  const { data, error } = await getSupabase()
+  const horseSince = new Date(Date.now() - PHRASE_HORSE_DAYS * 86_400_000).toISOString();
+
+  const recent = await supa
     .from('horse_phrase_ledger')
-    .select('horse_id, used_at')
+    .select('id')
     .eq('phrase_norm', phraseNorm)
-    .gte('used_at', horseSince)
-    .limit(50);
-  if (error) {
-    console.warn('[content-ledger] phrase read failed:', error.message);
+    .gte('used_at', globalSince)
+    .limit(1);
+  if (recent.error) {
+    console.warn('[content-ledger] phrase read failed:', recent.error.message);
     return false;
   }
-  for (const row of (data ?? []) as { horse_id: string; used_at: string }[]) {
-    if (row.horse_id === horseId) return true;
-    if (row.used_at >= globalSince) return true;
+  if ((recent.data ?? []).length > 0) return true;
+
+  const mine = await supa
+    .from('horse_phrase_ledger')
+    .select('id')
+    .eq('phrase_norm', phraseNorm)
+    .eq('horse_id', horseId)
+    .gte('used_at', horseSince)
+    .limit(1);
+  if (mine.error) {
+    console.warn('[content-ledger] phrase read failed:', mine.error.message);
+    return false;
   }
-  return false;
+  return (mine.data ?? []).length > 0;
 }
 
 export async function recordPhrase(
