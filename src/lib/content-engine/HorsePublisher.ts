@@ -70,6 +70,42 @@ const rssParser = new Parser({
   timeout: 8000,
 });
 
+/**
+ * One fetch per feed per ten minutes, not one per horse. Measured
+ * 2026-09-05: with ~30 horses due an hour the four sports feeds were
+ * fetched thirty times an hour each and ESPN answered 429, CBS 403.
+ * A failed fetch is cached too (as empty) so the fleet does not hammer a
+ * host that just refused it.
+ */
+type FeedItem = { title?: string; link?: string };
+const feedCache = new Map<string, { items: FeedItem[]; at: number; error?: string }>();
+const FEED_TTL_MS = 10 * 60_000;
+
+export async function fetchFeed(url: string): Promise<FeedItem[]> {
+  const cached = feedCache.get(url);
+  if (cached && Date.now() - cached.at < FEED_TTL_MS) {
+    if (cached.error) throw new Error(cached.error);
+    return cached.items;
+  }
+  try {
+    const feed = await rssParser.parseURL(url);
+    const items = (feed.items ?? []) as FeedItem[];
+    feedCache.set(url, { items, at: Date.now() });
+    bumpSupplyStat('rss_ok');
+    return items;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    feedCache.set(url, { items: [], at: Date.now(), error: msg });
+    bumpSupplyStat(`rss_fail_${msg.replace(/[^0-9a-z]+/gi, '_').slice(0, 24)}`);
+    throw e;
+  }
+}
+
+/** Test hook. */
+export function _resetFeedCache(): void {
+  feedCache.clear();
+}
+
 const POKER_NEWS_SOURCES = [
   { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news.rss' },
   { name: 'Upswing Poker', rss: 'https://upswingpoker.com/feed/' },
@@ -113,22 +149,112 @@ interface LibraryClip {
   category?: string;
 }
 
-/** True when the video exists AND is embeddable (oEmbed returns an iframe). */
-export async function validateYouTubeVideo(url: string | null | undefined): Promise<boolean> {
-  if (!url) return false;
+/**
+ * YouTube validity, with the throttle in mind.
+ *
+ * Measured 2026-09-05 11:10 to 19:10: every hourly fleet fire failed every
+ * sports clip with "No valid sports clips found". The route validated up to
+ * ten candidates per horse per hour through YouTube's oEmbed endpoint, from
+ * one VM IP, and YouTube started answering 429. A 429 is not "this video is
+ * gone"; treating it as one silenced the whole fleet for eight hours.
+ *
+ *   ok       -> oEmbed returned an embeddable iframe
+ *   bad      -> oEmbed said 401/403/404 (age-gated, embed-disabled, removed)
+ *   unknown  -> throttled (429), network error, or we are inside a backoff
+ *
+ * Results are cached in-process for a day (an optimisation, not a memory:
+ * the ledger is the memory). After a 429 nothing is asked for 15 minutes.
+ */
+export type YtValidity = 'ok' | 'bad' | 'unknown';
+const validityCache = new Map<string, { v: YtValidity; at: number }>();
+const VALIDITY_TTL_MS = 24 * 3_600_000;
+let oembedBackoffUntil = 0;
+let consecutive403 = 0;
+export const OEMBED_BACKOFF_MS = 15 * 60_000;
+
+/**
+ * Per-run supply telemetry, surfaced in the route's result JSON so a run
+ * that publishes nothing says WHY in cron_execution_log. Added after eight
+ * hourly fires (11:10 to 19:10, 2026-09-05) reported "No valid sports clips
+ * found" while every sampled clip answered 200 from inside the container:
+ * the statuses seen during the burst were never recorded anywhere.
+ */
+const supplyStats: Record<string, number> = {};
+export function bumpSupplyStat(key: string): void {
+  supplyStats[key] = (supplyStats[key] ?? 0) + 1;
+}
+export function takeSupplyStats(): Record<string, number> {
+  const out = { ...supplyStats, oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0 };
+  for (const k of Object.keys(supplyStats)) delete supplyStats[k];
+  return out;
+}
+
+export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {
+  if (!url) return 'bad';
   const key = assetKeyFor(url);
-  if (!key || !key.startsWith('yt:')) return false;
+  if (!key || !key.startsWith('yt:')) {
+    bumpSupplyStat('yt_not_youtube');
+    return 'bad';
+  }
+  const cached = validityCache.get(key);
+  if (cached && Date.now() - cached.at < VALIDITY_TTL_MS && cached.v !== 'unknown') {
+    bumpSupplyStat(`yt_cache_${cached.v}`);
+    return cached.v;
+  }
+  if (Date.now() < oembedBackoffUntil) {
+    bumpSupplyStat('yt_backoff_unknown');
+    return 'unknown';
+  }
   const videoId = key.slice(3);
   try {
     const response = await fetch(
       `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' } },
     );
-    if (!response.ok) return false;
-    const body = (await response.json()) as { html?: string };
-    return !!body.html && body.html.includes('iframe');
-  } catch {
-    return false;
+    bumpSupplyStat(`yt_http_${response.status}`);
+    if (response.status === 429 || response.status >= 500) {
+      oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
+      console.warn(`[horse-publisher] YouTube oEmbed ${response.status}; backing off 15 minutes`);
+      return 'unknown';
+    }
+    if (response.status === 403) {
+      // 403 is "embedding disabled" for ONE video, but three in a row from
+      // one IP is bot detection. Do not let a block read as dead videos.
+      consecutive403 += 1;
+      if (consecutive403 >= 3) {
+        oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
+        console.warn('[horse-publisher] YouTube oEmbed 403 x3; treating as a block, backing off 15 minutes');
+        return 'unknown';
+      }
+      return 'bad';
+    }
+    consecutive403 = 0;
+    let v: YtValidity;
+    if (!response.ok) {
+      v = 'bad';
+    } else {
+      const body = (await response.json()) as { html?: string };
+      v = body.html && body.html.includes('iframe') ? 'ok' : 'bad';
+    }
+    validityCache.set(key, { v, at: Date.now() });
+    return v;
+  } catch (e) {
+    bumpSupplyStat('yt_fetch_error');
+    console.warn('[horse-publisher] YouTube oEmbed fetch error:', e instanceof Error ? e.message : e);
+    return 'unknown';
   }
+}
+
+/** Back-compat boolean: ok is true, bad is false, unknown is the caller's call. */
+export async function validateYouTubeVideo(url: string | null | undefined): Promise<boolean> {
+  return (await youtubeValidity(url)) === 'ok';
+}
+
+/** Test hook. */
+export function _resetValidityCache(): void {
+  validityCache.clear();
+  oembedBackoffUntil = 0;
+  consecutive403 = 0;
 }
 
 export function convertToEmbedUrl(url: string): string {
@@ -200,7 +326,8 @@ async function postVideoClip(
     for (const c of candidates) {
       const k = assetKeyFor(c.source_url);
       if (!k || !usable.has(k)) continue;
-      if (await validateYouTubeVideo(c.source_url)) {
+      // The library was hand-verified; only a definite "bad" drops it.
+      if ((await youtubeValidity(c.source_url)) !== 'bad') {
         clip = c;
         break;
       }
@@ -210,30 +337,49 @@ async function postVideoClip(
   } else {
     const supa = getSupabase();
     const assigned = await getHorseSources(horse.profile_id);
+    // Newest first. Measured 2026-09-05 20:17 (supply telemetry): the
+    // unordered .limit(200) returned the OLDEST rows, January shorts of
+    // which 24 answered 404 and 11 answered 401 in one run, and the ledger
+    // left under ten fresh candidates per horse. The scraper adds clips
+    // daily; the newest 400 of a horse's sources are the live pool.
     let clips: SportsClipRow[] = [];
     if (assigned.length > 0) {
-      const { data } = await supa.from('sports_clips').select('*').in('source', assigned).limit(200);
+      const { data } = await supa
+        .from('sports_clips')
+        .select('*')
+        .in('source', assigned)
+        .order('created_at', { ascending: false })
+        .limit(400);
       if (data?.length) clips = data as SportsClipRow[];
     }
-    if (!clips.length) {
-      const offset = Math.floor(Math.random() * 5000);
-      const { data } = await supa.from('sports_clips').select('*').range(offset, offset + 200);
-      if (data?.length) clips = data as SportsClipRow[];
+    const freshOf = async (rows: SportsClipRow[]) => {
+      const keys = rows.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
+      const usable = await filterUnusedAssets(keys, horse.profile_id);
+      return rows.filter((c) => {
+        const k = assetKeyFor(c.source_url);
+        return !!k && usable.has(k);
+      });
+    };
+    let fresh = clips.length ? await freshOf(clips) : [];
+    if (fresh.length < 10) {
+      // The horse's own sources are thin; widen to the platform's newest.
+      const { data } = await supa
+        .from('sports_clips')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(600);
+      if (data?.length) fresh = await freshOf(data as SportsClipRow[]);
+      bumpSupplyStat('sports_widened_to_platform');
     }
-    if (!clips.length) return { ...base, success: false, error: 'No sports clips' };
-
-    const keys = clips.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
-    const usable = await filterUnusedAssets(keys, horse.profile_id);
-    const fresh = clips.filter((c) => {
-      const k = assetKeyFor(c.source_url);
-      return !!k && usable.has(k);
-    });
     if (!fresh.length) return { ...base, success: false, error: 'All sports clips already posted' };
+    bumpSupplyStat('sports_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'));
 
-    for (let i = 0; i < 10 && fresh.length > 0; i++) {
+    // Three candidates, not ten: sports_clips rows come from the channel
+    // scraper and are trusted unless oEmbed definitely says otherwise.
+    for (let i = 0; i < 3 && fresh.length > 0; i++) {
       const idx = Math.floor(Math.random() * fresh.length);
       const candidate = fresh[idx]!;
-      if (await validateYouTubeVideo(candidate.source_url)) {
+      if ((await youtubeValidity(candidate.source_url)) !== 'bad') {
         clip = candidate;
         break;
       }
@@ -298,8 +444,7 @@ async function postNewsLink(
   const source = sources[fleetHash(horse.profile_id, `news:${newsType}`) % sources.length]!;
 
   try {
-    const feed = await rssParser.parseURL(source.rss);
-    const articles = (feed.items ?? []).slice(0, 20).filter((a) => !!a.link);
+    const articles = (await fetchFeed(source.rss)).slice(0, 20).filter((a) => !!a.link);
     if (!articles.length) return { ...base, success: false, error: 'No articles' };
 
     const keys = articles.map((a) => assetKeyFor(a.link)).filter(Boolean) as string[];

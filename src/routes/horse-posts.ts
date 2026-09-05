@@ -21,11 +21,15 @@
 import type { Context } from 'hono';
 import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
-import { publishForHorse, type PublishResult } from '../lib/content-engine/HorsePublisher.js';
+import { publishForHorse, takeSupplyStats, type PublishResult } from '../lib/content-engine/HorsePublisher.js';
 
 export const MAX_POSTS_PER_RUN = 80;
 const DEADLINE_MS = 540_000;
-const CONCURRENCY = 3;
+// One at a time. Two workers picking assets concurrently both saw the same
+// clip as fresh and both posted it (4 repeats on 2026-09-05); the ledger's
+// unique index is per (asset, horse), so it cannot referee a cross-horse
+// race. ~30 horses an hour at 2 to 5 seconds each is well inside the budget.
+const CONCURRENCY = 1;
 
 export async function horsePosts(c: Context) {
   const startedAt = Date.now();
@@ -93,6 +97,7 @@ export async function horsePosts(c: Context) {
         return acc;
       }, {}),
       errors,
+      supply: takeSupplyStats(),
       deadline_hit: deadlineHit,
       cap_hit: due.length > MAX_POSTS_PER_RUN,
       due_window_hours: DUE_WINDOW_HOURS,
