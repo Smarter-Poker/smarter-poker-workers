@@ -21,11 +21,11 @@
 import type { Context } from 'hono';
 import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
-import { publishForHorse, type PublishResult } from '../lib/content-engine/HorsePublisher.js';
+import { publishForHorse, takeSupplyStats, type PublishResult } from '../lib/content-engine/HorsePublisher.js';
 
 export const MAX_POSTS_PER_RUN = 80;
 const DEADLINE_MS = 540_000;
-const CONCURRENCY = 3;
+const CONCURRENCY = 2;
 
 export async function horsePosts(c: Context) {
   const startedAt = Date.now();
@@ -93,6 +93,7 @@ export async function horsePosts(c: Context) {
         return acc;
       }, {}),
       errors,
+      supply: takeSupplyStats(),
       deadline_hit: deadlineHit,
       cap_hit: due.length > MAX_POSTS_PER_RUN,
       due_window_hours: DUE_WINDOW_HOURS,
