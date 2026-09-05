@@ -38,6 +38,9 @@
 import { getSupabase } from '../supabase.js';
 import { getHorseActivityRate, applyWritingStyle } from './HorseScheduler.js';
 import { isOnlineNow } from './FleetScheduler.js';
+import { writeComment, writeReply, recordBrief, recordThreadTurn } from './VoiceWriter.js';
+import { normalizePhrase, recordPhrase } from './ContentLedger.js';
+import { decideReply, composerReason, type ThreadComment } from './ReplyEngine.js';
 
 // 2026-09-05: every per-run cap below (maxComments, maxLikes...) breaks out of a
 // loop over activeHorses. With the whole fleet eligible that loop would always
@@ -50,7 +53,6 @@ function shuffleHorses<T>(arr: T[]): T[] {
     }
     return arr;
 }
-import { generateComment } from './HumanVoiceEngine.js';
 
 // Lazy-init Supabase client (RAT-AUTH-NUCLEAR compliant)
 // Prevents "supabaseKey is required" crash when env vars aren't yet available at module load
@@ -542,7 +544,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     // Get all horses
     const { data: allHorses } = await getSupabase()
         .from('content_authors')
-        .select('id, name, profile_id, avatar_url, timezone')
+        .select('id, name, alias, profile_id, avatar_url, timezone, location, stakes, specialty')
         .eq('is_active', true)
         .not('profile_id', 'is', null);
 
@@ -568,7 +570,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     // Get recent posts
     let postsQuery = getSupabase()
         .from('social_posts')
-        .select('id, author_id, content_type, content, link_site_name, metadata')
+        .select('id, author_id, content_type, content, link_title, link_site_name, metadata')
         .order('created_at', { ascending: false })
         .limit(50);
 
@@ -581,6 +583,11 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     }
 
     let commented = 0;
+    let skippedNoContent = 0;
+    let belowFloor = 0;
+    let staleDrafts = 0;
+    let relevanceSum = 0;
+    let relevanceCount = 0;
 
     // Each ACTIVE horse may comment on some posts
     for (const horse of activeHorses) {
@@ -605,47 +612,33 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
         const withinLimit = await checkDailyLimit(horse.profile_id, 'comments');
         if (!withinLimit) continue;
 
-        // Keyword-based contextual comment type selection
-        // Priority: explicit clip_type metadata > link_site_name > content text keywords
-        let commentType = 'general';
-        const lc = (post.content || '').toLowerCase();
-
-        // BUG FIX 2026-04-28: Sports video posts (from sports_clips) have content_type='video'
-        // and metadata.clip_type='sports' but NO link_site_name. Without this check they fell
-        // through to commentType='video' which uses poker-lingo COMMENT_TEMPLATES.
-        const isSportsByMeta = post.metadata?.clip_type === 'sports';
-        const isSportsBySource = post.link_site_name && (
-            post.link_site_name.includes('ESPN') ||
-            post.link_site_name.includes('Yahoo') ||
-            post.link_site_name.includes('CBS') ||
-            post.link_site_name.includes('Sports')
-        );
-        const isSports = isSportsByMeta || isSportsBySource;
-
-        // Route to correct HumanVoiceEngine pool:
-        // Sports content never gets poker pools. Poker video only if explicitly poker clip.
-        if (isSports) commentType = 'sports';
-        else if (post.content_type === 'video' && post.metadata?.clip_type === 'poker') commentType = 'video';
-        else if (post.content_type === 'video') commentType = 'video'; // fallback for untagged video
-        else if (post.content_type === 'photo') commentType = 'photo';
-        else if (/\b(bad beat|suck.?out|cooler|one.?outer|runner.?runner)\b/.test(lc)) commentType = 'bad_beat';
-        else if (/\b(wsop|bracelet|world series of poker)\b/.test(lc)) commentType = 'tournament';
-        else if (/\b(tournament|final table|bubble|mtt)\b/.test(lc)) commentType = 'tournament';
-        else if (/\b(bluff|hero.?call|hero.?fold)\b/.test(lc)) commentType = 'bluff';
-        else if (/\b(session|profit|cashed)\b/.test(lc)) commentType = 'session_report';
-        else if (/\b(grind|grinding|volume|hours played)\b/.test(lc)) commentType = 'grind';
-        else if (/\b(variance|downswing|upswing|run bad|run good)\b/.test(lc)) commentType = 'variance';
-        else if (/\b(strategy|gto|solver|ev|bet sizing)\b/.test(lc)) commentType = 'strategy';
-
-        // Use HumanVoiceEngine.generateComment — has full dedup, per-horse archetype system,
-        // proper capitalization, punctuation, and NO slang/GTO flair on sports content.
-        // This replaces the old getRandomComment() + applyWritingStyle() pipeline which
-        // produced poker lingo on sports posts and short slang-only phrases.
-        let comment = generateComment(commentType, horse.profile_id, post.id);
-        // Safety: if the engine returns something too short, use a general fallback
+        // Phase 2 (2026-09-05): read the post before writing about it.
+        // The ladder this replaces guessed a CATEGORY from regexes over the
+        // post text and then drew a whole sentence from a pool for that
+        // category, so a comment was never about the post, only about its
+        // genre. writeComment() builds a brief (subject, people, teams,
+        // concepts, tone) and composes from it in this horse's own style,
+        // with the relevance floor and the phrase ledger as gates.
+        const written = await writeComment(horse, {
+            postId: post.id,
+            contentType: post.content_type,
+            content: post.content,
+            linkTitle: post.link_title ?? null,
+            linkSiteName: post.link_site_name ?? null,
+            metadata: post.metadata ?? null,
+        });
+        let comment = written.text;
         if (!comment || comment.trim().length < 5) {
-            comment = generateComment('general', horse.profile_id, post.id);
+            // Nothing composable: skip rather than publish filler. Phase 1's
+            // lesson is that a bad post is worse than no post.
+            skippedNoContent++;
+            continue;
         }
+        relevanceSum += written.relevance;
+        relevanceCount += 1;
+        if (written.belowFloor) belowFloor++;
+        if (written.stale) staleDrafts++;
+        await recordBrief(post.id, written.brief);
 
         // 🟢 DYNAMIC TYPING INDICATOR (Phase 11)
         // Broadcast a typing payload to all connected clients viewing this post
@@ -728,6 +721,10 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
 
             const author = allHorses.find(h => h.profile_id === post.author_id);
             console.debug(`   ${horse.name} → ${author?.name || 'User'}'s post: "${comment}"`);
+            // Comments share the freshness ledger with captions. Before Phase 2
+            // nothing recorded them, so one line could reappear across the feed
+            // all day and no counter would show it.
+            await recordPhrase(normalizePhrase(comment), horse.profile_id, post.id);
             commented++;
             
             // Sync denormalized comment_count on social_posts (fire-and-forget)
@@ -748,7 +745,15 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     }
 
     console.debug(`   Posted: ${commented} comments from ${activeHorses.length} active horses`);
-    return { commented, activeHorses: activeHorses.length };
+    return {
+        commented,
+        activeHorses: activeHorses.length,
+        // Phase 2 telemetry: how well the writer understood what it commented on.
+        avg_relevance: relevanceCount ? Number((relevanceSum / relevanceCount).toFixed(2)) : 0,
+        below_floor: belowFloor,
+        stale_drafts: staleDrafts,
+        skipped_no_content: skippedNoContent,
+    };
 }
 
 /**
@@ -920,72 +925,94 @@ export async function replyToComments(maxReplies = 15) {
 
     const horseIds = allHorses.map(h => h.profile_id);
 
-    // Get recent TOP-LEVEL comments only (no replies)
-    // BUG-WR04 FIX: without .is('parent_id', null), horses were replying to replies,
-    // creating infinite nested reply chains (reply → reply → reply...)
-    const { data: comments } = await getSupabase()
+    // Phase 2 (2026-09-05): a thread is a state machine, not a random pick.
+    //
+    // What this replaces: the old version read ONLY top-level comments
+    // (`.is('parent_id', null)`) and answered one at random. That guard was
+    // added because replying to replies produced infinite chains - but it
+    // also meant a human who answered a horse was never answered back, which
+    // is the one case that actually matters. ReplyEngine reads whole threads
+    // and applies real rules: an unanswered human always gets exactly one
+    // reply; another horse gets one only if it addressed us, asked something
+    // or disagreed; and hard ceilings end the conversation either way.
+    const { data: threadRows } = await getSupabase()
         .from('social_comments')
-        .select('id, post_id, author_id, content, created_at')
-        .is('parent_id', null)
+        .select('id, post_id, parent_id, author_id, content, created_at')
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(500);
 
-    if (!comments?.length) {
+    if (!threadRows?.length) {
         console.debug('   No comments to reply to');
         return { replied: 0, activeHorses: activeHorses.length };
     }
 
+    const horseIdSet = new Set(horseIds);
+    const threads = new Map<string, ThreadComment[]>();
+    for (const r of threadRows) {
+        const list = threads.get(r.post_id) ?? [];
+        list.push({
+            id: r.id,
+            post_id: r.post_id,
+            parent_id: r.parent_id ?? null,
+            author_id: r.author_id,
+            content: r.content ?? '',
+            created_at: r.created_at,
+            isHorse: horseIdSet.has(r.author_id),
+        });
+        threads.set(r.post_id, list);
+    }
+
     let replied = 0;
+    const reasons: Record<string, number> = {};
 
-    // Each ACTIVE horse may reply to comments
     for (const horse of activeHorses) {
-        // Check probability
         const activityRate = getHorseActivityRate(horse.profile_id, 'reply');
-        if (Math.random() > activityRate) {
-            console.debug(`   ${horse.name} chose not to reply (rate: ${(activityRate * 100).toFixed(0)}%)`);
-            continue;
+        if (Math.random() > activityRate) continue;
+
+        // Threads this horse is actually in.
+        let decided: { postId: string; decision: ReturnType<typeof decideReply> } | null = null;
+        for (const [postId, list] of threads) {
+            if (!list.some((c) => c.author_id === horse.profile_id)) continue;
+            const decision = decideReply(horse.profile_id, horse.alias, list, now);
+            if (decision.reply) {
+                decided = { postId, decision };
+                break;
+            }
         }
+        if (!decided || !decided.decision.target) continue;
 
-        // Pick a comment to reply to (not their own)
-        const eligibleComments = comments.filter(c =>
-            c.author_id !== horse.profile_id &&
-            // Reduce horse-to-horse reply spam
-            (!horseIds.includes(c.author_id) || Math.random() < 0.3)
-        );
-        const comment = eligibleComments[Math.floor(Math.random() * eligibleComments.length)];
+        const target = decided.decision.target;
+        const reason = decided.decision.reason!;
 
-        if (!comment) continue;
-
-        // Check cooldown
-        const canReply = await checkCooldown(horse.profile_id, comment.id, 'reply_comment');
+        const canReply = await checkCooldown(horse.profile_id, target.id, 'reply_comment');
         if (!canReply) continue;
 
-        // Check for existing reply
-        const { data: existingReply } = await getSupabase()
-            .from('social_comments')
-            .select('id')
-            .eq('parent_id', comment.id)
-            .eq('author_id', horse.profile_id)
+        // The post being discussed, so the reply is about the subject and not
+        // just about the sentence above it.
+        const { data: parentPost } = await getSupabase()
+            .from('social_posts')
+            .select('id, content_type, content, link_title, link_site_name, metadata')
+            .eq('id', decided.postId)
             .maybeSingle();
 
-        if (existingReply) continue;
-
-        // Generate reply using HumanVoiceEngine — proper voice, dedup, no slang noise.
-        // Detect if the comment being replied to is DEFINITELY sports context.
-        // BUG-FIX 2026-04-28: Original regex included 'game','player','team','season','coach',
-        // 'trade','athlete','roster' — all of which appear frequently in poker commentary
-        // ("the mental game", "the player tanked", "this team at the table").
-        // This caused poker reply threads to incorrectly get sports comment pool content
-        // ("Athletes at this level are just built different", "Is this the best player in the world?").
-        // Fix: only match unambiguously sport-specific league/sport names, never generic nouns.
-        const replyToSports = comment.content && (
-            /\b(nba|nfl|mlb|nhl|ufc|mma|basketball|football|baseball|hockey|soccer|mls|pga|wnba|ncaa|lakers|celtics|chiefs|patriots|yankees|dodgers|curry|lebron|mahomes)\b/i.test(comment.content)
+        const written = await writeReply(
+            horse,
+            {
+                postId: decided.postId,
+                contentType: parentPost?.content_type,
+                content: parentPost?.content,
+                linkTitle: parentPost?.link_title ?? null,
+                linkSiteName: parentPost?.link_site_name ?? null,
+                metadata: parentPost?.metadata ?? null,
+            },
+            target.content,
+            composerReason(reason),
         );
-        const replyCommentType = replyToSports ? 'sports' : 'general';
-        let replyText = generateComment(replyCommentType, horse.profile_id, comment.post_id);
-        if (!replyText || replyText.trim().length < 5) {
-            replyText = generateComment('general', horse.profile_id, comment.post_id);
-        }
+        const replyText = written.text;
+        if (!replyText || replyText.trim().length < 2) continue;
+
+        reasons[reason] = (reasons[reason] ?? 0) + 1;
+        const comment = { id: target.id, post_id: decided.postId, author_id: target.author_id };
 
         // Insert reply
         const { error } = await getSupabase()
@@ -1002,6 +1029,13 @@ export async function replyToComments(maxReplies = 15) {
             await sendSocialPush(comment.author_id, horseIds, 'New Reply', `${horse.name} replied to your comment: "${replyText}"`, `/hub/social-media?post_id=${comment.post_id}`);
 
             console.debug(`   ${horse.name} replied: "${replyText}"`);
+            await recordThreadTurn({
+                postId: comment.post_id,
+                horseId: horse.profile_id,
+                parentId: comment.id,
+                reason,
+            });
+            await recordPhrase(normalizePhrase(replyText), horse.profile_id, comment.post_id);
             replied++;
             
             // Sync denormalized comment_count on social_posts (fire-and-forget)
@@ -1020,7 +1054,12 @@ export async function replyToComments(maxReplies = 15) {
     }
 
     console.debug(`   Replied: ${replied} times from ${activeHorses.length} active horses`);
-    return { replied, activeHorses: activeHorses.length };
+    return {
+        replied,
+        activeHorses: activeHorses.length,
+        // Phase 2: why each reply happened, so the thread rules are auditable.
+        reply_reasons: reasons,
+    };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
