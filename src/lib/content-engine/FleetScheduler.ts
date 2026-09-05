@@ -25,10 +25,10 @@
  * across every active row. There is no batch, no cap on eligibility, and no
  * ordering by id.
  *
- *   - cadence: posts per week, weekly is the FLOOR (Dan: "weekly not daily").
- *     Most horses post once a week, some twice or three times, a few most
- *     days. A fleet that all posts exactly once on a fixed weekday is as
- *     detectable as one that never posts.
+ *   - cadence: posts per week, weekly is the FLOOR (Dan: "weekly not daily")
+ *     and one in ten horses posts daily (Dan: "10% OF HORSES SHOULD BE
+ *     POSTING DAILY"). A fleet that all posts exactly once on a fixed weekday
+ *     is as detectable as one that never posts.
  *   - days: k distinct local weekdays, deterministic per horse.
  *   - hour: inside the awake window, deterministic per (horse, weekday), and
  *     nudged by an hour either way per ISO week so the same Tuesday is not
@@ -57,33 +57,37 @@ export function fleetHash(profileId: string, salt: string): number {
   return h >>> 0;
 }
 
-export type Cadence = 1 | 2 | 3 | 5;
+export type Cadence = 1 | 2 | 3 | 7;
 
 /**
- * Posts per week. Weekly is the floor.
- *   60%  1 / week
- *   25%  2 / week
- *   10%  3 / week
- *    5%  5 / week
- * Fleet of 1,000 lands at roughly 1,000*(0.6+0.5+0.3+0.25) = 1,650 / week,
- * about 235 a day. Today the engine does 100.
+ * Posts per week. Weekly is the floor; daily is the ceiling.
+ * Dan, 2026-09-05: "HORSES SHOULDN'T BE POSTING EVERY SINGLE DAY EITHER
+ * (10% OF HORSES SHOULD BE POSTING DAILY)".
+ *   45%  1 / week
+ *   30%  2 / week
+ *   15%  3 / week
+ *   10%  7 / week (daily)
+ * Fleet of 1,000: 1,000*(0.45+0.6+0.45+0.7) = 2,200 / week, ~315 a day.
+ * The SQL twin (fn_socialize_horse, migration 20260905220000) uses the same
+ * buckets over fn_fleet_hash so content_authors.personality says the truth.
  */
 export function postingCadence(profileId: string): Cadence {
   const r = fleetHash(profileId, 'cadence') % 100;
-  if (r < 60) return 1;
-  if (r < 85) return 2;
-  if (r < 95) return 3;
-  return 5;
+  if (r < 45) return 1;
+  if (r < 75) return 2;
+  if (r < 90) return 3;
+  return 7;
 }
 
 /** Local weekdays (0 = Sunday .. 6 = Saturday) on which this horse posts. */
 export function postingDays(profileId: string): number[] {
   const k = postingCadence(profileId);
+  if (k === 7) return [0, 1, 2, 3, 4, 5, 6];
   const days: number[] = [];
   // Walk the week from a hashed start with a hashed stride so the k days are
   // spread rather than clustered (stride 3 for k=2 gives Mon/Thu, Tue/Fri...).
   const start = fleetHash(profileId, 'day-start') % 7;
-  const stride = k === 1 ? 0 : k === 2 ? 3 : k === 3 ? 2 : 1;
+  const stride = k === 1 ? 0 : k === 2 ? 3 : 2;
   for (let i = 0; i < k; i++) days.push((start + i * stride) % 7);
   return [...new Set(days)].sort((a, b) => a - b);
 }

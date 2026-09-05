@@ -52,7 +52,7 @@ describe('cadence and days: weekly is the floor', () => {
     }
   });
 
-  it('cadence buckets land near 60/25/10/5 and days are distinct weekdays', () => {
+  it('cadence buckets land near 45/30/15/10 and days are distinct weekdays', () => {
     const counts: Record<number, number> = {};
     for (const id of fleet) {
       const c = postingCadence(id);
@@ -62,10 +62,12 @@ describe('cadence and days: weekly is the floor', () => {
       expect(new Set(days).size).toBe(c);
       for (const d of days) expect(d).toBeGreaterThanOrEqual(0), expect(d).toBeLessThanOrEqual(6);
     }
-    expect(counts[1]).toBeGreaterThan(520);
-    expect(counts[1]).toBeLessThan(680);
-    expect(counts[5]).toBeGreaterThan(20);
-    expect(counts[5]).toBeLessThan(90);
+    expect(counts[1]).toBeGreaterThan(390);
+    expect(counts[1]).toBeLessThan(510);
+    // One in ten posts daily, no more.
+    expect(counts[7]).toBeGreaterThan(70);
+    expect(counts[7]).toBeLessThan(130);
+    expect(counts[5] ?? 0).toBe(0);
   });
 
   it('the fleet spreads across all seven weekdays, no weekday is dead', () => {
@@ -125,8 +127,12 @@ describe('isDueForPost: over a week, every horse is due exactly cadence times (b
       expect(openings).toBeGreaterThanOrEqual(expected - 1);
       expect(openings).toBeLessThanOrEqual(expected + 1);
       // Every opening carries DUE_WINDOW_HOURS due-hours, give or take the
-      // windows cut by the span's edges.
-      expect(dueHours).toBeGreaterThanOrEqual(openings * DUE_WINDOW_HOURS - (DUE_WINDOW_HOURS - 1));
+      // windows cut by the span's edges. Daily horses can have a late window
+      // overlap the next day's early one, so only non-daily horses are held
+      // to the exact count.
+      if (postingCadence(id) !== 7) {
+        expect(dueHours).toBeGreaterThanOrEqual(openings * DUE_WINDOW_HOURS - (DUE_WINDOW_HOURS - 1));
+      }
       expect(dueHours).toBeLessThanOrEqual(openings * DUE_WINDOW_HOURS + (DUE_WINDOW_HOURS - 1));
     }
   });
@@ -171,15 +177,63 @@ describe('the fleet as a whole, one day', () => {
         if (r.due && r.age === 0) due.add(id);
       }
     }
-    // ~1,650 slots a week / 7 = ~235 openings a day.
-    expect(due.size).toBeGreaterThan(150);
-    expect(due.size).toBeLessThan(350);
+    // ~2,200 slots a week / 7 = ~315 openings a day.
+    expect(due.size).toBeGreaterThan(220);
+    expect(due.size).toBeLessThan(420);
     // Not the lowest ids: the old engine's hundred were the 100 smallest.
     const sorted = [...fleet].sort();
     const lowest100 = new Set(sorted.slice(0, 100));
     let overlap = 0;
     for (const id of due) if (lowest100.has(id)) overlap++;
     expect(overlap).toBeLessThan(40);
+  });
+});
+
+describe('spread: posting is spread across the whole day and the whole week', () => {
+  const fleet = syntheticFleet();
+
+  it('every UTC hour of the week gets openings, and no hour or weekday dominates', () => {
+    // Dan, 2026-09-05: "POSTING TIMES NEED TO BE SPREAD OUT THROUGH THE ENTIRE
+    // DAY / WEEK AND TIMES". Walk one week in UTC with the fleet spread over
+    // real timezones and count window openings per UTC hour and per weekday.
+    const start = Date.UTC(2026, 8, 7, 0, 0, 0); // Monday
+    const perHour = new Array(24).fill(0);
+    const perDay = new Array(7).fill(0);
+    let total = 0;
+    for (let h = 0; h < 7 * 24; h++) {
+      const now = new Date(start + h * 3_600_000);
+      for (const id of fleet) {
+        const tz = TZS[fleetHash(id, 'tz') % TZS.length];
+        const r = isDueForPost(id, tz, now);
+        if (r.due && r.age === 0) {
+          perHour[now.getUTCHours()]++;
+          perDay[now.getUTCDay()]++;
+          total++;
+        }
+      }
+    }
+    expect(total).toBeGreaterThan(1800);
+    for (let h = 0; h < 24; h++) {
+      expect(perHour[h]).toBeGreaterThan(0);
+      expect(perHour[h] / total).toBeLessThan(0.12);
+    }
+    const meanDay = total / 7;
+    for (const n of perDay) {
+      expect(n).toBeGreaterThan(meanDay * 0.7);
+      expect(n).toBeLessThan(meanDay * 1.3);
+    }
+  });
+
+  it('a daily horse does not post at the same hour every day', () => {
+    const daily = fleet.filter((id) => postingCadence(id) === 7).slice(0, 50);
+    expect(daily.length).toBeGreaterThan(10);
+    let varied = 0;
+    for (const id of daily) {
+      const hours = new Set<number>();
+      for (let wd = 0; wd < 7; wd++) hours.add(postingHour(id, wd, '2026-W37'));
+      if (hours.size >= 3) varied++;
+    }
+    expect(varied).toBeGreaterThan(daily.length * 0.6);
   });
 });
 
