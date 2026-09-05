@@ -52,7 +52,11 @@ Do not edit them; Phase 9 deletes them.
 
 ## Defaults taken (Dan can overrule any of these)
 
-- Cadence: weekly floor; 60% 1/wk, 25% 2/wk, 10% 3/wk, 5% 5/wk.
+- Cadence (Dan, 2026-09-05: "10% OF HORSES SHOULD BE POSTING DAILY"): weekly
+  floor; 45% 1/wk, 30% 2/wk, 15% 3/wk, 10% daily. `fn_fleet_cadence()` in
+  Postgres is the same hash and buckets, so `personality.cadence_per_week`
+  is what the scheduler runs. Measured on the real fleet: 2,196 openings a
+  week, every UTC hour between 58 and 123 of them, no hour above 5.6%.
 - Sports share stays at the 75/25 coin flip until Phase 4 makes it a persona
   trait (target fleet average ~15%).
 - Phrase ledger: same horse never repeats in 90 days; platform-wide 48 hours
