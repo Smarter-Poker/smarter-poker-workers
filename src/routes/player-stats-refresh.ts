@@ -72,6 +72,31 @@ export async function playerStatsRefresh(c: Context) {
     return c.json({ ok: false, started_at: startedAt, ...result }, 500);
   }
 
+  /**
+   * THE STREET OF AN ACTION, and why this is a function.
+   *
+   * hand_history.actions[] carries `stage`, never `street`. Measured
+   * 2026-09-05 over 3,000 consecutive production hands: 3,000 matched
+   * `stage: "preflop"` and ZERO matched `street: "preflop"`. Every action row
+   * looks like
+   *
+   *   { seat, userId, action, amount, stage, timestamp, dead, isFullRaise }
+   *
+   * This file read `a.street` in two places, so `preflopActions` was ALWAYS
+   * EMPTY and the VPIP, PFR and 3-bet counters below have been computing over
+   * nothing since they were written - every player this worker touched was
+   * recorded at 0% VPIP and 0% PFR. It went unnoticed because the DB path
+   * (fn_refresh_player_stats) reads `stage` correctly and writes the same
+   * table, so player_stats looked populated; the 59 horses sitting at exactly
+   * 0.00 VPIP over 100+ hands were the seats this worker had last written.
+   *
+   * `stage ?? street` rather than `stage` alone: the collusion scan's own
+   * action mapper already accepts both, and a reader that tolerates the older
+   * shape costs nothing while a reader that does not is how this happened.
+   */
+  const streetOf = (a: Record<string, unknown>): string | undefined =>
+    (a.stage as string | undefined) ?? (a.street as string | undefined);
+
   // 2. Aggregate by user
   type Acc = {
     user_id: string;
@@ -136,15 +161,27 @@ export async function playerStatsRefresh(c: Context) {
         acc.bb_won += handPot / bb;
         acc.wins += 1;
       } else {
-        // estimated loss = bb_invested heuristic; refined when player_contributions
-        // becomes per-hand
+        /**
+         * KNOWN GAP, stated rather than hidden. `chips_invested` IS NOT IN THE
+         * DATA. A production seat object is { seat, cards, stack, userId,
+         * username } and nothing else, verified 2026-09-05, so this branch has
+         * always subtracted zero and `bb_won` is a sum of WINS ONLY - it is
+         * not a win rate and must not be read as one.
+         *
+         * It is left computing zero rather than guessed at: `stack` is the
+         * snapshot stack and cannot be differenced into an amount invested
+         * without a per-street starting stack the row does not carry. The fix
+         * is upstream - the engine emitting a per-player contribution - and
+         * inventing a number here would put a plausible wrong figure in front
+         * of an operator, which is worse than an obvious zero.
+         */
         const inv = Number((seat as Record<string, unknown>).chips_invested ?? 0) || 0;
         if (inv > 0) acc.bb_won -= inv / bb;
       }
 
       // Pre-flop action analysis for VPIP / PFR / 3bet (if engine populated streets)
       const preflopActions = actions.filter(
-        (a) => (a.street as string | undefined) === 'preflop' && uidOf(a) === uid,
+        (a) => streetOf(a) === 'preflop' && uidOf(a) === uid,
       );
       let voluntary = false;
       let raised = false;
@@ -166,7 +203,7 @@ export async function playerStatsRefresh(c: Context) {
 
       // WTSD: was the player still in the hand at the showdown street?
       const playerStreets = new Set(
-        actions.filter((a) => uidOf(a) === uid).map((a) => a.street as string | undefined),
+        actions.filter((a) => uidOf(a) === uid).map((a) => streetOf(a)),
       );
       if (playerStreets.has('showdown') || playerStreets.has('river')) acc.wts_count += 1;
 
