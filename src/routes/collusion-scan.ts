@@ -101,6 +101,18 @@ const MIN_HANDS_FOR_SIGNAL = 15;
 const CHIP_DUMP_LOSS_RATIO = 0.8;
 const TIMING_Z_SCORE = 2.5;
 
+// WIN_RATE_ANOMALY needs a pair to have played enough together for the mean to
+// mean anything. Unchanged; it was never the problem.
+const WIN_RATE_MIN_SHARED_HANDS = 30;
+
+// ...and it needs the observed flow to be far enough from zero RELATIVE TO THAT
+// PAIR'S OWN VARIANCE. Four sigma, and the reason is multiple comparisons: a
+// normal 24h window yields ~3,500 pairs over the shared-hand gate, so a 3-sigma
+// bar admits ~9 false positives per run by construction and a 4-sigma bar
+// admits ~0.2. An integrity queue is read by a human, and a queue that cries
+// wolf nine times a run is one nobody opens - PHASE5-CONTRACTS section 0 rule 3.
+const WIN_RATE_MIN_Z = 4;
+
 interface PlayerSeat {
   user_id?: string;
   userId?: string;
@@ -352,14 +364,68 @@ function scanTimingCorrelation(actions: ActionRow[]): Finding[] {
   return findings;
 }
 
+/**
+ * WIN_RATE_ANOMALY - pairs whose chip flow is too one-directional to be luck.
+ *
+ * REWRITTEN 2026-09-04. The previous version flagged 63% of every pair that
+ * cleared its own hand gate, and the response was to filter horses out of the
+ * results rather than to fix the measurement. Two separate defects:
+ *
+ * 1. IT CREDITED THE WHOLE POT TO EVERY PAIR THE WINNER WAS IN. On a six-handed
+ *    table one 20bb pot was recorded as 20bb of flow toward the winner in each
+ *    of the five pairs containing them - the pot counted five times, and each
+ *    opponent charged for all of it as though they had paid it alone. The per
+ *    hand step was therefore about (n-1) times too large, which inflates the
+ *    apparent bb/100 of every pair on the platform.
+ *
+ * 2. IT COMPARED THAT NUMBER TO A FIXED LINE. |bb/100| >= 80 over >= 30 hands
+ *    sounds strict and is not: with a per-hand step the size of a whole pot the
+ *    standard error of a 30-hand mean is several hundred bb/100, so the line
+ *    sat well inside one sigma of pure noise. It was not a threshold, it was a
+ *    coin flip, and every pair with enough volume eventually crossed it. The
+ *    author of the horse filter measured this correctly - 81,301 pairs from 573
+ *    players, roughly half of all possible pairings - and drew the wrong
+ *    conclusion from it. The tell was in the same comment: the one human ever
+ *    caught had played six hands. That was a false positive too.
+ *
+ * What it does now. The pot is split across the (n-1) opponents of the winner,
+ * which is the unbiased estimate of pairwise transfer when the hand record does
+ * not say who put what in (players[] carries seat, cards, stack and username,
+ * and no contribution field - player-stats-refresh reads a chips_invested that
+ * production data does not have). Then the pair is flagged only when its total
+ * flow is at least WIN_RATE_MIN_Z standard errors from zero, using the pair's
+ * OWN observed per-hand spread rather than a constant. A pair that plays big
+ * pots is held to a proportionally bigger bar, which is the entire point.
+ *
+ * MEASURED over the same 50,000 hands the live scan reads (2026-09-04):
+ *
+ *   pairs over the 30-hand gate                     3,477
+ *   flagged by the old fixed-line rule              2,178   (63%)
+ *   flagged at 3 sigma with the split estimator         3
+ *   flagged at 4 sigma with the split estimator         0
+ *
+ * The largest |z| in that window was 3.29, which is what the maximum of ~3,500
+ * standard normal draws looks like. There is no collusion signal in that data,
+ * and the corrected statistic says so WITHOUT being told who is a horse. That
+ * is why the identity filter could be deleted rather than merely narrowed.
+ *
+ * Sensitivity, so this is not a threshold that can only ever say no: a pair
+ * where one side ships 80% of a 20bb average pot to the other over 30 shared
+ * hands lands near 9 sigma. The bar rejects noise, not dumping. The unit tests
+ * pin both directions.
+ */
 function scanWinRateAnomaly(hands: HandRow[]): Finding[] {
   interface WStat {
     a: string;
     b: string;
     handsTogether: number;
-    aWins: number;
-    bWins: number;
-    bbFlowAtoB: number;
+    /** Sum of per-hand pairwise flow, in bb, positive toward b. */
+    flowBb: number;
+    /** Welford running mean and M2, so the variance needs no second pass and
+     *  does not lose precision to catastrophic cancellation the way a raw
+     *  sum-of-squares does when the mean is small against the step size. */
+    mean: number;
+    m2: number;
   }
   const pairStats = new Map<string, WStat>();
 
@@ -375,6 +441,11 @@ function scanWinRateAnomaly(hands: HandRow[]): Finding[] {
     const players = extractPlayerIds(h);
     if (players.length < 2) continue;
 
+    // The winner took the pot from the OTHER (n-1) seats, not from each of them
+    // in full. Without per-player contributions in the hand record, an equal
+    // split is the unbiased estimate of what each of them lost to the winner.
+    const perOpponentBb = pot / bb / (players.length - 1);
+
     for (let i = 0; i < players.length; i++) {
       for (let j = i + 1; j < players.length; j++) {
         const a = players[i]!;
@@ -385,19 +456,21 @@ function scanWinRateAnomaly(hands: HandRow[]): Finding[] {
           a: a < b ? a : b,
           b: a < b ? b : a,
           handsTogether: 0,
-          aWins: 0,
-          bWins: 0,
-          bbFlowAtoB: 0,
+          flowBb: 0,
+          mean: 0,
+          m2: 0,
         };
         stat.handsTogether += 1;
-        const bbDelta = pot / bb;
-        if (winner === stat.a) {
-          stat.aWins += 1;
-          stat.bbFlowAtoB -= bbDelta;
-        } else if (winner === stat.b) {
-          stat.bWins += 1;
-          stat.bbFlowAtoB += bbDelta;
-        }
+        // A hand won by a third party moves nothing between these two, and
+        // still counts as a hand played together - that is what makes the
+        // denominator honest.
+        let step = 0;
+        if (winner === stat.b) step = perOpponentBb;
+        else if (winner === stat.a) step = -perOpponentBb;
+        stat.flowBb += step;
+        const delta = step - stat.mean;
+        stat.mean += delta / stat.handsTogether;
+        stat.m2 += delta * (step - stat.mean);
         pairStats.set(key, stat);
       }
     }
@@ -405,26 +478,73 @@ function scanWinRateAnomaly(hands: HandRow[]): Finding[] {
 
   const findings: Finding[] = [];
   for (const stat of pairStats.values()) {
-    if (stat.handsTogether < 30) continue;
-    const bb100 = (stat.bbFlowAtoB / stat.handsTogether) * 100;
-    if (Math.abs(bb100) < 80) continue;
-    const winner = bb100 > 0 ? stat.b : stat.a;
-    const loser = bb100 > 0 ? stat.a : stat.b;
-    const score = Math.min(100, 50 + Math.min(50, Math.round(Math.abs(bb100) / 4)));
+    const n = stat.handsTogether;
+    if (n < WIN_RATE_MIN_SHARED_HANDS) continue;
+
+    const mean = stat.mean;
+    // A pair that never moved a chip on net is not evidence of anything, and
+    // it is the only case where a zero here means "nothing to see".
+    if (mean === 0) continue;
+
+    const variance = Math.max(0, stat.m2 / (n - 1));
+    const stdErr = Math.sqrt(variance / n);
+
+    // ZERO VARIANCE IS THE STRONGEST SIGNAL THERE IS, NOT A DIVIDE-BY-ZERO TO
+    // SKIP. A pair whose every shared hand moved the same amount the same way
+    // is perfectly consistent one-directional transfer - the most blatant dump
+    // the detector could ever see. An earlier draft of this function guarded
+    // `variance > 0` and silently dropped exactly that case; the unit test for
+    // a 40-hand sweep is what caught it.
+    const z = stdErr > 0 ? Math.abs(mean) / stdErr : Number.POSITIVE_INFINITY;
+    if (z < WIN_RATE_MIN_Z) continue;
+
+    // Reported capped and finite: Infinity serialises to null through
+    // JSON.stringify, and an evidence payload with a null where the number
+    // should be is the empty-queue failure in miniature.
+    const zReported = Number.isFinite(z) ? Number(z.toFixed(2)) : 999;
+
+    const bb100 = mean * 100;
+    const winnerId = stat.flowBb > 0 ? stat.b : stat.a;
+    const loserId = stat.flowBb > 0 ? stat.a : stat.b;
+    // Score reads off how far past the bar it is, so an operator sorting by
+    // score is sorting by evidence and not by pot size.
+    const score = Math.min(100, Math.round(50 + (zReported - WIN_RATE_MIN_Z) * 10));
     findings.push({
-      player_a: loser,
-      player_b: winner,
+      player_a: loserId,
+      player_b: winnerId,
       pattern_type: 'WIN_RATE_ANOMALY',
       suspicion_score: score,
       evidence: {
-        hands_together: stat.handsTogether,
+        hands_together: n,
         bb_per_100: Number(bb100.toFixed(1)),
+        z_score: zReported,
+        threshold_z: WIN_RATE_MIN_Z,
+        net_bb: Number(stat.flowBb.toFixed(1)),
         direction: 'loser_to_winner',
+        // Says plainly what the number is and is not, because "bb/100" on an
+        // operator screen invites reading it as a real win rate.
+        method:
+          'pot split equally across the winning seat\'s opponents; ' +
+          'flagged on standard errors from zero, not on bb/100 magnitude',
       },
     });
   }
   return findings;
 }
+
+/**
+ * Internals exposed for unit tests. The detectors are pure functions over rows
+ * and are far better tested directly than through a mocked Supabase client:
+ * the old horse-filter suite stubbed four table clients to assert one boolean.
+ */
+export const __testing = {
+  scanWinRateAnomaly,
+  scanChipDump,
+  scanSoftPlay,
+  scanTimingCorrelation,
+  WIN_RATE_MIN_Z,
+  WIN_RATE_MIN_SHARED_HANDS,
+};
 
 export async function collusionScan(c: Context) {
   const supabase = getSupabase();
@@ -628,64 +748,29 @@ export async function collusionScan(c: Context) {
       ...scanWinRateAnomaly(handsRows),
     ];
 
-    // ── Exclude horse-vs-horse pairs ──────────────────────────────────────
-    // Horses are house-run AI. Two of them cannot collude in the sense this
-    // detector exists to catch, and including them destroyed the signal:
-    // 169,519 of the 169,523 rows ever written were horse-vs-horse, 99.99% of
-    // them WIN_RATE_ANOMALY at an average suspicion_score of 97 - and not one
-    // row in four months was ever reviewed.
+    // ── NO IDENTITY FILTER. CLAUDE.md 10.5, PHASE5-CONTRACTS section 0 rule 4 ──
+    // Between 2026-09-01 and 2026-09-04 this scan dropped every pair in which
+    // both players were horses, on the reasoning that two house-run horses
+    // "cannot collude in the sense this detector exists to catch". That is an
+    // is_horse exclusion, and it is the exact shortcut CLAUDE.md 10.5 was
+    // written about after the same reasoning zeroed tournament rake
+    // attribution for 39 events. PHASE5-CONTRACTS section 0 rule 4 names this
+    // detector as the place the temptation would be sharpest, and it was right.
     //
-    // Why it saturates: WIN_RATE_ANOMALY flags any pair with >=30 shared hands
-    // and |bb/100| >= 80. Attributing a whole multiway pot delta to two named
-    // players is extremely noisy, so across a field of horses grinding
-    // thousands of hands essentially every pair crosses that line. It had
-    // flagged 81,301 distinct pairs drawn from just 573 players - roughly half
-    // of every pairing that exists. The one human ever caught had played 6
-    // hands total.
+    // A horse is subject to every rule a human is subject to, integrity checks
+    // included, and two horses colluding is a HorseBehavior defect an operator
+    // needs to see. The filter also hid the real bug rather than fixing it: it
+    // was introduced because the detector flagged 81,301 pairs, and it did that
+    // because scanWinRateAnomaly was measuring the wrong quantity against a
+    // fixed line. That is fixed above, and with the statistic corrected the
+    // same 50,000 hands produce ZERO flags with nobody filtered out - so
+    // nothing is being suppressed to keep this queue readable.
     //
-    // Only BOTH-horse pairs are dropped. A horse/human pair is retained, so a
-    // horse leaking chips to a human still surfaces.
-    timings.analyse_ms = Date.now() - phaseAt;
-    phaseAt = Date.now();
-
-    const findingIds = Array.from(new Set(findings.flatMap((f) => [f.player_a, f.player_b])));
-    const horseIds = new Set<string>();
-    // Chunked because .in() serialises every id into the query string. While
-    // the scan was capped at 1000 hands this list stayed small and a single
-    // call worked; reading the full window made it large enough that PostgREST
-    // refused the request outright and the scan 500'd with "fetch failed".
-    // A findings list is at most a few thousand ids, so this is 1-2 extra
-    // round trips, not a paging loop.
-    const HORSE_LOOKUP_CHUNK = 300;
-    for (let i = 0; i < findingIds.length; i += HORSE_LOOKUP_CHUNK) {
-      const chunk = findingIds.slice(i, i + HORSE_LOOKUP_CHUNK);
-      const { data: horseRows, error: horseErr } = await withDeadline(
-        supabase.from('profiles').select('id').in('id', chunk).eq('is_horse', true),
-        CALL_DEADLINE_MS,
-        `horse lookup (${chunk.length} ids)`,
-      );
-      if (horseErr) {
-        // Fail the scan rather than fall back to the old behaviour. Falling
-        // back would quietly resume writing ~170k horse-vs-horse rows, which
-        // is the exact failure being fixed.
-        console.warn('[collusion-scan] horse lookup failed:', horseErr.message);
-        return c.json({ error: `horse lookup failed: ${horseErr.message}` }, 500);
-      }
-      for (const r of horseRows ?? []) horseIds.add((r as { id: string }).id);
-    }
-    timings.horse_lookup_ms = Date.now() - phaseAt;
-    timings.horse_lookup_calls = Math.ceil(findingIds.length / HORSE_LOOKUP_CHUNK);
-    phaseAt = Date.now();
-
-    const humanFindings = findings.filter(
-      (f) => !(horseIds.has(f.player_a) && horseIds.has(f.player_b)),
-    );
-    const suppressedHorsePairs = findings.length - humanFindings.length;
-
-    const scan_date = windowEnd.toISOString().split('T')[0]!;
-    const rows = humanFindings.map((f) => ({
+    // If this scan ever floods again, the answer is the threshold or the
+    // estimator. It is never a filter on who the player is.
+    const rows = findings.map((f) => ({
       ...f,
-      scan_date,
+      scan_date: windowEnd.toISOString().split('T')[0]!,
       window_start: windowStart.toISOString(),
       window_end: windowEnd.toISOString(),
       status: 'open',
@@ -740,7 +825,7 @@ export async function collusionScan(c: Context) {
       advanced = await advanceScanState({
         coveredTo,
         scannedHands: handsRows.length,
-        findings: humanFindings.length,
+        findings: findings.length,
         durationMs: Date.now() - scanStart,
         // NOT readBudgetHit. A catch-up span holds ~148,000 hands against a
         // 40,000-row ceiling, so it stops on the ROW CAP in seconds and never
@@ -766,7 +851,7 @@ export async function collusionScan(c: Context) {
             error: `scan completed but the mark did not advance: ${advanced.error ?? 'unknown'}`,
             state_advanced: false,
             scanned_hands: handsRows.length,
-            findings: humanFindings.length,
+            findings: findings.length,
             inserted,
             window: { start: windowStart.toISOString(), end: windowEnd.toISOString() },
             duration_ms: Date.now() - scanStart,
@@ -812,14 +897,15 @@ export async function collusionScan(c: Context) {
       ),
       detection_thresholds: {
         min_shared_hands: MIN_HANDS_FOR_SIGNAL,
-        win_rate_min_shared_hands: 30,
+        win_rate_min_shared_hands: WIN_RATE_MIN_SHARED_HANDS,
+        win_rate_min_z: WIN_RATE_MIN_Z,
         aggregates_across_runs: false,
+        // No pair is excluded by who the players are. CLAUDE.md 10.5.
+        identity_filtered: false,
       },
       scanned_hands: handsRows.length,
       scanned_actions: actionRows.length,
       findings: findings.length,
-      findings_after_horse_filter: humanFindings.length,
-      suppressed_horse_pairs: suppressedHorsePairs,
       inserted,
       window: {
         start: windowStart.toISOString(),
