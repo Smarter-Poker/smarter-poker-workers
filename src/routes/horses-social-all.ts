@@ -3,9 +3,13 @@
  *
  * Ported from pages/api/cron/horses-social-all.js (93 LOC).
  *
- * Every 2 hours: orchestrates likes + comments + replies + reactions
- * + DMs in sequence. Hard 55s deadline (was 60s on Vercel; workers VM
- * has no such limit but the pattern keeps things tidy).
+ * Hourly (Fleet Content Programme phase 1, 2026-09-05): orchestrates likes
+ * + comments + replies + reactions + DMs in sequence.
+ *
+ * Deadline is 540s. It was 55s, a Vercel-era relic, and with likePosts
+ * sleeping 0.5-2s per active horse it was never enough: every fire on
+ * record spent the whole budget in likes and skipped comments, replies and
+ * reactions. The dispatcher gives this route 600s.
  *
  * Auth: /cron/* middleware chain.
  */
@@ -51,7 +55,7 @@ async function withDeadline<T>(
 
 export async function horsesSocialAll(c: Context) {
   try {
-    const deadline = Date.now() + 55_000;
+    const deadline = Date.now() + 540_000;
     const results: {
       liked: number;
       commented: number;
@@ -70,12 +74,12 @@ export async function horsesSocialAll(c: Context) {
       timestamp: new Date().toISOString(),
     };
 
-    const likeResult = await withDeadline(() => likePosts(8, true), deadline, 'likes');
+    const likeResult = await withDeadline(() => likePosts(40, true), deadline, 'likes');
     results.liked = (likeResult as { liked?: number } | null)?.liked ?? 0;
     if (!likeResult) results.skipped.push('likes');
 
     const commentResult = await withDeadline(
-      () => commentOnPosts(5, true),
+      () => commentOnPosts(20, true),
       deadline,
       'comments',
     );
@@ -83,7 +87,7 @@ export async function horsesSocialAll(c: Context) {
     if (!commentResult) results.skipped.push('comments');
 
     const replyResult = await withDeadline(
-      () => replyToComments(5),
+      () => replyToComments(12),
       deadline,
       'replies',
     );
@@ -91,7 +95,7 @@ export async function horsesSocialAll(c: Context) {
     if (!replyResult) results.skipped.push('replies');
 
     const reactResult = await withDeadline(
-      () => reactToComments(8),
+      () => reactToComments(20),
       deadline,
       'reactions',
     );

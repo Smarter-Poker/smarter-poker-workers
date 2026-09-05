@@ -50,6 +50,7 @@ import { hardStop } from './routes/hard-stop.js';
 import { horsesSocialAll } from './routes/horses-social-all.js';
 import { horsesStories } from './routes/horses-stories.js';
 import { horseByIndex, horseBatch } from './routes/horse-by-index.js';
+import { horsePosts } from './routes/horse-posts.js';
 import { scrapeSportsClips } from './routes/scrape-sports-clips.js';
 import { memoryMatrixDailyChallenge } from './routes/memory-matrix-daily-challenge.js';
 import { pokerNews } from './routes/poker-news.js';
@@ -291,6 +292,10 @@ app.get('/cron/horse/:horseIndex', horseByIndex);
 app.post('/cron/horse/:horseIndex', horseByIndex);
 app.get('/cron/horse-batch/:horseIndex', horseBatch);
 app.post('/cron/horse-batch/:horseIndex', horseBatch);
+// Fleet Content Programme phase 1 (2026-09-05): hourly, whole fleet. The
+// horse-batch routes above are the hand-over shim; see routes/horse-by-index.ts.
+app.get('/cron/horse-posts', horsePosts);
+app.post('/cron/horse-posts', horsePosts);
 app.get('/cron/tour-schedule-scraper', tourScheduleScraperHandler);
 app.post('/cron/tour-schedule-scraper', tourScheduleScraperHandler);
 

@@ -36,7 +36,20 @@
  */
 
 import { getSupabase } from '../supabase.js';
-import { shouldHorseBeActive, getHorseActivityRate, isHorseActiveHour, isHorseActiveHourTZ, applyWritingStyle } from './HorseScheduler.js';
+import { getHorseActivityRate, applyWritingStyle } from './HorseScheduler.js';
+import { isOnlineNow } from './FleetScheduler.js';
+
+// 2026-09-05: every per-run cap below (maxComments, maxLikes...) breaks out of a
+// loop over activeHorses. With the whole fleet eligible that loop would always
+// serve the same horses at the front of the roster, so the roster is shuffled
+// first. Fisher-Yates; sort(() => Math.random() - 0.5) is biased.
+function shuffleHorses<T>(arr: T[]): T[] {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+    }
+    return arr;
+}
 import { generateComment } from './HumanVoiceEngine.js';
 
 // Lazy-init Supabase client (RAT-AUTH-NUCLEAR compliant)
@@ -519,10 +532,8 @@ export function getRandomComment(type = 'general') {
  */
 export async function commentOnPosts(maxComments = 20, includeRealUsers = true) {
     const now = new Date();
-    const currentMinute = now.getMinutes();
-    const currentHour = now.getHours();
 
-    console.debug(`\n💬 HORSES COMMENTING ON POSTS... (minute ${currentMinute})`);
+    console.debug(`\n💬 HORSES COMMENTING ON POSTS...`);
 
     // Get all horses
     const { data: allHorses } = await getSupabase()
@@ -535,12 +546,13 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
 
     // FILTER: Only horses in their active time slot
     const activeHorses = allHorses.filter(horse => {
-        const isInSlot = shouldHorseBeActive(horse.profile_id, currentMinute, 2);
-        const isActive = isHorseActiveHourTZ(horse.profile_id, currentHour, horse.timezone);
-        return isInSlot && isActive;
+        // 2026-09-05: hour-granular gate over the whole fleet. The minute-slot
+        // gate this replaced admitted ~8% of horses (see FleetScheduler.ts).
+        return isOnlineNow(horse.profile_id, horse.timezone, now);
     });
+    shuffleHorses(activeHorses);
 
-    console.debug(`   Active horses this minute: ${activeHorses.length}/${allHorses.length}`);
+    console.debug(`   Active horses this hour: ${activeHorses.length}/${allHorses.length}`);
 
     if (activeHorses.length === 0) {
         console.debug('   No horses in their active slot this minute');
@@ -741,10 +753,8 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
  */
 export async function likePosts(maxLikes = 30, includeRealUsers = true) {
     const now = new Date();
-    const currentMinute = now.getMinutes();
-    const currentHour = now.getHours();
 
-    console.debug(`\n❤️ HORSES LIKING POSTS... (minute ${currentMinute})`);
+    console.debug(`\n❤️ HORSES LIKING POSTS...`);
 
     // Get all horses
     const { data: allHorses } = await getSupabase()
@@ -757,12 +767,13 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
 
     // FILTER: Only horses whose time slot matches current minute (variance ±2)
     const activeHorses = allHorses.filter(horse => {
-        const isInSlot = shouldHorseBeActive(horse.profile_id, currentMinute, 2);
-        const isActive = isHorseActiveHourTZ(horse.profile_id, currentHour, horse.timezone);
-        return isInSlot && isActive;
+        // 2026-09-05: hour-granular gate over the whole fleet. The minute-slot
+        // gate this replaced admitted ~8% of horses (see FleetScheduler.ts).
+        return isOnlineNow(horse.profile_id, horse.timezone, now);
     });
+    shuffleHorses(activeHorses);
 
-    console.debug(`   Active horses this minute: ${activeHorses.length}/${allHorses.length}`);
+    console.debug(`   Active horses this hour: ${activeHorses.length}/${allHorses.length}`);
 
     if (activeHorses.length === 0) {
         console.debug('   No horses in their active slot this minute');
@@ -852,6 +863,12 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
             }
         }
 
+        // 2026-09-05: the cap ends the run. Without this break the loop kept
+        // walking every remaining active horse with a 0.5-2s sleep each, so a
+        // run with 8 likes done still spent the whole deadline sleeping and
+        // comments, replies and reactions were skipped on every fire.
+        if (liked >= maxLikes) break;
+
         // Reduced delay between horses (0.5-2 seconds) for cron efficiency
         await new Promise(r => setTimeout(r, 500 + Math.random() * 1500));
     }
@@ -870,10 +887,8 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
  */
 export async function replyToComments(maxReplies = 15) {
     const now = new Date();
-    const currentMinute = now.getMinutes();
-    const currentHour = now.getHours();
 
-    console.debug(`\n💬 HORSES REPLYING TO COMMENTS... (minute ${currentMinute})`);
+    console.debug(`\n💬 HORSES REPLYING TO COMMENTS...`);
 
     // Get all horses
     const { data: allHorses } = await getSupabase()
@@ -886,12 +901,13 @@ export async function replyToComments(maxReplies = 15) {
 
     // FILTER: Only horses in their active time slot
     const activeHorses = allHorses.filter(horse => {
-        const isInSlot = shouldHorseBeActive(horse.profile_id, currentMinute, 2);
-        const isActive = isHorseActiveHourTZ(horse.profile_id, currentHour, horse.timezone);
-        return isInSlot && isActive;
+        // 2026-09-05: hour-granular gate over the whole fleet. The minute-slot
+        // gate this replaced admitted ~8% of horses (see FleetScheduler.ts).
+        return isOnlineNow(horse.profile_id, horse.timezone, now);
     });
+    shuffleHorses(activeHorses);
 
-    console.debug(`   Active horses this minute: ${activeHorses.length}/${allHorses.length}`);
+    console.debug(`   Active horses this hour: ${activeHorses.length}/${allHorses.length}`);
 
     if (activeHorses.length === 0) {
         console.debug('   No horses in their active slot this minute');
@@ -1081,10 +1097,8 @@ export async function runSocialInteractions(options = {}) {
 
 export async function reactToComments(maxReactions = 15) {
     const now = new Date();
-    const currentMinute = now.getMinutes();
-    const currentHour = now.getHours();
 
-    console.debug(`\n🔥 HORSES REACTING TO COMMENTS... (minute ${currentMinute})`);
+    console.debug(`\n🔥 HORSES REACTING TO COMMENTS...`);
 
     const { data: allHorses } = await getSupabase()
         .from('content_authors')
@@ -1095,10 +1109,11 @@ export async function reactToComments(maxReactions = 15) {
     if (!allHorses) return { reacted: 0 };
 
     const activeHorses = allHorses.filter(horse => {
-        const isInSlot = shouldHorseBeActive(horse.profile_id, currentMinute, 2);
-        const isActive = isHorseActiveHourTZ(horse.profile_id, currentHour, horse.timezone);
-        return isInSlot && isActive;
+        // 2026-09-05: hour-granular gate over the whole fleet. The minute-slot
+        // gate this replaced admitted ~8% of horses (see FleetScheduler.ts).
+        return isOnlineNow(horse.profile_id, horse.timezone, now);
     });
+    shuffleHorses(activeHorses);
 
     if (activeHorses.length === 0) return { reacted: 0 };
 
