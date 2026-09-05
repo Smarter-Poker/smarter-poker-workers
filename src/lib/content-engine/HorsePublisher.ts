@@ -91,10 +91,12 @@ export async function fetchFeed(url: string): Promise<FeedItem[]> {
     const feed = await rssParser.parseURL(url);
     const items = (feed.items ?? []) as FeedItem[];
     feedCache.set(url, { items, at: Date.now() });
+    bumpSupplyStat('rss_ok');
     return items;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     feedCache.set(url, { items: [], at: Date.now(), error: msg });
+    bumpSupplyStat(`rss_fail_${msg.replace(/[^0-9a-z]+/gi, '_').slice(0, 24)}`);
     throw e;
   }
 }
@@ -167,25 +169,66 @@ export type YtValidity = 'ok' | 'bad' | 'unknown';
 const validityCache = new Map<string, { v: YtValidity; at: number }>();
 const VALIDITY_TTL_MS = 24 * 3_600_000;
 let oembedBackoffUntil = 0;
+let consecutive403 = 0;
 export const OEMBED_BACKOFF_MS = 15 * 60_000;
+
+/**
+ * Per-run supply telemetry, surfaced in the route's result JSON so a run
+ * that publishes nothing says WHY in cron_execution_log. Added after eight
+ * hourly fires (11:10 to 19:10, 2026-09-05) reported "No valid sports clips
+ * found" while every sampled clip answered 200 from inside the container:
+ * the statuses seen during the burst were never recorded anywhere.
+ */
+const supplyStats: Record<string, number> = {};
+export function bumpSupplyStat(key: string): void {
+  supplyStats[key] = (supplyStats[key] ?? 0) + 1;
+}
+export function takeSupplyStats(): Record<string, number> {
+  const out = { ...supplyStats, oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0 };
+  for (const k of Object.keys(supplyStats)) delete supplyStats[k];
+  return out;
+}
 
 export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {
   if (!url) return 'bad';
   const key = assetKeyFor(url);
-  if (!key || !key.startsWith('yt:')) return 'bad';
+  if (!key || !key.startsWith('yt:')) {
+    bumpSupplyStat('yt_not_youtube');
+    return 'bad';
+  }
   const cached = validityCache.get(key);
-  if (cached && Date.now() - cached.at < VALIDITY_TTL_MS && cached.v !== 'unknown') return cached.v;
-  if (Date.now() < oembedBackoffUntil) return 'unknown';
+  if (cached && Date.now() - cached.at < VALIDITY_TTL_MS && cached.v !== 'unknown') {
+    bumpSupplyStat(`yt_cache_${cached.v}`);
+    return cached.v;
+  }
+  if (Date.now() < oembedBackoffUntil) {
+    bumpSupplyStat('yt_backoff_unknown');
+    return 'unknown';
+  }
   const videoId = key.slice(3);
   try {
     const response = await fetch(
       `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' } },
     );
-    if (response.status === 429) {
+    bumpSupplyStat(`yt_http_${response.status}`);
+    if (response.status === 429 || response.status >= 500) {
       oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
-      console.warn('[horse-publisher] YouTube oEmbed 429; backing off 15 minutes');
+      console.warn(`[horse-publisher] YouTube oEmbed ${response.status}; backing off 15 minutes`);
       return 'unknown';
     }
+    if (response.status === 403) {
+      // 403 is "embedding disabled" for ONE video, but three in a row from
+      // one IP is bot detection. Do not let a block read as dead videos.
+      consecutive403 += 1;
+      if (consecutive403 >= 3) {
+        oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
+        console.warn('[horse-publisher] YouTube oEmbed 403 x3; treating as a block, backing off 15 minutes');
+        return 'unknown';
+      }
+      return 'bad';
+    }
+    consecutive403 = 0;
     let v: YtValidity;
     if (!response.ok) {
       v = 'bad';
@@ -195,7 +238,9 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     }
     validityCache.set(key, { v, at: Date.now() });
     return v;
-  } catch {
+  } catch (e) {
+    bumpSupplyStat('yt_fetch_error');
+    console.warn('[horse-publisher] YouTube oEmbed fetch error:', e instanceof Error ? e.message : e);
     return 'unknown';
   }
 }
@@ -209,6 +254,7 @@ export async function validateYouTubeVideo(url: string | null | undefined): Prom
 export function _resetValidityCache(): void {
   validityCache.clear();
   oembedBackoffUntil = 0;
+  consecutive403 = 0;
 }
 
 export function convertToEmbedUrl(url: string): string {
@@ -310,6 +356,7 @@ async function postVideoClip(
       return !!k && usable.has(k);
     });
     if (!fresh.length) return { ...base, success: false, error: 'All sports clips already posted' };
+    bumpSupplyStat('sports_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'));
 
     // Three candidates, not ten: sports_clips rows come from the channel
     // scraper and are trusted unless oEmbed definitely says otherwise.
