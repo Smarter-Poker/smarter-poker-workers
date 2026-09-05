@@ -6,21 +6,22 @@
  * Horses post stories TikTok/Instagram-style. 70% video clip stories
  * from ClipLibrary, 30% text-only stories with topical poker thoughts.
  *
- * Per-horse scheduling:
- *   shouldHorseBeActive (±3 min variance from horse's slot)
- *   isHorseActiveHour (within their 12-hour active window)
+ * Per-horse scheduling (2026-09-05, whole fleet):
+ *   isOnlineNow (awake window in the horse's own timezone, on an online day)
  *   getHorseActivityRate('post') gates final selection
+ *   the roster is shuffled so the two picks per fire are not always the
+ *   same two horses at the front of it.
+ * The old `.limit(100)` with no order (an arbitrary hundred that changed
+ * per request) is gone; see FleetScheduler.ts.
  *
  * Auth: /cron/* middleware chain.
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 import { generateComment, generatePostCaption } from '../lib/content-engine/HumanVoiceEngine.js';
-import {
-  shouldHorseBeActive,
-  isHorseActiveHour,
-  getHorseActivityRate,
-} from '../lib/content-engine/HorseScheduler.js';
+import { getHorseActivityRate } from '../lib/content-engine/HorseScheduler.js';
+import { isOnlineNow } from '../lib/content-engine/FleetScheduler.js';
+import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
 import { getRandomClip } from '../lib/content-engine/ClipLibrary.js';
 
 // Map ClipLibrary category values → HumanVoiceEngine POST_CAPTIONS pool keys
@@ -75,10 +76,11 @@ const TEXT_STORY_TOPICS = [
 
 
 interface Horse {
-  id: string;
+  id: string | number;
   name: string;
   profile_id: string;
-  is_active: boolean;
+  timezone?: string | null;
+  is_active?: boolean;
 }
 
 async function validateYouTubeThumbnail(videoId: string): Promise<boolean> {
@@ -177,38 +179,34 @@ async function postTextStory(horse: Horse): Promise<{ type: string; story_id?: u
 
 export async function horsesStories(c: Context) {
   try {
-    const supabase = getSupabase();
     const now = new Date();
-    const currentMinute = now.getMinutes();
-    const currentHour = now.getHours();
 
-    const { data: allHorsesData, error: horseError } = await supabase
-      .from('content_authors')
-      .select('*')
-      .eq('is_active', true)
-      .not('profile_id', 'is', null)
-      .limit(100);
-
-    if (horseError) {
-      console.warn('[horses-stories] horses fetch error:', horseError.message);
-      return c.json({ error: horseError.message }, 500);
+    if (!(await engineEnabled())) {
+      return c.json({ success: true, skipped: 'engine_disabled', timestamp: now.toISOString() });
     }
 
-    const allHorses = (allHorsesData ?? []) as Horse[];
+    let allHorses: Horse[];
+    try {
+      allHorses = (await loadFleet()) as unknown as Horse[];
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('[horses-stories] horses fetch error:', msg);
+      return c.json({ error: msg }, 500);
+    }
     if (allHorses.length === 0) {
       return c.json({ success: true, message: 'No horses available', posted: 0 });
     }
 
-    const activeHorses = allHorses.filter(
-      (h) =>
-        shouldHorseBeActive(h.profile_id, currentMinute, 3) &&
-        isHorseActiveHour(h.profile_id, currentHour),
-    );
+    const activeHorses = allHorses.filter((h) => isOnlineNow(h.profile_id, h.timezone, now));
+    for (let i = activeHorses.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [activeHorses[i], activeHorses[j]] = [activeHorses[j]!, activeHorses[i]!];
+    }
 
     if (activeHorses.length === 0) {
       return c.json({
         success: true,
-        message: 'No horses in their active slot this minute',
+        message: 'No horses online this hour',
         posted: 0,
         activeHorses: 0,
       });
