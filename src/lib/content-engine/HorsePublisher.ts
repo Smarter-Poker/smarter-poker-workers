@@ -384,8 +384,24 @@ export async function publishForHorse(
     /* streak check is best effort */
   }
 
-  const kind = isPoker ? 'poker' : 'sports';
-  let result = await postNewsLink(horse, kind);
-  if (!result.success) result = await postVideoClip(horse, kind);
-  return result;
+  // Preferred category first (news, then video), then the OTHER category.
+  // Measured on the first hourly fleet fire (2026-09-05 09:10): 26 due, 18
+  // failed "All poker clips already posted" because the ledger correctly
+  // refused all 150 hard-coded poker clips. A due horse that stays silent is
+  // the old failure in a new shape, so the other category is the fallback
+  // until Phase 4 gives poker a real supply. The result type records which
+  // category actually published, so the skew is visible in
+  // cron_execution_log.result.by_type.
+  const preferred: 'poker' | 'sports' = isPoker ? 'poker' : 'sports';
+  const other: 'poker' | 'sports' = isPoker ? 'sports' : 'poker';
+  const attempts: string[] = [];
+  for (const kind of [preferred, other]) {
+    let result = await postNewsLink(horse, kind);
+    if (result.success) return result;
+    attempts.push(`${kind}_news: ${result.error}`);
+    result = await postVideoClip(horse, kind);
+    if (result.success) return result;
+    attempts.push(`${kind}_video: ${result.error}`);
+  }
+  return { ...base, success: false, error: attempts.join(' | ') };
 }
