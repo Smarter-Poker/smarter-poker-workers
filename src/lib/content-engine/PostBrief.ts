@@ -567,10 +567,13 @@ export function briefForAsset(input: {
       }
     }
   }
-  const people = extractPeople(title);
+  const empty = isUninformativeTitle(title, source);
+  // A title that says nothing cannot name anybody either: "Keyboard
+  // shortcuts" yielded the person "Keyboard", and a horse then asked
+  // "anyone else watch Keyboard do this".
+  const people = empty ? [] : extractPeople(title);
   const amounts = extractAmounts(title);
   const tone = detectTone(title, concepts);
-  const empty = isUninformativeTitle(title, source);
 
   // Confidence: a title we could pull real entities out of is a brief worth
   // writing from. Everything is bounded so a long title cannot fake it.
