@@ -863,6 +863,12 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
             }
         }
 
+        // 2026-09-05: the cap ends the run. Without this break the loop kept
+        // walking every remaining active horse with a 0.5-2s sleep each, so a
+        // run with 8 likes done still spent the whole deadline sleeping and
+        // comments, replies and reactions were skipped on every fire.
+        if (liked >= maxLikes) break;
+
         // Reduced delay between horses (0.5-2 seconds) for cron efficiency
         await new Promise(r => setTimeout(r, 500 + Math.random() * 1500));
     }
