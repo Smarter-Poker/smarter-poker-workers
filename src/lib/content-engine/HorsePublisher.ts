@@ -337,24 +337,40 @@ async function postVideoClip(
   } else {
     const supa = getSupabase();
     const assigned = await getHorseSources(horse.profile_id);
+    // Newest first. Measured 2026-09-05 20:17 (supply telemetry): the
+    // unordered .limit(200) returned the OLDEST rows, January shorts of
+    // which 24 answered 404 and 11 answered 401 in one run, and the ledger
+    // left under ten fresh candidates per horse. The scraper adds clips
+    // daily; the newest 400 of a horse's sources are the live pool.
     let clips: SportsClipRow[] = [];
     if (assigned.length > 0) {
-      const { data } = await supa.from('sports_clips').select('*').in('source', assigned).limit(200);
+      const { data } = await supa
+        .from('sports_clips')
+        .select('*')
+        .in('source', assigned)
+        .order('created_at', { ascending: false })
+        .limit(400);
       if (data?.length) clips = data as SportsClipRow[];
     }
-    if (!clips.length) {
-      const offset = Math.floor(Math.random() * 5000);
-      const { data } = await supa.from('sports_clips').select('*').range(offset, offset + 200);
-      if (data?.length) clips = data as SportsClipRow[];
+    const freshOf = async (rows: SportsClipRow[]) => {
+      const keys = rows.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
+      const usable = await filterUnusedAssets(keys, horse.profile_id);
+      return rows.filter((c) => {
+        const k = assetKeyFor(c.source_url);
+        return !!k && usable.has(k);
+      });
+    };
+    let fresh = clips.length ? await freshOf(clips) : [];
+    if (fresh.length < 10) {
+      // The horse's own sources are thin; widen to the platform's newest.
+      const { data } = await supa
+        .from('sports_clips')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(600);
+      if (data?.length) fresh = await freshOf(data as SportsClipRow[]);
+      bumpSupplyStat('sports_widened_to_platform');
     }
-    if (!clips.length) return { ...base, success: false, error: 'No sports clips' };
-
-    const keys = clips.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
-    const usable = await filterUnusedAssets(keys, horse.profile_id);
-    const fresh = clips.filter((c) => {
-      const k = assetKeyFor(c.source_url);
-      return !!k && usable.has(k);
-    });
     if (!fresh.length) return { ...base, success: false, error: 'All sports clips already posted' };
     bumpSupplyStat('sports_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'));
 

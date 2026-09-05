@@ -30,8 +30,10 @@ Do not edit them; Phase 9 deletes them.
 1. **Horses are players** (club-arena CLAUDE.md 10.5). Content is grounded in
    the same hands, wallets and tournaments a human has. No `is_horse` filter
    ever removes a horse from something a human gets.
-2. **No language model on the live path** until Phase 5, and then behind a
-   hard budget with the template path as fallback. The feed never goes quiet.
+2. **A language model runs only behind a hard daily budget with the template
+   path as fallback.** Phase 1 uses none; Phase 2 introduces it (Dan's
+   requirement for 100+ voices and 100% relevance cannot be met by pools).
+   The feed never goes quiet.
 3. **A horse never names a human player** in any post, story, comment or DM.
    "A reg", "seat 5", never an alias. Horse aliases are fine. Law test in
    Phase 2.
@@ -54,12 +56,12 @@ Do not edit them; Phase 9 deletes them.
 - Sports share stays at the 75/25 coin flip until Phase 4 makes it a persona
   trait (target fleet average ~15%).
 - Phrase ledger: same horse never repeats in 90 days; platform-wide 48 hours
-  (short because the pools are 13 to 21 lines; Phase 2 and 5 lengthen it).
-- Model spend: none until Phase 5; then Haiku-class with a daily cap.
+  (short because the pools are 13 to 21 lines; Phase 2 lengthens it to 30 days).
+- Model spend: none in Phase 1; from Phase 2, Haiku-class behind a daily cap.
 
 ## Phases
 
-### Phase 1: the whole fleet is eligible (SHIPPED 2026-09-05)
+### Phase 1: the whole fleet is eligible (SHIPPED 2026-09-05, see changelog for the live numbers and the four follow-up fixes)
 
 - `FleetScheduler.ts`: weekly slot per horse (day(s) + hour in its timezone),
   3-hour due window, hour-granular `isOnlineNow` engagement gate.
@@ -80,34 +82,80 @@ Measured before: 100 posts/day from 100 horses, 640 silent, 59 horses
 commenting/week. Expected after: ~235 posts/day across the fleet, every horse
 at least weekly, engagement open to every awake horse.
 
-### Phase 2: grounded content (the horse's own poker)
+### Phase 2: comprehension and voice (Dan, 2026-09-05)
+
+Dan, verbatim: "WE NEED LIKE 100+ DIFFERENT WRITING STYLES WHEN POSTING, THEY
+CAN NOT APPEAR SIMILAR OR SAME FORMATTING OR ANYTHING ELSE. THEY ALSO NEED TO
+BE SMART AND THE WORDS THAT ARE POSTED NEED TO MAKE SENSE FOR THE ACTUAL THING
+THE HORSE IS POSTING ABOUT 100%. SAME BASIC FUNCTIONALITY FOR COMMENTING ON
+POSTS AS WELL: SOME KIND OF POST REVIEW ON THE BACK END THAT CREATES A SUMMARY
+THAT THE HORSES CAN INGEST BEFORE COMMENTING ON IT, AS WELL AS A DETERMINISTIC
+ENGINE THAT CAN REPLY TO THE REPLIES (WHEN NEEDED, NOT AN ENDLESS STREAM)."
+
+This replaces the phrase pools. Five parts, all in the workers service:
+
+1. **Post comprehension (`PostBrief`).** Every post, horse or human, gets a
+   backend brief before any horse touches it: what it is (hand, clip, news
+   link, text, photo), the subject (players, teams, sport, variant, stakes),
+   the sentiment, the claim, the question it asks if any, and the entities a
+   reply could reference. Built from the post's own fields first (link title,
+   clip title, source channel, metadata, hand data), then a small model for
+   free text, cached in a `post_briefs` table keyed by post id. A comment is
+   generated FROM the brief, never from a category regex. A caption is
+   generated FROM the asset's brief (title, channel, sport, what happens in
+   it), never from a pool keyed on "sports_highlight".
+2. **Style sheets, 100+.** `content_authors.personality` carries a full style
+   sheet per horse: archetype, sentence length, punctuation habits, case
+   habits, openers and closers it uses and never uses, emoji policy (none),
+   slang set, how it refers to itself, how it formats a hand (line breaks or
+   one line, cards as "AKs" or "ace king suited"), whether it asks questions,
+   whether it tags people. Generated once per horse from a 12-dimension grid
+   so no two sheets are the same, then hand-reviewed sample output for 20.
+   Formatting variety is a dimension, not decoration: some horses write one
+   line, some write four paragraphs, some list, some never punctuate.
+3. **Generation with a phrase ledger and a relevance check.** Model writes
+   from brief + style sheet + grounded fact; the phrase ledger rejects a
+   near-duplicate sentence platform-wide (trigram similarity, 30 days); a
+   second cheap pass scores relevance of the text to the brief and rejects
+   below threshold. Template fallback stays for outages only.
+4. **Deterministic reply engine.** A thread is a state machine, not a loop:
+   a horse replies to a reply only when the reply addresses it by name, asks
+   a question, or disagrees with a claim in its brief; at most two replies
+   per horse per thread; no horse-to-horse exchange beyond three turns; a
+   human's reply always earns exactly one horse answer within the horse's
+   next awake hour. State lives in `thread_state(post_id, horse_id, turns,
+   last_turn_at)`.
+5. **Friend graph and tagging.** Horses are friends with a small, plausible
+   set: same city or same club or same stakes, 8 to 40 friends each, never
+   the whole fleet. Built once from the data (`horse_friend_edges`) and grown
+   slowly by the existing friend-request job. A horse tags a friend in a
+   post or comment only when the brief gives a reason (same team, played the
+   same event, the friend commented earlier), at most one tag per post, and
+   never a human without opt-in.
+
+Cost: briefs and captions at ~250 posts and ~500 comments a day on a
+Haiku-class model are a few dollars a day. Hard daily cap in
+`content_settings`, template fallback when spent.
+
+### Phase 3: grounded content (the horse's own poker)
 
 - `HandStoryService.ts`: pick the week's hand from `horse_hand_reviews`
   (biggest pot won, worst beat by `net_bb`, a bluff that got through, a
   cooler), the week from `horse_daily_nets`, finishes from
-  `tournament_players` (position, prize).
-- Templates by archetype, slot-filled with the real cards, board, size and
-  result. Text posts re-enabled for grounded content only.
-- Leak confessions from `leak_tags` ("what I'm fixing this week").
+  `tournament_players` (position, prize). The hand becomes the brief; the
+  style sheet becomes the voice.
+- Leak confessions from `leak_tags`; text posts for grounded content only.
 - Static hand card PNG (server image route) as the post media and OG image.
 - Stories and comments draw on the same facts.
 - Law test: no human alias in any horse-authored text. Numbers must match
   the ledger.
-- Mix: grounded content becomes the majority of posts; clips and links are
-  the remainder.
 
-### Phase 3: engagement that reaches humans
+### Phase 3b: engagement that reaches humans
 
-- Humans-first targeting for likes and comments (weight human-authored posts).
-- Reply-to-human trigger: a human comments on a horse post, the horse replies
-  in its next awake hour, about what was said.
-- Witness comments: a horse seated at a hand where a human wins big or
-  finishes ITM comments on it (praise only, per-player opt-out).
-- Welcome committee: first human post gets a comment within the hour and two
-  or three friend requests from same-city, same-stakes horses.
-- Comments routed through `HumanVoiceEngine` (scrubber, memory, questions);
-  replies stop being five hard-coded prefixes.
-- Horse-to-horse arguments: multi-reply threads seeded from a hand post.
+- Humans-first targeting for likes and comments; reply-to-human trigger.
+- Witness comments (praise only, per-player opt-out); welcome committee.
+- DMs: the messenger engine reads `social_messages`, a table that does not
+  exist; decide the DM product before writing a line.
 
 ### Phase 4: media supply that does not repeat
 
@@ -120,13 +168,10 @@ at least weekly, engagement open to every awake horse.
 - Unstick the 144 queued native reels; transcode queue watchdog; repair or
   retire the daily video-library reels bridge.
 
-### Phase 5: a real voice per horse
+### Phase 5: media supply, poker
 
-- Persona completion for 1,000 horses into `content_authors.personality`:
-  archetype, cadence, favourite team and format, home room, two pet topics.
-- Model-written captions from persona + grounded fact, behind a daily budget
-  in `content_settings`, phrase-ledger collision check, template fallback.
-- Phrase-ledger platform window lengthened to 30 days.
+- (moved up from Phase 4 detail) `poker_clips` scraper and the seven news
+  sources; the 150 hard-coded clips retired.
 
 ### Phase 6: data-native and local content
 
