@@ -27,18 +27,15 @@
  */
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
-import {
-  generatePostCaption,
-  generateNewsCaption,
-  seedHorseMemory,
-} from './HumanVoiceEngine.js';
+import { seedHorseMemory } from './HumanVoiceEngine.js';
+import { writeCaption, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
 import { getRandomClip } from './ClipLibrary.js';
 import {
   assetKeyFor,
   filterUnusedAssets,
   recordAssetUse,
   recordPhrase,
-  pickFreshPhrase,
+  normalizePhrase,
 } from './ContentLedger.js';
 import { fleetHash } from './FleetScheduler.js';
 
@@ -48,6 +45,11 @@ export interface FleetHorse {
   profile_id: string;
   timezone?: string | null;
   is_active?: boolean;
+  /** Phase 2: needed to write in this horse's voice and to tag a friend. */
+  alias?: string | null;
+  location?: string | null;
+  stakes?: string | null;
+  specialty?: string | null;
 }
 
 export interface PublishResult {
@@ -60,6 +62,13 @@ export interface PublishResult {
   collided?: boolean;
   error?: string;
   skipped?: 'posted_recently';
+  /** Phase 2: how well the words matched the subject, and what grounded them. */
+  relevance?: number;
+  grounding?: string[];
+  drafts?: number;
+  belowFloor?: boolean;
+  tagged?: string;
+  briefSummary?: string;
 }
 
 /** A horse that has posted inside this many hours is not due again. */
@@ -118,19 +127,6 @@ const SPORTS_NEWS_SOURCES = [
   { name: 'CBS Sports', rss: 'https://www.cbssports.com/rss/headlines/' },
 ];
 
-const POKER_CAPTION_KEYS = new Set([
-  'massive_pot',
-  'bluff',
-  'bad_beat',
-  'soul_read',
-  'table_drama',
-  'celebrity',
-  'funny',
-  'educational',
-  'vlog',
-  'tournament',
-  'high_stakes',
-]);
 
 interface SportsClipRow {
   id: string | number;
@@ -139,6 +135,7 @@ interface SportsClipRow {
   title?: string | null;
   source?: string | null;
   category?: string | null;
+  sport_type?: string | null;
 }
 
 interface LibraryClip {
@@ -309,6 +306,7 @@ async function seedMemoryFromHistory(profileId: string): Promise<void> {
 async function postVideoClip(
   horse: FleetHorse,
   clipType: 'poker' | 'sports',
+  fleet: AuthorHorse[],
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   let clip: LibraryClip | SportsClipRow | null = null;
@@ -390,17 +388,22 @@ async function postVideoClip(
 
   await seedMemoryFromHistory(horse.profile_id);
 
-  const clipCategory =
-    clipType === 'sports'
-      ? 'sports_highlight'
-      : clip.category && POKER_CAPTION_KEYS.has(clip.category)
-        ? clip.category
-        : 'massive_pot';
+  // Phase 2: the caption is written from a brief of THIS clip - its title,
+  // channel and sport - not drawn from a pool keyed on a category. See
+  // PostBrief.ts for what the old path produced.
   const title = (clip as LibraryClip).title || '';
-  const picked = await pickFreshPhrase(
-    () => generatePostCaption(clipCategory, horse.profile_id, title),
-    horse.profile_id,
+  const written = await writeCaption(
+    horse as AuthorHorse,
+    {
+      kind: 'video',
+      title,
+      source: (clip as SportsClipRow).source ?? undefined,
+      domainHint: clipType,
+      sportHint: (clip as SportsClipRow).sport_type ?? (clip as LibraryClip).category ?? null,
+    },
+    fleet,
   );
+  const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
 
   const embedUrl = convertToEmbedUrl(clip.source_url);
   const { data: post, error } = await getSupabase()
@@ -425,6 +428,7 @@ async function postVideoClip(
   const key = assetKeyFor(clip.source_url);
   if (key) await recordAssetUse(key, horse.profile_id, postId);
   await recordPhrase(picked.norm, horse.profile_id, postId);
+  if (postId) await recordBrief(postId, written.brief);
   return {
     ...base,
     success: true,
@@ -432,12 +436,19 @@ async function postVideoClip(
     type: `${clipType}_video`,
     caption: picked.text.slice(0, 60),
     collided: picked.collided,
+    relevance: written.relevance,
+    grounding: written.grounding,
+    drafts: written.attempts,
+    belowFloor: written.belowFloor,
+    tagged: written.tagged?.alias,
+    briefSummary: summarise(written.brief),
   };
 }
 
 async function postNewsLink(
   horse: FleetHorse,
   newsType: 'poker' | 'sports',
+  fleet: AuthorHorse[],
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   const sources = newsType === 'poker' ? POKER_NEWS_SOURCES : SPORTS_NEWS_SOURCES;
@@ -458,10 +469,12 @@ async function postNewsLink(
     const article = fresh[Math.floor(Math.random() * fresh.length)]!;
     await seedMemoryFromHistory(horse.profile_id);
 
-    const picked = await pickFreshPhrase(
-      () => generateNewsCaption(article.title || '', horse.profile_id, newsType),
-      horse.profile_id,
+    const written = await writeCaption(
+      horse as AuthorHorse,
+      { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
+      fleet,
     );
+    const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
     const content = `${picked.text}\n\n${article.link}`;
 
     const { data: post, error } = await getSupabase()
@@ -484,6 +497,7 @@ async function postNewsLink(
     const key = assetKeyFor(article.link);
     if (key) await recordAssetUse(key, horse.profile_id, postId);
     await recordPhrase(picked.norm, horse.profile_id, postId);
+    if (postId) await recordBrief(postId, written.brief);
     return {
       ...base,
       success: true,
@@ -491,6 +505,12 @@ async function postNewsLink(
       type: `${newsType}_news`,
       caption: (article.title ?? '').slice(0, 60),
       collided: picked.collided,
+      relevance: written.relevance,
+      grounding: written.grounding,
+      drafts: written.attempts,
+      belowFloor: written.belowFloor,
+      tagged: written.tagged?.alias,
+      briefSummary: summarise(written.brief),
     };
   } catch (e) {
     return { ...base, success: false, error: e instanceof Error ? e.message : String(e) };
@@ -505,7 +525,7 @@ async function postNewsLink(
  */
 export async function publishForHorse(
   horse: FleetHorse,
-  opts: { skipGuard?: boolean } = {},
+  opts: { skipGuard?: boolean; fleet?: AuthorHorse[] } = {},
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!opts.skipGuard && (await postedRecently(horse.profile_id))) {
@@ -541,10 +561,10 @@ export async function publishForHorse(
   const other: 'poker' | 'sports' = isPoker ? 'sports' : 'poker';
   const attempts: string[] = [];
   for (const kind of [preferred, other]) {
-    let result = await postNewsLink(horse, kind);
+    let result = await postNewsLink(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
     attempts.push(`${kind}_news: ${result.error}`);
-    result = await postVideoClip(horse, kind);
+    result = await postVideoClip(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
     attempts.push(`${kind}_video: ${result.error}`);
   }

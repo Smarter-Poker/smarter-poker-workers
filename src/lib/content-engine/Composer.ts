@@ -1,0 +1,674 @@
+/**
+ * Composer: writes about the thing in the brief, in the horse's own style.
+ *
+ * WHY (Dan, 2026-09-05): "THE WORDS THAT ARE POSTED NEED TO MAKE SENSE FOR
+ * THE ACTUAL THING THE HORSE IS POSTING ABOUT 100%."
+ *
+ * The old path drew a whole sentence from a pool keyed on a category, so a
+ * clip of a defensive stand in the paint got "Nobody touches him when he is
+ * locked in" and a Garrett Adelstein bluff article got the same sentence a
+ * baseball highlight got. Nothing in the sentence came from the subject.
+ *
+ * Here a sentence is assembled from the brief's OWN entities: the person the
+ * title names, the team, the concept, the amount. The anchor is a real noun
+ * from the post; the take is chosen by the concept and the tone. A sentence
+ * therefore cannot be about nothing, and `relevanceOf()` is the gate that
+ * proves it before anything is published.
+ *
+ * WHAT IS SAID comes from here. HOW IT LOOKS comes from StyleSheet.render().
+ * The two are separate so 1,000 horses can say a hundred different true
+ * things about one clip in a hundred different shapes.
+ *
+ * NO MODEL IS CALLED. Deterministic, free, and it cannot invent a player who
+ * is not in the title. `ModelWriter` may later rewrite a composed draft when
+ * a working key and budget exist; the draft, its grounding and its style
+ * survive that rewrite, and this path stays as the fallback so the feed never
+ * goes quiet. (Checked 2026-09-05: the only model key on the workers VM,
+ * XAI_API_KEY, is rejected by the provider, so nothing model-shaped runs.)
+ */
+import type { PostBrief } from './PostBrief.js';
+import { fleetHash } from './FleetScheduler.js';
+import { render, targetWords, type StyleSheet } from './StyleSheet.js';
+
+// ─── takes, by concept ───────────────────────────────────────────────────
+// {anchor} is the subject named in the post. {amount} is a real number from
+// it. Every line has to read as a thing a person would say about THAT.
+
+const POKER_TAKES: Record<string, string[]> = {
+  bluff: [
+    'running a bluff through that many streets takes a certain kind of nerve',
+    'the bluff is the easy part, the sizing is what sells it',
+    'you have to be willing to be wrong out loud to fire that',
+    'nobody folds that river unless the story adds up from the flop',
+    'that line only works if you have been playing it straight all session',
+  ],
+  hero_call: [
+    'calling that down needs a read you can defend to yourself later',
+    'the call is not brave, it is just paying attention',
+    'most people find a fold there and never think about it again',
+    'that is the call you replay for a week either way',
+  ],
+  cooler: [
+    'nothing to be done there, the money was always going in',
+    'that is not a mistake, that is just the deck',
+    'both players played it right and one of them still loses the stack',
+  ],
+  bad_beat: [
+    'brutal, and the maths does not care how it felt',
+    'that runout is the reason people quit and the reason people stay',
+    'the hand was won on the turn and lost on the river',
+    'no read fixes that, it was already over',
+  ],
+  all_in: [
+    'stack in the middle and no way back from it',
+    'once it is all in the rest is arithmetic',
+    'the shove is the easy click, the fold is the hard one',
+  ],
+  final_table: [
+    'final table pressure changes what people are willing to do with a marginal hand',
+    'ICM turns a clear call into a fold and everybody knows it',
+    'the shortest stack sets the pace at that table whether they mean to or not',
+  ],
+  bracelet: [
+    'a bracelet changes how the rest of a career reads',
+    'people remember the win, not the four days it took',
+  ],
+  main_event: [
+    'main event fields are their own animal',
+    'a deep main event run is mostly patience and one good day',
+  ],
+  river: [
+    'the river is where the honesty shows up',
+    'every plan survives until the river card',
+  ],
+  flop: [
+    'the flop decided that one, the rest was admin',
+    'texture like that plays itself if you are paying attention',
+  ],
+  gto: [
+    'the solver line and the winning line are not always the same at this level',
+    'balance is fine until somebody is clearly not balanced',
+    'you learn the theory so you know exactly when to leave it',
+  ],
+  exploit: [
+    'if somebody keeps folding, keep betting, that is the whole strategy',
+    'exploits pay better than balance against a table that is not adjusting',
+  ],
+  range: [
+    'the range is the answer, the hand is just one card combination',
+    'thinking in ranges is the shift that changes everything',
+  ],
+  three_bet: [
+    'three-bet sizing in live games is still too small and everybody knows it',
+    'the three-bet is fine, it is the plan for the turn that is missing',
+  ],
+  check_raise: [
+    'the check raise there is the only line that gets value from worse',
+    'checking to raise takes patience most people do not have',
+  ],
+  fold: [
+    'a good fold never gets a clip made about it',
+    'that laydown is worth more than most of the hands people brag about',
+  ],
+  tilt: [
+    'tilt costs more than any single bad call ever will',
+    'the hand was fine, the next twenty minutes are the problem',
+  ],
+  bankroll: [
+    'bankroll management is the least fun skill and the one that keeps people playing',
+    'playing over your roll turns variance into a real problem',
+  ],
+  variance: [
+    'variance is real and nobody is exempt from it',
+    'a downswing feels like a leak and usually is not',
+    'heaters end, that is the whole point of them',
+  ],
+  high_stakes: [
+    'the numbers stop meaning anything at that level',
+    'stakes that size change what a hand is worth psychologically',
+  ],
+  study: [
+    'the study is where results come from, the table is just where they show up',
+    'reviewing your own losses is worse and better than anything else you can do',
+  ],
+  read: [
+    'a read like that is a hundred small hands paying off at once',
+    'you cannot teach that timing, you can only put in the hours',
+  ],
+  tournament: [
+    'tournament poker rewards surviving more than winning pots',
+    'one bad level costs more than three good ones make',
+  ],
+  cash_game: [
+    'cash games punish the same mistake every night until you fix it',
+    'the money plays differently when it is deep',
+  ],
+  plo: [
+    'PLO equities run so much closer than people expect',
+    'four cards turns every read into a guess with extra steps',
+  ],
+};
+
+const SPORT_TAKES: Record<string, string[]> = {
+  dunk: [
+    '{anchor} going up like the rim owed money',
+    'that had no business going down and it went down anyway',
+    'the second jump is the part nobody talks about',
+    'whoever was under that is going to hear about it all week',
+  ],
+  three: [
+    'pulling from that range should not be a normal shot and it is now',
+    'the release is so quick the closeout never mattered',
+    'that is a bad shot for everyone else and a good one for {anchor}',
+  ],
+  buzzer_beater: [
+    'the whole building knew it was going in',
+    'taking that shot with the clock like that is its own skill',
+    'games get decided by about four seconds and that was them',
+  ],
+  block: [
+    'that is timing, not height',
+    'meeting it at the top like that is a decision you make early',
+  ],
+  crossover: [
+    'the defender did nothing wrong and still ended up on the floor',
+    'handles like that are hours nobody watched',
+  ],
+  assist: [
+    'seeing that pass before it existed is the actual talent',
+    'the finish gets the clip, the pass won the possession',
+  ],
+  touchdown: [
+    'that whole drive was set up two plays earlier',
+    '{anchor} finding the end zone on a play that was going nowhere',
+  ],
+  catch: [
+    'catching that with a hand and a half is absurd',
+    'concentration on that is the whole highlight',
+  ],
+  interception: [
+    'that was read the moment the ball left',
+    'jumping the route that hard only works if you are certain',
+  ],
+  home_run: [
+    'that ball left in a hurry',
+    'the swing looked easy and the ball went 430 feet',
+  ],
+  goal: [
+    'the finish was calm and everything before it was not',
+    'that angle should not be a goal',
+  ],
+  knockout: [
+    'it was over before anybody in the building processed it',
+    'the setup punch is the one that actually did the damage',
+  ],
+  comeback: [
+    'nobody was writing about this team an hour ago',
+    'the run started before the crowd noticed it was a run',
+  ],
+  record: [
+    'records like that stand until somebody very specific comes along',
+    'putting a number like that up in one night is not normal',
+  ],
+  playoffs: [
+    'playoff basketball is a different sport and this is why',
+    'you find out who wants it in about game four',
+  ],
+  footwork: [
+    'the footwork is the highlight, everything after it was inevitable',
+    'balance like that is coaching plus about ten thousand reps',
+  ],
+  defense: [
+    '{anchor} holding position there is real work nobody claps for',
+    'that stop is worth as much as any bucket and gets a tenth of the attention',
+    'staying in front for a full possession is harder than it looks',
+  ],
+  trade: [
+    'that changes the whole shape of the roster',
+    'somebody is going to look very smart or very silly in about a year',
+  ],
+  injury: [
+    'hate seeing that, the season turns on those moments',
+  ],
+  rookie: [
+    'doing that as a rookie is the part that should worry everybody else',
+  ],
+};
+
+/** Used when the brief has a tone but no concept we know. */
+const TONE_TAKES: Record<string, string[]> = {
+  hype: [
+    'that is the kind of thing you rewind twice',
+    'the reaction says everything',
+    'not much needs adding to that',
+  ],
+  admiring: [
+    'the level of control there is the whole story',
+    'that is years of work showing up in one moment',
+    'making it look routine is the hard part',
+  ],
+  funny: [
+    'this is going to age extremely well',
+    'the timing on that is comedy',
+  ],
+  critical: [
+    'that is going to be a long flight home',
+    'hard to defend the decision making there',
+  ],
+  analytical: [
+    'the interesting part is what happens two decisions earlier',
+    'worth watching twice for the setup rather than the finish',
+  ],
+  bad_beat: [
+    'nothing to say to that except bad luck',
+    'the numbers were fine, the card was not',
+  ],
+  neutral: [
+    'worth a look',
+    'came across this and it stuck with me',
+  ],
+};
+
+/**
+ * Frames built around the subject phrase itself. These are the safety net for
+ * relevance: {topic} is the post's own cleaned title, so a sentence built from
+ * one is about the real thing even when no concept was recognised. Measured
+ * 2026-09-05: without these, a clip titled "Angel holding her own in the
+ * paint" produced "came across this and it stuck with me".
+ */
+const TOPIC_FRAMES: Record<string, string[]> = {
+  sports: [
+    '{topic} is the whole clip',
+    'still thinking about {topic}',
+    '{topic} and nobody in the building blinked',
+    'the part that gets me is {topic}',
+    '{topic} deserves more attention than it is going to get',
+    'watching {topic} again with the sound off',
+    '{topic}, and it looked routine at full speed',
+  ],
+  poker: [
+    '{topic} is a spot worth sitting with',
+    'still thinking about {topic}',
+    'the discipline in {topic} is the part worth copying',
+    '{topic} is the clearest example of this I have seen',
+    'the interesting part of {topic} is what happens one street earlier',
+    '{topic}, and the sizing is the whole tell',
+  ],
+  general: [
+    '{topic} is worth the two minutes',
+    'still thinking about {topic}',
+    'the detail in {topic} is what makes it',
+  ],
+};
+
+/** Second-sentence angles, so a long style is not just a longer first line. */
+const FOLLOW_ANGLES: Record<string, string[]> = {
+  poker: [
+    'the version of this that happens at low stakes never gets filmed',
+    'the same spot comes up in a 1/3 game every night',
+    'people will argue about the sizing and miss the read',
+    'I have been on the wrong end of that exact hand',
+    'the discipline part is what separates the winners',
+  ],
+  sports: [
+    'the crowd reaction is half the clip',
+    'that is going to be on every timeline by morning',
+    'the box score will not show any of that',
+    'I would like to see the angle from the other side',
+    'moments like that are why people stay up for these',
+  ],
+  general: [
+    'still thinking about the timing of it',
+    'the details are what make it',
+    'worth the two minutes',
+  ],
+};
+
+// ─── assembly ────────────────────────────────────────────────────────────
+
+function pickFrom<T>(arr: T[], seed: string, salt: string): T {
+  return arr[fleetHash(seed, salt) % arr.length]!;
+}
+
+/** Content words, for spotting a second sentence that echoes the first. */
+function contentWords(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 5),
+  );
+}
+
+/**
+ * Pick a line that does not repeat the sentence before it. Without this a
+ * two-sentence style produced "the detail in X is what makes it. the details
+ * are what make it." (measured 2026-09-05).
+ */
+function pickDistinct(arr: string[], avoid: string, seed: string, salt: string): string {
+  const taken = contentWords(avoid);
+  const fresh = arr.filter((c) => {
+    for (const w of contentWords(c)) if (taken.has(w)) return false;
+    return true;
+  });
+  const pool = fresh.length ? fresh : arr;
+  return pool[fleetHash(seed, salt) % pool.length]!;
+}
+
+/** The noun the sentence hangs on: a real name from the post. */
+export function anchorOf(b: PostBrief): string | null {
+  if (b.people.length) return b.people[0]!;
+  if (b.teams.length) return b.teams[0]!;
+  if (b.keyPhrase && b.keyPhrase.length >= 4) return b.keyPhrase;
+  return null;
+}
+
+function takePool(b: PostBrief): string[] {
+  const table = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
+  const hits: string[] = [];
+  for (const c of b.concepts) {
+    const lines = table[c];
+    if (lines) hits.push(...lines);
+  }
+  if (hits.length) return hits;
+  // No known concept: fall back to the other domain's table before tone, in
+  // case the brief's domain guess was the weaker signal.
+  const other = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
+  for (const c of b.concepts) {
+    const lines = other[c];
+    if (lines) hits.push(...lines);
+  }
+  if (hits.length) return hits;
+  return TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!;
+}
+
+function fill(template: string, b: PostBrief, anchor: string | null): string {
+  let out = template;
+  if (out.includes('{anchor}')) {
+    if (!anchor) return '';
+    out = out.replace(/\{anchor\}/g, anchor);
+  }
+  if (out.includes('{amount}')) {
+    if (!b.amounts.length) return '';
+    out = out.replace(/\{amount\}/g, b.amounts[0]!);
+  }
+  return out;
+}
+
+/**
+ * Below this, a sentence is not about the post. Callers retry with another
+ * variant seed; the run reports how often it had to.
+ */
+export const RELEVANCE_FLOOR = 0.3;
+
+export interface ComposeResult {
+  text: string;
+  /** 0..1: how strongly the text is tied to the brief. */
+  relevance: number;
+  /** What the sentence was built from, for the audit trail. */
+  grounding: string[];
+}
+
+/**
+ * How tied a piece of text is to a brief. The gate that enforces Dan's
+ * "make sense for the actual thing 100%".
+ *
+ * A name or team from the post counts most, then a concept term, then the
+ * domain vocabulary. Text that shares nothing with the brief scores 0 and is
+ * refused (the caller retries or falls back).
+ */
+export function relevanceOf(text: string, b: PostBrief): number {
+  const lc = text.toLowerCase();
+  let score = 0;
+  for (const p of b.people) if (lc.includes(p.toLowerCase())) { score += 0.5; break; }
+  for (const t of b.teams) if (lc.includes(t.toLowerCase())) { score += 0.35; break; }
+  for (const c of b.concepts) {
+    const word = c.replace(/_/g, ' ');
+    if (lc.includes(word) || lc.includes(word.split(' ')[0] ?? '')) { score += 0.3; break; }
+  }
+  for (const a of b.amounts) if (lc.includes(a.toLowerCase())) { score += 0.2; break; }
+  if (b.keyPhrase && lc.includes(b.keyPhrase.toLowerCase())) score += 0.2;
+  // Quoting the post's own subject phrase is the strongest possible tie.
+  if (b.topic && lc.includes(b.topic.toLowerCase())) score += 0.45;
+  // Domain vocabulary is weak evidence but real: a poker sentence on a poker
+  // post is at least in the right conversation.
+  if (b.domain === 'poker' && /\b(hand|pot|fold|call|raise|river|flop|stack|bluff|table|bet)\b/.test(lc)) score += 0.15;
+  if (b.domain === 'sports' && /\b(shot|play|game|clip|defense|pass|ball|team|season|crowd)\b/.test(lc)) score += 0.15;
+  return Math.min(1, Number(score.toFixed(2)));
+}
+
+/**
+ * Build every sentence this brief can honestly support, score each against
+ * the brief, and choose among the ones that actually say something about it.
+ *
+ * This is where "make sense for the actual thing 100%" is enforced rather
+ * than hoped for: a candidate that shares nothing with the subject scores 0
+ * and is only used when the brief gave us nothing at all to work with.
+ */
+function chooseOpening(
+  b: PostBrief,
+  seed: string,
+  anchor: string | null,
+): { text: string; grounding: string[] } {
+  const candidates: Array<{ text: string; grounding: string[] }> = [];
+
+  for (const tpl of takePool(b)) {
+    const filled = fill(tpl, b, anchor);
+    if (!filled) continue;
+    const g: string[] = [];
+    if (tpl.includes('{anchor}') && anchor) g.push(`anchor:${anchor}`);
+    if (b.concepts.length) g.push(`concept:${b.concepts[0]}`);
+    candidates.push({ text: filled, grounding: g });
+  }
+
+  if (b.topic) {
+    const frames = TOPIC_FRAMES[b.domain] ?? TOPIC_FRAMES.general!;
+    for (const tpl of frames) {
+      candidates.push({ text: tpl.replace(/\{topic\}/g, b.topic), grounding: [`topic:${b.topic}`] });
+    }
+  }
+
+  if (!candidates.length) {
+    const tone = TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!;
+    return { text: pickFrom(tone, seed, 'tone'), grounding: [] };
+  }
+
+  const scored = candidates.map((c) => ({ ...c, score: relevanceOf(c.text, b) }));
+  const good = scored.filter((c) => c.score >= RELEVANCE_FLOOR);
+  const pool = good.length ? good : scored.sort((a, z) => z.score - a.score).slice(0, 3);
+  return pool[fleetHash(seed, 'open') % pool.length]!;
+}
+
+/**
+ * A horse's own caption for something it is posting.
+ * `variantSeed` lets the caller ask for a different draw after a ledger hit.
+ */
+export function composeCaption(
+  b: PostBrief,
+  style: StyleSheet,
+  variantSeed = '0',
+): ComposeResult {
+  const seed = `${style.profileId}:${b.postId ?? b.title}:${variantSeed}`;
+  const anchor = anchorOf(b);
+  const grounding: string[] = [];
+  const { sentences } = targetWords(style);
+
+  const lines: string[] = [];
+  const chosen = chooseOpening(b, seed, anchor);
+  lines.push(chosen.text);
+  grounding.push(...chosen.grounding);
+
+  // Extra sentences for the longer styles.
+  if (sentences >= 2) {
+    const angles = FOLLOW_ANGLES[b.domain] ?? FOLLOW_ANGLES.general!;
+    lines.push(pickDistinct(angles, lines[0]!, seed, 'angle1'));
+  }
+  if (sentences >= 3) {
+    const extra = takePool(b).filter((t) => !t.includes('{'));
+    if (extra.length) lines.push(pickDistinct(extra, lines.join(' '), seed, 'angle2'));
+  }
+
+  // The question habit, when the style has one.
+  const wantsQuestion = style.questionRate > 0 && (fleetHash(seed, 'q') % 100) / 100 < style.questionRate;
+  if (wantsQuestion) {
+    lines.push(anchor ? `anyone else watch ${anchor} do this` : 'am I the only one still thinking about this');
+  }
+
+  const text = render(lines, style, seed) + (wantsQuestion ? '?' : '');
+  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.\?$/, '?');
+  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
+}
+
+/** Reaction pools for commenting, by how the commenter relates to the post. */
+const AGREE_LEADS = [
+  'this is the part people miss',
+  'exactly this',
+  'said what I was thinking',
+  'hard to argue with any of that',
+];
+const PUSHBACK_LEADS = [
+  'not sure I see it that way',
+  'I read that spot differently',
+  'respectfully, the sizing tells a different story',
+  'I think that is closer than you are making it',
+];
+const CURIOUS_LEADS = [
+  'what did the rest of the action look like',
+  'genuinely curious what happens if that card bricks',
+  'do you think that changes at a different stake',
+];
+/** Grounded versions, used whenever the brief gives us something to name. */
+const CURIOUS_ANCHORED = [
+  'what does {anchor} do there if the card bricks',
+  'curious how {anchor} plays that at a different stake',
+  'did anyone catch what {anchor} did right before this',
+];
+const CURIOUS_CONCEPT = [
+  'what does the {concept} look like a street earlier',
+  'does the {concept} read change if the sizing is smaller',
+  'how often is the {concept} actually the right call there',
+];
+const PUSH_ANCHORED = [
+  'I read {anchor} differently there',
+  'not sure {anchor} deserves the blame on that one',
+];
+
+/**
+ * A comment ON somebody else's post. Reads the brief first, so the comment is
+ * about what the post is about rather than a category guess.
+ */
+export function composeComment(
+  b: PostBrief,
+  style: StyleSheet,
+  variantSeed = '0',
+): ComposeResult {
+  const seed = `${style.profileId}:c:${b.postId ?? b.title}:${variantSeed}`;
+  const anchor = anchorOf(b);
+  const grounding: string[] = [];
+  const lines: string[] = [];
+  const { sentences } = targetWords(style);
+
+  // A question in the post earns an answer; otherwise agree, push back, or
+  // ask, weighted by the horse's certainty.
+  const roll = fleetHash(seed, 'stance') % 100;
+  const stance: 'agree' | 'push' | 'curious' | 'take' = b.isQuestion
+    ? 'curious'
+    : style.certainty === 'assertive' && roll < 35
+      ? 'push'
+      : roll < 45
+        ? 'agree'
+        : roll < 60
+          ? 'curious'
+          : 'take';
+
+  if (stance === 'take') {
+    const opening = chooseOpening(b, seed, anchor);
+    lines.push(opening.text);
+    grounding.push(...opening.grounding);
+  } else if (stance === 'agree') {
+    lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
+    if (anchor) {
+      lines.push(`${anchor} made that look simple`);
+      grounding.push(`anchor:${anchor}`);
+    } else if (b.concepts.length) {
+      lines.push(`the ${b.concepts[0]!.replace(/_/g, ' ')} is the whole story there`);
+      grounding.push(`concept:${b.concepts[0]}`);
+    }
+  } else if (stance === 'push') {
+    if (b.concepts.length) {
+      lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
+      lines.push(`the ${b.concepts[0]!.replace(/_/g, ' ')} part is doing more work than you are giving it`);
+      grounding.push(`concept:${b.concepts[0]}`);
+    } else if (anchor) {
+      lines.push(pickFrom(PUSH_ANCHORED, seed, 'pushA').replace(/\{anchor\}/g, anchor));
+      grounding.push(`anchor:${anchor}`);
+    } else {
+      lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
+    }
+  } else {
+    // Prefer a question that names the subject; the generic pool is the last
+    // resort, because "what did the rest of the action look like" under a
+    // basketball clip is the old category-guessing bug in a new costume.
+    if (anchor) {
+      lines.push(pickFrom(CURIOUS_ANCHORED, seed, 'curiousA').replace(/\{anchor\}/g, anchor));
+      grounding.push(`anchor:${anchor}`);
+    } else if (b.concepts.length) {
+      lines.push(pickFrom(CURIOUS_CONCEPT, seed, 'curiousC').replace(/\{concept\}/g, b.concepts[0]!.replace(/_/g, ' ')));
+      grounding.push(`concept:${b.concepts[0]}`);
+    } else {
+      lines.push(pickFrom(CURIOUS_LEADS, seed, 'curious'));
+    }
+  }
+
+  if (!lines.length) {
+    lines.push(pickFrom(TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!, seed, 'fallback'));
+  }
+  if (b.concepts.length && !grounding.length) grounding.push(`concept:${b.concepts[0]}`);
+
+  // Comments run shorter than captions: at most two sentences whatever the
+  // style says, because a paragraph under somebody's clip reads like a bot.
+  const capped = lines.slice(0, Math.min(2, Math.max(1, sentences)));
+  const text = render(capped, style, seed) + (stance === 'curious' ? '?' : '');
+  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.\?$/, '?');
+  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
+}
+
+/**
+ * A reply to a reply. Deliberately short and specific: it answers the thing
+ * that was said, and it never opens a new topic (that is what keeps a thread
+ * from running forever; see ReplyEngine).
+ */
+export function composeReply(
+  b: PostBrief,
+  style: StyleSheet,
+  incoming: string,
+  reason: 'addressed' | 'question' | 'disagreement',
+  variantSeed = '0',
+): ComposeResult {
+  const seed = `${style.profileId}:r:${b.postId ?? b.title}:${variantSeed}`;
+  const anchor = anchorOf(b);
+  const lines: string[] = [];
+  const grounding: string[] = [];
+
+  if (reason === 'question') {
+    const answers = anchor
+      ? [`with ${anchor} I think it holds up`, `on that hand, yes, I would still take it`, `depends on the sizing but mostly yes`]
+      : ['yes, mostly', 'I would still take it', 'depends on the sizing'];
+    lines.push(pickFrom(answers, seed, 'ans'));
+    if (anchor) grounding.push(`anchor:${anchor}`);
+  } else if (reason === 'disagreement') {
+    lines.push(pickFrom([
+      'fair, I can see that side of it',
+      'I still think the read holds but that is a reasonable line',
+      'we are closer than it sounds, the difference is the sizing',
+    ], seed, 'dis'));
+  } else {
+    lines.push(pickFrom([
+      'appreciate that',
+      'yeah, exactly',
+      'good shout',
+      'that is the bit I keep coming back to',
+    ], seed, 'ack'));
+  }
+
+  if (b.concepts.length && !grounding.length) grounding.push(`concept:${b.concepts[0]}`);
+  const text = render(lines.slice(0, 1), style, seed) + (reason === 'question' ? '' : '');
+  return { text, relevance: relevanceOf(text, b), grounding };
+}
