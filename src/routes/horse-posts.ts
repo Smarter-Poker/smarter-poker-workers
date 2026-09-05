@@ -22,6 +22,7 @@ import type { Context } from 'hono';
 import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
 import { publishForHorse, takeSupplyStats, type PublishResult } from '../lib/content-engine/HorsePublisher.js';
+import { syncStyleSheets } from '../lib/content-engine/VoiceWriter.js';
 
 export const MAX_POSTS_PER_RUN = 80;
 const DEADLINE_MS = 540_000;
@@ -60,7 +61,7 @@ export async function horsePosts(c: Context) {
         }
         const item = queue[cursor++]!;
         try {
-          results.push(await publishForHorse(item.horse));
+          results.push(await publishForHorse(item.horse, { fleet }));
         } catch (err) {
           results.push({
             success: false,
@@ -75,6 +76,10 @@ export async function horsePosts(c: Context) {
       }
     };
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    // Phase 2: keep the operator-visible copy of each horse's voice in step
+    // with the code. Bounded, self-healing, and it never blocks a publish.
+    const styles = await syncStyleSheets(fleet);
 
     const posted = results.filter((r) => r.success);
     const skipped = results.filter((r) => r.skipped === 'posted_recently');
@@ -98,6 +103,16 @@ export async function horsePosts(c: Context) {
       }, {}),
       errors,
       supply: takeSupplyStats(),
+      styles_synced: styles.updated,
+      // Phase 2: did the words match the subject?
+      avg_relevance: posted.length
+        ? Number((posted.reduce((a, r) => a + (r.relevance ?? 0), 0) / posted.length).toFixed(2))
+        : 0,
+      below_floor: posted.filter((r) => r.belowFloor).length,
+      tagged: posted.filter((r) => r.tagged).length,
+      avg_drafts: posted.length
+        ? Number((posted.reduce((a, r) => a + (r.drafts ?? 1), 0) / posted.length).toFixed(2))
+        : 0,
       deadline_hit: deadlineHit,
       cap_hit: due.length > MAX_POSTS_PER_RUN,
       due_window_hours: DUE_WINDOW_HOURS,

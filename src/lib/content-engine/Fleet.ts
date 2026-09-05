@@ -27,7 +27,7 @@ export async function loadFleet(): Promise<FleetHorse[]> {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supa
       .from('content_authors')
-      .select('id, name, profile_id, timezone, is_active')
+      .select('id, name, alias, profile_id, timezone, is_active, location, stakes, specialty, personality')
       .eq('is_active', true)
       .not('profile_id', 'is', null)
       .order('id', { ascending: true })

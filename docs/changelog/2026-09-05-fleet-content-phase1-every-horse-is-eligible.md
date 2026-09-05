@@ -81,6 +81,47 @@ horses commented since 10:30 (59 in the whole previous week); 440 likes;
 the 20:30 engagement fire did 40 likes, 20 comments, 12 replies and 20
 reactions in one hour.
 
+## Verification pass before Phase 2 (Dan: "verify everything is 100% built, wired, tested, pushed")
+
+Playbook Rule 1, A to E, against `origin/main`:
+
+- A. `git status --porcelain` empty; `origin/main..HEAD` empty; every branch
+  merged by autopilot (#73 to #82); workers VM `/health` ok and the container
+  label `org.opencontainers.image.revision` equals `main`.
+- B. Worktree under `.agent-trees/`; every commit authored `Smarter-Poker
+  <254329056+...>`; no `--no-verify` anywhere.
+- C. No TODO/FIXME/stub/empty catch in any phase-1 file. Every new export has
+  a caller (`isDueForPost`, `isOnlineNow`, `loadFleet`, `engineEnabled`,
+  `publishForHorse`, `takeSupplyStats`, the ledger functions, `horsePosts`).
+  No `shouldHorseBeActive` or horse `limit(100)` left on a live path. The
+  only `@ts-nocheck` is the pre-existing one on `HorseSocialEngine.ts`.
+- D. `tsc --noEmit` clean, eslint 0 errors on phase-1 files, `vitest` 35
+  files / 154 tests green, `npm run build` ok.
+- E. `cron_execution_log`: 13 `horse-posts` fires, 12 `horses-social-all`,
+  48 `horses-stories`, 2 `horses-social-friends` since cutover, 0
+  non-success, 0 `horse-batch` fires. Migrations 20260905120000,
+  20260905121000 and 20260905220000 listed and applied; the born-social
+  trigger proved on a rolled-back fresh horse; `fn_horses_not_social_ready()`
+  = 0.
+
+Two more things the pass found and fixed (#81, #82):
+
+- Dan, 2026-09-05: "10% OF HORSES SHOULD BE POSTING DAILY" and posting
+  "SPREAD OUT THROUGH THE ENTIRE DAY / WEEK". Cadence is now 45/30/15/10
+  (1, 2, 3, 7 per week), with `fn_fleet_hash` + `fn_fleet_cadence` in
+  Postgres as a byte-identical twin (test vectors asserted) so
+  `personality.cadence_per_week` is the schedule the worker runs. Live:
+  465 / 289 / 140 / 106. Measured on the real 1,000 ids and timezones
+  through the real scheduler: 2,196 openings a week (314 a day), every UTC
+  hour of the week carries 58 to 123 openings, no hour above 5.6%, weekdays
+  275 to 339. Two new tests pin the spread.
+- The 21:10 run repeated four captions while reporting `collided: 0`.
+  `phraseRecentlyUsed` read 50 rows for the phrase with no ORDER BY, and a
+  pool caption has hundreds of rows in 90 days, so today's never made the
+  page. The same shape as the audit's D-03, one layer down. Both ledger
+  reads are now bounded existence checks. Proved on the 22:10 fire: 12
+  posts, 12 horses, 12 distinct captions, 12 distinct assets, 0 failed.
+
 ## Still open after this phase
 
 - Poker supply is exhausted: two RSS feeds and 150 clips are all inside the
