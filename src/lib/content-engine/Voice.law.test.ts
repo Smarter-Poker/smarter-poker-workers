@@ -103,6 +103,21 @@ describe('the brief reads the real subject', () => {
     expect(isUninformativeTitle('Angel holding her own in the paint', 'Bleacher Report')).toBe(false);
   });
 
+  it('knows YouTube player furniture is not a clip title', () => {
+    // 3,855 of 8,236 sports_clips rows had one of these as their title.
+    for (const junk of ['Keyboard shortcuts', 'Playback', 'Subtitles and closed captions', 'Spherical Videos', 'Sign in to YouTube']) {
+      expect(isUninformativeTitle(junk, 'NBA')).toBe(true);
+      const b = briefForAsset({ kind: 'video', title: junk, source: 'NBA' });
+      expect(b.topic).toBeUndefined();
+      for (const id of fleetIds(10)) {
+        const t = composeCaption(b, styleSheetFor(id)).text.toLowerCase();
+        expect(t).not.toContain('keyboard');
+        expect(t).not.toContain('spherical');
+        expect(t).not.toContain('closed caption');
+      }
+    }
+  });
+
   it('refuses to quote a placeholder title', () => {
     const b = briefForAsset({ kind: 'video', title: 'Bleacher Report NBA NBA Clip', source: 'Bleacher Report NBA' });
     expect(b.topic).toBeUndefined();

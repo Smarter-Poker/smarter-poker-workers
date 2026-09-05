@@ -29,6 +29,7 @@ import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
+import { isUninformativeTitle } from './PostBrief.js';
 import { getRandomClip } from './ClipLibrary.js';
 import {
   assetKeyFor,
@@ -164,6 +165,16 @@ interface LibraryClip {
  */
 export type YtValidity = 'ok' | 'bad' | 'unknown';
 const validityCache = new Map<string, { v: YtValidity; at: number }>();
+/**
+ * Real titles, straight from YouTube, keyed by asset. oEmbed already tells us
+ * the title on the call we make anyway, and half the stored titles are the
+ * player's menu rather than the clip, so we keep it and repair the row.
+ */
+const oembedTitles = new Map<string, string>();
+export function cachedOembedTitle(url: string | null | undefined): string | null {
+  const key = assetKeyFor(url);
+  return (key && oembedTitles.get(key)) || null;
+}
 const VALIDITY_TTL_MS = 24 * 3_600_000;
 let oembedBackoffUntil = 0;
 let consecutive403 = 0;
@@ -230,7 +241,8 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     if (!response.ok) {
       v = 'bad';
     } else {
-      const body = (await response.json()) as { html?: string };
+      const body = (await response.json()) as { html?: string; title?: string };
+      if (body.title && body.title.trim()) oembedTitles.set(key, body.title.trim());
       v = body.html && body.html.includes('iframe') ? 'ok' : 'bad';
     }
     validityCache.set(key, { v, at: Date.now() });
@@ -250,6 +262,7 @@ export async function validateYouTubeVideo(url: string | null | undefined): Prom
 /** Test hook. */
 export function _resetValidityCache(): void {
   validityCache.clear();
+  oembedTitles.clear();
   oembedBackoffUntil = 0;
   consecutive403 = 0;
 }
@@ -391,7 +404,23 @@ async function postVideoClip(
   // Phase 2: the caption is written from a brief of THIS clip - its title,
   // channel and sport - not drawn from a pool keyed on a category. See
   // PostBrief.ts for what the old path produced.
-  const title = (clip as LibraryClip).title || '';
+  // Prefer the title YouTube just gave us over the one the scraper stored,
+  // and repair the row while we are here (self-healing, bounded, one write).
+  const storedTitle = (clip as LibraryClip).title || '';
+  const realTitle = cachedOembedTitle(clip.source_url);
+  let title = storedTitle;
+  if (realTitle && isUninformativeTitle(storedTitle, (clip as SportsClipRow).source ?? undefined)
+      && !isUninformativeTitle(realTitle, (clip as SportsClipRow).source ?? undefined)) {
+    title = realTitle;
+    if (clipType === 'sports' && (clip as SportsClipRow).id) {
+      const { error: fixErr } = await getSupabase()
+        .from('sports_clips')
+        .update({ title: realTitle })
+        .eq('id', (clip as SportsClipRow).id);
+      if (fixErr) console.warn('[horse-publisher] title repair failed:', fixErr.message);
+      else bumpSupplyStat('title_repaired');
+    }
+  }
   const written = await writeCaption(
     horse as AuthorHorse,
     {

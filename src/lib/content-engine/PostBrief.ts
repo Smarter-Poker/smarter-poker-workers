@@ -460,9 +460,24 @@ export function topicOf(title: string): string | undefined {
  * tone, which is generic but clean and true. A clean generic sentence beats a
  * specific-sounding sentence about a placeholder.
  */
+const YOUTUBE_CHROME = [
+  'keyboard shortcuts', 'playback', 'subtitles and closed captions',
+  'spherical videos', 'sign in to youtube', 'watch later', 'share',
+  'picture-in-picture', 'full screen', 'autoplay', 'about press copyright',
+  'press copyright contact us', 'developers', 'advertise', 'terms privacy',
+  'nfl sunday ticket', 'how youtube works', 'test new features',
+];
+
 export function isUninformativeTitle(title: string, source?: string | null): boolean {
   const t = title.trim();
   if (!t) return true;
+
+  // The scraper stored YouTube's own player menu as the title on 3,855 of
+  // 8,236 rows (measured 2026-09-05): "Keyboard shortcuts" x1,223,
+  // "Playback" x1,000, "Subtitles and closed captions" x837, "Spherical
+  // Videos" x794. None of them is a clip.
+  const chrome = t.toLowerCase();
+  if (YOUTUBE_CHROME.some((c) => chrome === c || chrome.startsWith(c))) return true;
   const words = t.split(/\s+/).filter(Boolean);
   if (words.length <= 2) return true;
 
