@@ -80,7 +80,7 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Build on the VM"
-          $SSH "cd /opt/workers-build && docker build --label org.opencontainers.image.revision=$SHORT -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -40 /tmp/workers-build.log; exit 2; }"
+          $SSH "cd /opt/workers-build && docker build --build-arg GIT_SHA=$SHA --label org.opencontainers.image.revision=$SHORT -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -40 /tmp/workers-build.log; exit 2; }"
           echo "::endgroup::"
 
           echo "::group::Cut over"
@@ -91,10 +91,12 @@ jobs:
           for i in $(seq 1 12); do
             REV=$($SSH "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE | head -1) 2>/dev/null" || echo "")
             HEALTH=$($SSH 'curl -fsS -m 3 http://127.0.0.1:8081/health 2>/dev/null || echo ""')
-            if [ "$REV" = "$SHORT" ] && printf '%s' "$HEALTH" | grep -q '"status":"ok"'; then
+            if [ "$REV" = "$SHORT" ] \
+              && printf '%s' "$HEALTH" | grep -q '"status":"ok"' \
+              && printf '%s' "$HEALTH" | grep -q "\"version\":\"$SHA\""; then
               echo "running $REV, healthy: $HEALTH"
               echo "### Workers deployed" >> "$GITHUB_STEP_SUMMARY"
-              echo "Revision \`$SHORT\` is running on the VM and /health is ok." >> "$GITHUB_STEP_SUMMARY"
+              echo "Revision \`$SHA\` is running on the VM and /health reports that exact revision." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep 5

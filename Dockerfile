@@ -19,6 +19,7 @@ RUN npm run build
 
 FROM node:20-alpine AS runtime
 WORKDIR /app
+ARG GIT_SHA=dev
 # dumb-init for proper signal forwarding inside the container
 RUN apk add --no-cache dumb-init curl && \
     addgroup -S workers && adduser -S workers -G workers -u 10001
@@ -29,6 +30,7 @@ COPY                --chown=workers:workers package.json     ./package.json
 
 USER workers
 ENV NODE_ENV=production
+ENV GIT_SHA=$GIT_SHA
 ENV PORT=8081
 EXPOSE 8081
 
