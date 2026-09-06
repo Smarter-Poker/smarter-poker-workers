@@ -106,6 +106,7 @@ async function writeGated(
 
     if (draft.relevance < RELEVANCE_FLOOR) continue;
     if (draft.semanticKey && postId && await phraseUsedOnPost(draft.semanticKey, postId)) continue;
+    if (draft.semanticKey && !postId && await phraseRecentlyUsed(draft.semanticKey, horseId)) continue;
     const norm = normalizePhrase(draft.text);
     if (await phraseRecentlyUsed(norm, horseId)) continue;
 
