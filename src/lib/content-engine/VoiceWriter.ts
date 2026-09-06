@@ -38,6 +38,14 @@ import { normalizePhrase, phraseRecentlyUsed } from './ContentLedger.js';
 import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
+import { pickHandStory, pickSessionStory } from './HandStory.js';
+import {
+  composeHandPost,
+  composeSessionPost,
+  briefForHand,
+  briefForSession,
+  factsMatch,
+} from './GroundedComposer.js';
 
 export interface WrittenText {
   text: string;
@@ -173,6 +181,72 @@ export async function writeStory(
     horse.profile_id,
   );
   return { ...core, brief, style };
+}
+
+/**
+ * A post about the poker this horse actually played.
+ *
+ * Phase 3. Tried before any clip or article, because a hand is the only
+ * source that cannot repeat and cannot be about nothing: two horses did not
+ * play the same hand. Returns null when the horse has nothing worth telling
+ * (a quiet week, or only trivial pots), and the caller falls back to the
+ * shared media pools.
+ *
+ * The freshness ledger still applies - a horse should not tell the same hand
+ * twice - and `factsMatch` refuses any draft that states a number the ledger
+ * does not carry.
+ */
+export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | null> {
+  const style = styleSheetFor(horse.profile_id);
+
+  const hand = await pickHandStory(horse.profile_id);
+  if (hand) {
+    const brief = briefForHand(hand);
+    for (let i = 0; i < MAX_DRAFTS; i++) {
+      const draft = composeHandPost(hand, style, String(i));
+      if (!draft.text) continue;
+      // A post may never state a number the row does not carry.
+      if (!factsMatch(draft.text, hand)) {
+        console.warn('[voice] grounded draft rejected: facts did not match the hand');
+        continue;
+      }
+      const norm = normalizePhrase(draft.text);
+      if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
+      return {
+        text: draft.text,
+        brief,
+        style,
+        relevance: 1,
+        grounding: draft.grounding,
+        attempts: i + 1,
+        belowFloor: false,
+        stale: false,
+      };
+    }
+  }
+
+  const session = await pickSessionStory(horse.profile_id);
+  if (session) {
+    const brief = briefForSession(session);
+    for (let i = 0; i < MAX_DRAFTS; i++) {
+      const draft = composeSessionPost(session, style, String(i));
+      if (!draft.text) continue;
+      const norm = normalizePhrase(draft.text);
+      if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
+      return {
+        text: draft.text,
+        brief,
+        style,
+        relevance: 1,
+        grounding: draft.grounding,
+        attempts: i + 1,
+        belowFloor: false,
+        stale: false,
+      };
+    }
+  }
+
+  return null;
 }
 
 /**

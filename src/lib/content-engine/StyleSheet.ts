@@ -218,10 +218,16 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
 
   // Numerals.
   if (s.numerals === 'words') {
-    // Never reword a stakes level, a score or a fraction: "1/3" is a game,
-    // not a number, and "one/three" is nonsense at a poker table.
+    // Never reword a number that is part of a token: card notation ("9c",
+    // "Ts"), a variant name ("PLO5"), a stake ("1/3"), a score or a decimal.
+    // Measured 2026-09-06: without the letter guards this style turned
+    // "QsJc9cKh3h on Qc 3c 7s" into "QsJcninecKhthreeh on Qc threec sevens",
+    // which is not a hand any player could read.
     parts = parts.map((p) =>
-      p.replace(/(^|[^\d/$.-])(\d{1,2})(?![\d/.-])/g, (_m, pre: string, n: string) => `${pre}${NUMBER_WORDS[n] ?? n}`),
+      p.replace(
+        /(^|[^\dA-Za-z/$.-])(\d{1,2})(?![\dA-Za-z/.-])/g,
+        (_m, pre: string, n: string) => `${pre}${NUMBER_WORDS[n] ?? n}`,
+      ),
     );
   }
 

@@ -28,7 +28,7 @@
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
-import { writeCaption, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
+import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
 import { isUninformativeTitle } from './PostBrief.js';
 import { getRandomClip } from './ClipLibrary.js';
 import {
@@ -547,6 +547,49 @@ async function postNewsLink(
 }
 
 /**
+ * A post about the horse's own poker. Text only: the subject is the hand, and
+ * there is no asset to attach until the Phase 9 renderer exists.
+ *
+ * The "no text-only posts" rule this lifts was written when a text post meant
+ * a sentence from a pool with nothing behind it. A hand recap is the opposite
+ * of that: it is the most specific thing the fleet can publish.
+ */
+async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
+  const base = { horse: horse.name, profile_id: horse.profile_id };
+  const written = await writeGrounded(horse as AuthorHorse);
+  if (!written || !written.text) return { ...base, success: false, error: 'No hand worth telling' };
+
+  const { data: post, error } = await getSupabase()
+    .from('social_posts')
+    .insert({
+      author_id: horse.profile_id,
+      content: written.text,
+      content_type: 'text',
+      visibility: 'public',
+      metadata: { clip_type: 'poker', scheduler: 'fleet', grounded: true, grounding: written.grounding },
+    })
+    .select('id')
+    .maybeSingle();
+
+  if (error) return { ...base, success: false, error: error.message };
+  const postId = (post as { id: string } | null)?.id ?? null;
+  await recordPhrase(normalizePhrase(written.text), horse.profile_id, postId);
+  if (postId) await recordBrief(postId, written.brief);
+  return {
+    ...base,
+    success: true,
+    postId: postId ?? undefined,
+    type: 'grounded_hand',
+    caption: written.text.slice(0, 60),
+    relevance: written.relevance,
+    grounding: written.grounding,
+    drafts: written.attempts,
+    belowFloor: false,
+    briefSummary: summarise(written.brief),
+  };
+}
+
+/**
  * Publish one post for this horse. 75/25 poker/sports with streak
  * prevention (three of a kind forces a switch), news first, video fallback.
  * Honours the recent-post guard so the hourly fleet route and the legacy
@@ -589,6 +632,22 @@ export async function publishForHorse(
   const preferred: 'poker' | 'sports' = isPoker ? 'poker' : 'sports';
   const other: 'poker' | 'sports' = isPoker ? 'sports' : 'poker';
   const attempts: string[] = [];
+
+  // Phase 3: the horse's own poker.
+  //
+  // Grounded posts cannot repeat and cannot be about nothing - two horses did
+  // not play the same hand, and there are 204,474 of them a week across the
+  // fleet. They lead most of the time, but not always: a feed of nothing but
+  // hand recaps is its own kind of monotony, and the clips and articles give
+  // it texture. The split is a hash of the horse and the day, so it is stable
+  // across a retry and varies across the fleet.
+  const groundedFirst = fleetHash(`${horse.profile_id}:${new Date().toISOString().slice(0, 10)}`, 'grounded') % 100 < 60;
+  if (groundedFirst) {
+    const grounded = await postGrounded(horse);
+    if (grounded.success) return grounded;
+    attempts.push(`grounded: ${grounded.error}`);
+  }
+
   for (const kind of [preferred, other]) {
     let result = await postNewsLink(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
@@ -597,5 +656,14 @@ export async function publishForHorse(
     if (result.success) return result;
     attempts.push(`${kind}_video: ${result.error}`);
   }
+
+  // The media pools are exhausted for this horse. Its own poker is the
+  // fallback that never is.
+  if (!groundedFirst) {
+    const grounded = await postGrounded(horse);
+    if (grounded.success) return grounded;
+    attempts.push(`grounded: ${grounded.error}`);
+  }
+
   return { ...base, success: false, error: attempts.join(' | ') };
 }
