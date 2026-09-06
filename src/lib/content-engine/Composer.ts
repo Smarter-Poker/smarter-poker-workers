@@ -131,6 +131,10 @@ const POKER_TAKES: Record<string, string[]> = {
     'the study is where results come from, the table is just where they show up',
     'reviewing your own losses is worse and better than anything else you can do',
   ],
+  pot: [
+    'a pot that size makes every decision feel louder',
+    'the pot gets the headline, the line is what is worth studying',
+  ],
   read: [
     'a read like that is a hundred small hands paying off at once',
     'you cannot teach that timing, you can only put in the hours',
@@ -430,7 +434,7 @@ export function anchorOf(b: PostBrief): string | null {
   return null;
 }
 
-function takePool(b: PostBrief): string[] {
+function specificTakePool(b: PostBrief): string[] {
   const table = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
   const hits: string[] = [];
   for (const c of b.concepts) {
@@ -446,7 +450,12 @@ function takePool(b: PostBrief): string[] {
     if (lines) hits.push(...lines);
   }
   if (hits.length) return hits;
-  return TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!;
+  return [];
+}
+
+function takePool(b: PostBrief): string[] {
+  const specific = specificTakePool(b);
+  return specific.length ? specific : (TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!);
 }
 
 function fill(template: string, b: PostBrief, anchor: string | null): string {
@@ -519,7 +528,7 @@ function chooseOpening(
 ): { text: string; grounding: string[] } {
   const candidates: Array<{ text: string; grounding: string[] }> = [];
 
-  for (const tpl of takePool(b)) {
+  for (const tpl of specificTakePool(b)) {
     const filled = fill(tpl, b, anchor);
     if (!filled) continue;
     const g: string[] = [];
@@ -528,7 +537,9 @@ function chooseOpening(
     candidates.push({ text: filled, grounding: g });
   }
 
-  if (b.topic) {
+  // A supported domain take is stronger than quoting a scraped title. Only
+  // use a topic frame when no grounded take survived interpolation.
+  if (!candidates.length && b.topic) {
     // A title that is already a sentence is stated and reacted to; only a
     // noun-phrase title can be dropped into the middle of one. See
     // titleIsAClause() for the sentence this stopped producing.
@@ -777,14 +788,10 @@ export function composeComment(
   // those fragments into actor-shaped frames caused visibly robotic live
   // comments on 2026-09-06.
   const anchor = agentOf(b);
-  const specificTakes = takePool(b).filter((line) => {
+  const specificTakes = specificTakePool(b).filter((line) => {
     if (line.includes('{anchor}') && !anchor) return false;
     if (line.includes('{amount}') && !b.amounts.length) return false;
-    return b.concepts.some((concept) => {
-      const primary = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
-      const secondary = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
-      return Boolean(primary[concept]?.includes(line) || secondary[concept]?.includes(line));
-    });
+    return true;
   });
 
   // No named subject and no domain sentence we can support means no comment.
