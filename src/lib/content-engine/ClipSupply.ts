@@ -159,9 +159,22 @@ export async function candidateClips(
     domain === 'poker'
       ? 'id, video_id, source_url, source, title, category, oembed_ok'
       : 'id, video_id, source_url, source, title, category';
+  // poker_clips knows when YouTube published the video; sports_clips only
+  // knows when we scraped it. Ordering by a column a table does not have is
+  // a 400, so each domain is ordered by the freshness it actually records.
+  const freshness = domain === 'poker' ? 'published_at' : 'created_at';
 
+  // Newest first. The sports side learned this the expensive way on
+  // 2026-09-05: an unordered .limit() returned the OLDEST rows, January
+  // shorts of which 24 answered 404 in a single run. A scraped pool grows at
+  // the recent end, so that is the end to read from.
   if (mine.length) {
-    let q = getSupabase().from(table).select(select).in('source', mine).limit(limit);
+    let q = getSupabase()
+      .from(table)
+      .select(select)
+      .in('source', mine)
+      .order(freshness, { ascending: false, nullsFirst: false })
+      .limit(limit);
     if (domain === 'poker') q = q.eq('is_active', true).not('oembed_ok', 'is', false);
     const { data, error } = await q;
     if (!error && (data ?? []).length >= 5) {
@@ -169,7 +182,11 @@ export async function candidateClips(
     }
   }
 
-  let q = getSupabase().from(table).select(select).limit(limit);
+  let q = getSupabase()
+    .from(table)
+    .select(select)
+    .order(freshness, { ascending: false, nullsFirst: false })
+    .limit(limit);
   if (domain === 'poker') q = q.eq('is_active', true).not('oembed_ok', 'is', false);
   const { data, error } = await q;
   if (error) {
