@@ -63,3 +63,51 @@ export async function engineEnabled(): Promise<boolean> {
 export function _resetEngineSwitchCache(): void {
   cachedSwitch = null;
 }
+
+/**
+ * Which WAYS a horse is allowed to post right now.
+ *
+ * Dan, 2026-09-06, on seeing the grounded hand posts live: "ANYTIME YOU
+ * CREATE SOME NEW WAY FOR A HORSE TO POST, OR GIVE IT AN INSTRUCTION TO
+ * 'CREATE NEW CONTENT' I NEED TO APPROVE IT FIRST."
+ *
+ * He was right about the posts. They were true, they passed every law test
+ * written for them, and none of those tests asked whether a person would want
+ * to read one:
+ *
+ *   "No hand, all narrative. Qh8c7d6sAd5c on 5s 4s Td 3c 6d. won 184bb"
+ *
+ * So each way of posting is a row in `horse_post_modes`, a new one starts
+ * disabled, and turning it on is Dan's - it is data, so approving costs one
+ * UPDATE and no deploy.
+ *
+ * FAILS CLOSED. If the table cannot be read, a mode is treated as OFF. That
+ * is the opposite of every other fallback in this engine, and deliberately:
+ * everywhere else a failed read must not silence a horse, but here a failed
+ * read must not put an unapproved voice in front of players. Silence is
+ * recoverable; a thousand accounts posting something Dan has not seen is not.
+ */
+const modeCache = new Map<string, { enabled: boolean; at: number }>();
+const MODE_TTL_MS = 60_000;
+
+export async function postModeEnabled(mode: string): Promise<boolean> {
+  const hit = modeCache.get(mode);
+  if (hit && Date.now() - hit.at < MODE_TTL_MS) return hit.enabled;
+  const { data, error } = await getSupabase()
+    .from('horse_post_modes')
+    .select('enabled')
+    .eq('mode', mode)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[fleet] post-mode read failed for ${mode}; treating as OFF:`, error.message);
+    return false;
+  }
+  const enabled = Boolean((data as { enabled?: boolean } | null)?.enabled);
+  modeCache.set(mode, { enabled, at: Date.now() });
+  return enabled;
+}
+
+/** Test hook. */
+export function _resetPostModes(): void {
+  modeCache.clear();
+}
