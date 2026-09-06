@@ -19,9 +19,18 @@ import {
   sendFriendRequests,
   acceptFriendRequests,
 } from '../lib/content-engine/HorseSocialEngine.js';
+import { engineEnabled } from '../lib/content-engine/Fleet.js';
 
 export async function horsesSocialFriends(c: Context) {
   try {
+    if (!(await engineEnabled())) {
+      return c.json({
+        success: true,
+        skipped: 'engine_disabled',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const sendResult = await sendFriendRequests(10);
     const acceptResult = await acceptFriendRequests(15);
 

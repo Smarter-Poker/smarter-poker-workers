@@ -18,10 +18,15 @@ master fleet switch was disabled.
   first instead of repeating it.
 - Ellipsis styles render one intentional ellipsis character, not three dots
   that resemble a truncated source title.
+- The fleet master switch is now checked at the start of both social
+  orchestration routes. Turning the fleet off stops friendships, likes,
+  comments, replies, reactions and DMs before any mutation, as well as posts
+  and stories.
 
 ## Verification
 
-- All 289 worker tests pass.
+- All 290 worker tests pass, including an 11-law Phase 1-to-4 recertification
+  suite that pins the social-route master gates ahead of their first mutation.
 - TypeScript, build and ESLint pass with zero errors.
 - A current-catalogue sweep rendered 300 poker and 300 sports clips through 40
   styles: 24,000 drafts, 4,160 accepted, 19,840 safely rejected, and zero

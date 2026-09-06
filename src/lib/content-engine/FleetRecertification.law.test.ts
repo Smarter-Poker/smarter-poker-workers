@@ -17,6 +17,11 @@ const source = (name: string) => fs.readFileSync(
   'utf8',
 );
 
+const routeSource = (name: string) => fs.readFileSync(
+  fileURLToPath(new URL(`../../routes/${name}`, import.meta.url)),
+  'utf8',
+);
+
 function fleetIds(n: number): string[] {
   return Array.from({ length: n }, (_, i) => {
     const a = fleetHash(String(i), 'recert-a').toString(16).padStart(8, '0');
@@ -79,6 +84,23 @@ describe('quality controls fail closed', () => {
     const fn = fleet.slice(fleet.indexOf('export async function engineEnabled'));
     expect(fn).toMatch(/if \(error \|\| !data\)[\s\S]*return false;/);
     expect(fn).not.toMatch(/error \|\| !data \? true/);
+  });
+
+  it('the master switch stops both social orchestration routes before any mutation', () => {
+    const routes = [
+      ['horses-social-all.ts', 'likePosts'],
+      ['horses-social-friends.ts', 'sendFriendRequests'],
+    ] as const;
+    for (const [name, firstMutation] of routes) {
+      const route = routeSource(name);
+      const handler = route.slice(route.indexOf('export async function'));
+      const gate = handler.indexOf('if (!(await engineEnabled()))');
+      expect(gate, `${name} is missing the master gate`).toBeGreaterThan(-1);
+      expect(
+        handler.indexOf(firstMutation),
+        `${name} mutates before the master gate`,
+      ).toBeGreaterThan(gate);
+    }
   });
 
   it('same-post semantic duplicates are checked and recorded', () => {
