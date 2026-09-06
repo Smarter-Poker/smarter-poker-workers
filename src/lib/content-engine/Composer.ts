@@ -69,6 +69,11 @@ const POKER_TAKES: Record<string, string[]> = {
     'ICM turns a clear call into a fold and everybody knows it',
     'the shortest stack sets the pace at that table whether they mean to or not',
   ],
+  heads_up: [
+    'heads-up poker strips the table down to pressure and adjustment',
+    'with two players left, every tendency gets expensive quickly',
+    'heads up rewards the player who adjusts first and keeps adjusting',
+  ],
   bracelet: [
     'a bracelet changes how the rest of a career reads',
     'people remember the win, not the four days it took',
@@ -389,14 +394,14 @@ function contentWords(s: string): Set<string> {
  * two-sentence style produced "the detail in X is what makes it. the details
  * are what make it." (measured 2026-09-05).
  */
-function pickDistinct(arr: string[], avoid: string, seed: string, salt: string): string {
+function pickDistinct(arr: string[], avoid: string, seed: string, salt: string): string | null {
   const taken = contentWords(avoid);
   const fresh = arr.filter((c) => {
     for (const w of contentWords(c)) if (taken.has(w)) return false;
     return true;
   });
-  const pool = fresh.length ? fresh : arr;
-  return pool[fleetHash(seed, salt) % pool.length]!;
+  if (!fresh.length) return null;
+  return fresh[fleetHash(seed, salt) % fresh.length]!;
 }
 
 /** The noun the sentence hangs on: a real name from the post. */
@@ -447,6 +452,11 @@ function specificTakePool(b: PostBrief): string[] {
   }
   if (hits.length) return hits;
   return [];
+}
+
+/** A caption is publishable only when its title supports a domain take. */
+export function hasSpecificTake(b: PostBrief): boolean {
+  return specificTakePool(b).length > 0;
 }
 
 function takePool(b: PostBrief): string[] {
@@ -568,6 +578,12 @@ export function composeCaption(
   style: StyleSheet,
   variantSeed = '0',
 ): ComposeResult {
+  // A title alone is not comprehension. The old fallback wrapped arbitrary
+  // scraped text in "worth a look" and scored the repeated title as relevant,
+  // allowing poker posts about aliens and sports clips with clipped captions.
+  // Silence is recoverable; publishing something we did not understand is not.
+  if (!hasSpecificTake(b)) return { text: '', relevance: 0, grounding: [] };
+
   const seed = `${style.profileId}:${b.postId ?? b.title}:${variantSeed}`;
   const anchor = anchorOf(b);
   const grounding: string[] = [];
@@ -580,8 +596,9 @@ export function composeCaption(
 
   // Extra sentences for the longer styles.
   if (sentences >= 2 && b.concepts.length) {
-    const groundedAngles = takePool(b).filter((t) => !t.includes('{'));
-    if (groundedAngles.length) lines.push(pickDistinct(groundedAngles, lines[0]!, seed, 'angle1'));
+    const groundedAngles = specificTakePool(b).filter((t) => !t.includes('{'));
+    const angle = groundedAngles.length ? pickDistinct(groundedAngles, lines[0]!, seed, 'angle1') : null;
+    if (angle) lines.push(angle);
   }
 
   // The question habit, when the style has one.
@@ -593,7 +610,8 @@ export function composeCaption(
 
   const text = render(lines, style, seed) + (wantsQuestion ? '?' : '');
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
-  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
+  const semantic = lines[0]!.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding, semanticKey: `caption:${semantic}` };
 }
 
 /** Reaction pools for commenting, by how the commenter relates to the post. */

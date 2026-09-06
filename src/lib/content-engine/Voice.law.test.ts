@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlineCase, isUninformativeTitle } from './PostBrief.js';
 import { styleSheetFor, styleId, render, stripBannedGlyphs } from './StyleSheet.js';
-import { composeCaption, composeComment, composeReply, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
+import { composeCaption, composeComment, composeReply, hasSpecificTake, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
 import { areFriends, friendsOf, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
 import { decideReply, MAX_TURNS_PER_HORSE, MAX_HORSE_TURNS, type ThreadComment } from './ReplyEngine.js';
 import { fleetHash } from './FleetScheduler.js';
@@ -126,7 +126,7 @@ describe('the brief reads the real subject', () => {
       const t = composeCaption(b, styleSheetFor(id)).text;
       expect(t.toLowerCase()).not.toContain('nba clip');
       expect(t.toLowerCase()).not.toContain('bleacher report');
-      expect(t.trim().length).toBeGreaterThan(3);
+      expect(t).toBe('');
     }
   });
 
@@ -214,7 +214,7 @@ describe('100+ writing styles, and no two horses look the same', () => {
   });
 
   it('one clip through 200 horses gives mostly different sentences', () => {
-    const brief = briefForAsset(REAL_ASSETS[0]!);
+    const brief = briefForAsset(REAL_ASSETS[4]!);
     const texts = ids.slice(0, 200).map((id) => composeCaption(brief, styleSheetFor(id)).text);
     const unique = new Set(texts);
     // Before Phase 2 one caption was published verbatim by 26 horses.
@@ -235,10 +235,15 @@ describe('100+ writing styles, and no two horses look the same', () => {
 describe('the words are about the actual thing', () => {
   const ids = fleetIds(60);
 
-  it('every real asset composes above the relevance floor for most horses', () => {
+  it('supported assets compose above the floor and unsupported assets stay silent', () => {
     for (const asset of REAL_ASSETS) {
       const brief = briefForAsset(asset);
-      const scores = ids.map((id) => composeCaption(brief, styleSheetFor(id)).relevance);
+      const drafts = ids.map((id) => composeCaption(brief, styleSheetFor(id)));
+      if (!hasSpecificTake(brief)) {
+        expect(drafts.every((draft) => draft.text === '')).toBe(true);
+        continue;
+      }
+      const scores = drafts.map((draft) => draft.relevance);
       const good = scores.filter((s) => s >= RELEVANCE_FLOOR).length;
       expect(good / scores.length).toBeGreaterThan(0.85);
     }
@@ -301,11 +306,12 @@ describe('house rules hold in everything a horse publishes', () => {
     expect(stripBannedGlyphs('a — b')).not.toContain('—');
   });
 
-  it('never publishes an empty string for a real asset', () => {
+  it('only produces text when the asset supports a domain-specific take', () => {
     for (const asset of REAL_ASSETS) {
       const brief = briefForAsset(asset);
       for (const id of ids.slice(0, 20)) {
-        expect(composeCaption(brief, styleSheetFor(id)).text.trim().length).toBeGreaterThan(3);
+        const text = composeCaption(brief, styleSheetFor(id)).text.trim();
+        expect(text.length > 3).toBe(hasSpecificTake(brief));
       }
     }
   });
@@ -663,5 +669,55 @@ describe('live caption failures cannot recur', () => {
       expect(text).not.toMatch(/made me stop and think|worth discussing|study list today|hand I am looking at/i);
       expect(relevanceOf(text, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
     }
+  });
+
+  it('rejects the unsupported titles observed in the 17:10 production run', () => {
+    const assets = [
+      { domain: 'poker' as const, title: 'My Sister Is Way Into Aliens' },
+      { domain: 'poker' as const, title: 'Gina gets coaching pt.1' },
+      { domain: 'poker' as const, title: 'I still want the action' },
+      { domain: 'sports' as const, title: 'Giannis is honoring his parents with No. 7' },
+      { domain: 'sports' as const, title: 'Chiefs fans holding their breath' },
+    ];
+    for (const asset of assets) {
+      const brief = briefForAsset({ kind: 'video', title: asset.title, domainHint: asset.domain });
+      for (const id of fleetIds(20)) expect(composeCaption(brief, styleSheetFor(id)).text).toBe('');
+    }
+  });
+
+  it('treats heads-up poker as heads-up, not as a final table claim', () => {
+    const brief = briefForAsset({
+      kind: 'link',
+      title: '$500K on the line as Doug Polk hosts heads-up streamers tourney',
+      source: 'Poker.org',
+      domainHint: 'poker',
+    });
+    expect(brief.concepts).toContain('heads_up');
+    expect(brief.concepts).not.toContain('final_table');
+    for (const id of fleetIds(40)) {
+      const text = composeCaption(brief, styleSheetFor(id)).text;
+      expect(text).not.toMatch(/final table|ICM/i);
+    }
+  });
+
+  it('never repeats the same core sentence inside one caption', () => {
+    const brief = briefForAsset({
+      kind: 'link',
+      title: 'EPT Barcelona Hands of the Week from the Main Event',
+      source: 'PokerNews',
+      domainHint: 'poker',
+    });
+    for (const id of fleetIds(100)) {
+      const style = { ...styleSheetFor(id), length: 'long' as const };
+      const text = composeCaption(brief, style).text;
+      const parts = text.toLowerCase().split(/[.!?\n]+/).map((s) => s.trim()).filter(Boolean);
+      expect(new Set(parts).size).toBe(parts.length);
+    }
+  });
+
+  it('does not make an ellipsis look like a clipped title', () => {
+    const brief = briefForAsset({ kind: 'video', title: '$300 all in with queens', domainHint: 'poker' });
+    const style = { ...styleSheetFor(fleetIds(1)[0]!), punctuation: 'ellipsis' as const };
+    expect(composeCaption(brief, style).text).not.toMatch(/\.\.\.$/);
   });
 });

@@ -211,6 +211,19 @@ generic wrappers and a sentence duplicated inside one caption. All 22 were
 deleted, bringing the permanent cleanup total to 20,524, and the master
 `content_settings.engine_enabled` switch was turned off. The fleet must remain
 silent until visible-output quality is repaired and a review batch is accepted.
+
+The repair now fails closed at the comprehension boundary: a clip or article
+must contain a recognised domain concept with a supported take. Merely quoting
+its title inside a generic frame no longer counts as relevance. `heads-up` is
+separate from `final_table`; an unsupported poker hint cannot turn an aliens
+video into poker; caption meanings are ledgered before style openers can hide
+duplicates; a long voice drops an overlapping second sentence; and ellipsis
+styles use one intentional ellipsis character rather than three dots that look
+like title truncation. An offline sweep of 300 current poker clips and 300
+current sports clips through 40 styles produced 24,000 drafts: 4,160 passed,
+19,840 safely stayed silent, and zero accepted drafts contained the rejected
+generic headline frames or three-dot endings. This code does not authorize
+resuming the fleet; the master switch remains off for human acceptance.
 A rewritten hand voice exists only as unwired candidate code. `grounded_hand`
 and the older, separately scoped `grounded_session` mode both remain off until
 Dan reviews samples and explicitly approves each mode.

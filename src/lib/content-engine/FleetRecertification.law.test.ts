@@ -56,11 +56,11 @@ describe('captions read like a person sharing the actual item', () => {
     }
   });
 
-  it('an unsupported topic is introduced after a colon, never forced into a noun slot', () => {
+  it('an unsupported topic stays silent instead of receiving a generic wrapper', () => {
     for (const [domain, title] of titles.slice(0, 5)) {
       const brief = briefForAsset({ kind: 'video', title, domainHint: domain });
       const captions = fleetIds(80).map((id) => composeCaption(brief, styleSheetFor(id)).text);
-      expect(captions.filter((caption) => caption.includes(':')).length).toBeGreaterThan(60);
+      expect(captions.every((caption) => caption === '')).toBe(true);
     }
   });
 

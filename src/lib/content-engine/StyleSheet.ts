@@ -236,7 +236,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   // two independently composed sentences with a plain space produced live
   // run-ons such as "...you can do there is more to unpack there". A line
   // break keeps the style unpunctuated without making it unreadable.
-  const sep = s.punctuation === 'none' ? '\n' : s.punctuation === 'ellipsis' ? '... ' : '. ';
+  const sep = s.punctuation === 'none' ? '\n' : s.punctuation === 'ellipsis' ? '… ' : '. ';
   if (s.layout === 'list' && parts.length > 1) {
     joined = parts.join('\n');
   } else if (s.layout === 'double_break' && parts.length > 1) {
@@ -248,7 +248,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   }
   if (s.closer === 'tag_question') joined = `${joined}?`;
   else if (s.punctuation === 'full') joined = `${joined}.`;
-  else if (s.punctuation === 'ellipsis') joined = `${joined}...`;
+  else if (s.punctuation === 'ellipsis') joined = `${joined}…`;
   else if (s.punctuation === 'minimal' && parts.length > 1) joined = `${joined}.`;
 
   // Casing. Cards are lifted out first: their case is meaning, not style.
