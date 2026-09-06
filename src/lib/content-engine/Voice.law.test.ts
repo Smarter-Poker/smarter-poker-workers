@@ -586,4 +586,15 @@ describe('live comment failures cannot recur', () => {
       expect(t).not.toMatch(/[.!?]\s+[a-z]/);
     }
   });
+
+  it('no-punctuation voices separate thoughts instead of fusing a run-on', () => {
+    const base = styleSheetFor(ids[0]!);
+    const t = render(
+      ['reviewing your own losses is useful', 'there is more to unpack there'],
+      { ...base, punctuation: 'none', layout: 'single', opener: 'none', closer: 'none' },
+      'no-run-on',
+    );
+    expect(t).toContain('\n');
+    expect(t).not.toContain('useful there');
+  });
 });

@@ -232,7 +232,11 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   // Punctuation.
   parts = parts.map((p) => p.replace(/[.!?]+$/, ''));
   let joined: string;
-  const sep = s.punctuation === 'none' ? ' ' : s.punctuation === 'ellipsis' ? '... ' : '. ';
+  // A no-punctuation voice still needs a boundary between thoughts. Joining
+  // two independently composed sentences with a plain space produced live
+  // run-ons such as "...you can do there is more to unpack there". A line
+  // break keeps the style unpunctuated without making it unreadable.
+  const sep = s.punctuation === 'none' ? '\n' : s.punctuation === 'ellipsis' ? '... ' : '. ';
   if (s.layout === 'list' && parts.length > 1) {
     joined = parts.join('\n');
   } else if (s.layout === 'double_break' && parts.length > 1) {

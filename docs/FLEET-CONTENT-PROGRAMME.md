@@ -99,7 +99,7 @@ read now fails closed instead of silently enabling the engine. Seven-day fleet
 coverage remains an operational observation gate because the programme has not
 yet been live for seven days.
 
-### Phase 2: comprehension and voice (RECERTIFIED IN CODE 2026-09-06; DEPLOYMENT PROOF PENDING)
+### Phase 2: comprehension and voice (RECERTIFIED AND DEPLOYED 2026-09-06)
 
 Dan, verbatim: "WE NEED LIKE 100+ DIFFERENT WRITING STYLES WHEN POSTING, THEY
 CAN NOT APPEAR SIMILAR OR SAME FORMATTING OR ANYTHING ELSE. THEY ALSO NEED TO
@@ -157,7 +157,13 @@ titles could be inserted into noun-only templates; content below the relevance
 floor could publish anyway; a required human reply could be discarded by
 optional activity sampling; and thread state recorded a null comment id. The
 reply scan is now paginated across the exact 48-hour window and includes aliases.
-Production output review, rather than test passage alone, is the final gate.
+Production output review then caught a fifth defect: generic comment grammar
+treated extracted concepts such as `three`, `study` and `pot` like people, and
+unsupported article briefs repeated or truncated their headlines. Revision
+`827d153` now allows a comment to name a real person/team, use a supported
+domain-specific take, or fail closed as an empty draft. The exact live failures
+are regression laws. That revision is running in production; ongoing natural-run
+sampling remains part of operations, not a reason to call unreviewed output done.
 
 ### Phase 3: grounded content (BUILT, REJECTED, DISABLED)
 
@@ -274,7 +280,7 @@ FIVE MORE DEFECTS, all found by reading output or running the code live:
   a spot worth sitting with", and a nine-word trim turned "give his money
   away" into "give his money" - a different claim, stated as fact.
 
-### Phase 5: human poker-native posting
+### Phase 5: human poker-native posting (FIRST INCREMENT LIVE AND VERIFIED 2026-09-06)
 
 - The shared social composer uses the exact Club Arena card artwork as
   insertable poker-card tokens, with up to six hole cards and five board cards,
@@ -282,6 +288,9 @@ FIVE MORE DEFECTS, all found by reading output or running the code live:
 - Cards render consistently in feeds, clubs, groups, stories, hashtags, chat,
   game boards and trending surfaces; plain-text fallback protects unsupported
   clients and search.
+- Authenticated production E2E built ace of spades/king of hearts with a
+  queen of spades/jack of hearts/two of clubs flop, loaded every image, enabled
+  a card-only post, and cleared the draft without publishing.
 - Next: saved hand presets, a labelled flop/turn/river flow and one-tap import
   from Club Arena hand history.
 
