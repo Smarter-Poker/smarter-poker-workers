@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlineCase, isUninformativeTitle } from './PostBrief.js';
 import { styleSheetFor, styleId, render, stripBannedGlyphs } from './StyleSheet.js';
-import { composeCaption, composeComment, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
+import { composeCaption, composeComment, composeReply, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
 import { areFriends, friendsOf, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
 import { decideReply, MAX_TURNS_PER_HORSE, MAX_HORSE_TURNS, type ThreadComment } from './ReplyEngine.js';
 import { fleetHash } from './FleetScheduler.js';
@@ -134,6 +134,52 @@ describe('the brief reads the real subject', () => {
     const empty = briefForAsset({ kind: 'video', title: '', source: null });
     expect(empty.confidence).toBeLessThan(0.3);
     expect(empty.people).toEqual([]);
+  });
+});
+
+describe('a caption is commentary, never the subject', () => {
+  // Measured in production 2026-09-05 23:30. A horse's video post carries no
+  // link_title, so briefForPost fell through to the post's own text - the
+  // AUTHOR'S composed caption - and the commenter quoted it back:
+  //   "Still thinking about Not many people on earth can do what he"
+  //   "The part that gets me is Come on now, the crowd reaction said everything that"
+  // The real subject lives in post_briefs, written when the post was
+  // published; this pins the fallback so it can never guess again.
+  it('a video post with no link title yields no topic from its own caption', () => {
+    const b = briefForPost({
+      postId: 'p1',
+      contentType: 'video',
+      content: 'Not many people on earth can do what he just did there',
+      linkTitle: null,
+      linkSiteName: null,
+      metadata: { clip_type: 'sports' },
+    });
+    expect(b.topic).toBeUndefined();
+    expect(b.title).toBe('');
+    expect(b.confidence).toBeLessThan(0.5);
+  });
+
+  it('a comment never quotes the caption it is replying under', () => {
+    const caption = 'Not many people on earth can do what he just did there';
+    const b = briefForPost({
+      postId: 'p1', contentType: 'video', content: caption,
+      linkTitle: null, linkSiteName: null, metadata: { clip_type: 'sports' },
+    });
+    for (const id of fleetIds(40)) {
+      const t = composeComment(b, styleSheetFor(id)).text.toLowerCase();
+      expect(t).not.toContain('not many people on earth');
+      expect(t).not.toContain('can do what he');
+    }
+  });
+
+  it('a link post still reads its headline, which IS the subject', () => {
+    const b = briefForPost({
+      postId: 'p2', contentType: 'link', content: 'worth a read',
+      linkTitle: 'Phil Ivey Wins 11th WSOP Bracelet', linkSiteName: 'CardPlayer',
+      metadata: { news_type: 'poker' },
+    });
+    expect(b.people).toContain('Phil Ivey');
+    expect(b.topic).toBeTruthy();
   });
 });
 
@@ -355,6 +401,30 @@ describe('threads end', () => {
       thread.push({ id: `q-${i}`, post_id: post, parent_id: `r-${i}`, author_id: 'horse-2', content: 'but why though?', created_at: t(19 - i), isHorse: true });
     }
     expect(turns).toBeLessThanOrEqual(MAX_TURNS_PER_HORSE);
+  });
+});
+
+describe('a reply only ever names a real subject', () => {
+  // Production, 2026-09-05 23:30: replies read "with hard i think it holds
+  // up" and "with exactly why you I think it holds up" - anchorOf() had
+  // fallen back to a key phrase lifted from prose. Only a person or a team
+  // may be named in a reply.
+  it('never names a key phrase pulled out of prose', () => {
+    const b = briefForPost({
+      postId: 'p3', contentType: 'text',
+      content: 'exactly why you have to be careful with that spot, hard to say',
+      metadata: null,
+    });
+    for (const id of fleetIds(40)) {
+      const t = composeReply(b, styleSheetFor(id), 'what do you reckon', 'question').text.toLowerCase();
+      expect(t).not.toMatch(/with (hard|exactly why you|wild) /);
+    }
+  });
+
+  it('does name a public figure when the brief has one', () => {
+    const b = briefForAsset({ kind: 'link', title: 'Phil Ivey Wins 11th WSOP Bracelet', source: 'CardPlayer' });
+    const texts = fleetIds(40).map((id) => composeReply(b, styleSheetFor(id), 'still holds?', 'question').text);
+    expect(texts.some((t) => t.includes('Phil Ivey'))).toBe(true);
   });
 });
 

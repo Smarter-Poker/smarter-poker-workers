@@ -643,7 +643,11 @@ export function composeReply(
   variantSeed = '0',
 ): ComposeResult {
   const seed = `${style.profileId}:r:${b.postId ?? b.title}:${variantSeed}`;
-  const anchor = anchorOf(b);
+  // A reply may only name a REAL subject - a person or a team. anchorOf()
+  // also falls back to a key phrase, and a key phrase lifted from prose
+  // produced "with hard i think it holds up" and "with exactly why you I
+  // think it holds up" in production (2026-09-05 23:30).
+  const anchor = b.people[0] ?? b.teams[0] ?? null;
   const lines: string[] = [];
   const grounding: string[] = [];
 

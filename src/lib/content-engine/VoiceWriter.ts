@@ -175,12 +175,55 @@ export async function writeStory(
   return { ...core, brief, style };
 }
 
+/**
+ * The brief recorded when a post was published, if there is one.
+ *
+ * This is the whole reason post_briefs exists. A horse's own video post
+ * carries no link_title, so deriving a brief from the post row means
+ * deriving it from the author's caption - and a caption is commentary, not
+ * subject. The publisher already knew the clip's real title, channel and
+ * concepts and wrote them down; a commenter should read that rather than
+ * guess from the sentence above it.
+ */
+export async function loadBrief(postId: string | undefined): Promise<PostBrief | null> {
+  if (!postId) return null;
+  try {
+    const { data, error } = await getSupabase()
+      .from('post_briefs')
+      .select('*')
+      .eq('post_id', postId)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as Record<string, unknown>;
+    return {
+      postId,
+      kind: (row.kind as PostBrief['kind']) ?? 'text',
+      domain: (row.domain as PostBrief['domain']) ?? 'general',
+      sport: (row.sport as PostBrief['sport']) ?? undefined,
+      title: (row.title as string) ?? '',
+      source: (row.source as string) ?? undefined,
+      people: (row.people as string[]) ?? [],
+      teams: (row.teams as string[]) ?? [],
+      concepts: (row.concepts as string[]) ?? [],
+      amounts: (row.amounts as string[]) ?? [],
+      topic: (row.topic as string) ?? undefined,
+      tone: (row.tone as PostBrief['tone']) ?? 'neutral',
+      isQuestion: Boolean(row.is_question),
+      confidence: Number(row.confidence ?? 0),
+      builtFrom: [...(((row.built_from as string[]) ?? [])), 'post_briefs'],
+    };
+  } catch (e) {
+    console.warn('[voice] brief read failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
 /** A comment on somebody else's post, written after reading it. */
 export async function writeComment(
   horse: AuthorHorse,
   post: BriefSource,
 ): Promise<WrittenText> {
-  const brief = briefForPost(post);
+  const brief = (await loadBrief(post.postId)) ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
     (variant) => composeComment(brief, style, variant),
@@ -198,7 +241,7 @@ export async function writeReply(
   incoming: string,
   reason: 'addressed' | 'question' | 'disagreement',
 ): Promise<WrittenText> {
-  const brief = briefForPost(post);
+  const brief = (await loadBrief(post.postId)) ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
     (variant) => composeReply(brief, style, incoming, reason, variant),
