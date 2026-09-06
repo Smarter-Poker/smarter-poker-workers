@@ -72,7 +72,26 @@ permissions:
 
 concurrency:
   group: agent-open-pr-${{ github.ref }}
-  cancel-in-progress: false
+  # cancel-in-progress: TRUE, changed 2026-09-04 after measuring it.
+  #
+  # This workflow fires on BOTH `create` and `push`, and pushing a new branch
+  # raises both. With `false` the second run QUEUED BEHIND THE FIRST, so
+  # opening a pull request cost two runner slots and two waits instead of one.
+  #
+  # Measured in a three-agent concurrent push test: pushes completed in 5-17
+  # SECONDS, and the pull requests did not appear for **2.6 minutes**, with six
+  # `Agent Open PR` jobs (two per branch) queued against eight runners while CI
+  # wanted them too.
+  #
+  # Cancelling is safe here because the job is idempotent - it checks whether a
+  # PR is already open and does nothing if so - and because losing the race
+  # costs nothing: the `*/30` autopilot sweep opens anything this misses, and
+  # any later push re-fires it.
+  #
+  # Both triggers are kept. `push` covers an agent pushing a branch; `create`
+  # covers a branch made through the API with no push, which is how some agents
+  # in this estate work.
+  cancel-in-progress: true
 
 jobs:
   open-pr:
@@ -160,6 +179,14 @@ jobs:
             fi
           } | tee "$LOG"
 
+          {
+            echo '### Agent Open PR'
+            echo
+            echo '```'
+            cat "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
           # THE RESULT GOES TO THE JOB SUMMARY, NOT TO A BRANCH (2026-09-03).
           #
           # Until today this step published $LOG by force-pushing an ORPHAN
@@ -189,10 +216,43 @@ jobs:
           #
           # NEVER bring the branch push back. A new reader of this log gets the
           # summary or a pull request comment, not a ref.
-          {
-            echo '### Agent Open PR'
-            echo
-            echo '```'
-            cat "$LOG"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+      # ── ARM AUTO-MERGE HERE, NOT IN A SWEEP ──────────────────────────────
+      #
+      # Measured 2026-09-04: pull requests sat 9.6, 3.6, 1.8 and 1.9 minutes
+      # AFTER every check had already gone green. That is dead time - nothing
+      # is running, nothing is being decided.
+      #
+      # The cause is above, and this file already admits it: "opened with
+      # GITHUB_TOKEN (sweep must rescue events)". **A pull request created with
+      # GITHUB_TOKEN does not fire `pull_request` workflows** - GitHub blocks
+      # that to prevent a workflow triggering itself. So agent-autopilot's
+      # `pull_request: opened` job never runs for these, and the PR waits for
+      # the next `*/30` sweep: an average of fifteen minutes.
+      #
+      # Arming it here removes the dependency on the event entirely. GitHub
+      # then merges the instant the required checks pass, which is what
+      # auto-merge is for. The sweep stays as the net for anything this misses.
+      #
+      # This does NOT weaken a gate: auto-merge still waits for every required
+      # check, and a red check never merges.
+      - name: Arm squash auto-merge immediately
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          NUM=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -z "$NUM" ] || [ "$NUM" = "null" ]; then
+            echo "no open PR for $BRANCH - nothing to arm."; exit 0
+          fi
+          if gh pr merge "$NUM" --repo "$REPO" --squash --auto 2>/tmp/am.log; then
+            echo "auto-merge armed on #$NUM - it will land the moment the required checks pass."
+          else
+            # Not fatal. A draft PR, a clean-status repo, or a token without the
+            # scope all land here, and the */30 sweep still catches it.
+            echo "could not arm auto-merge on #$NUM (the sweep remains the net):"
+            cat /tmp/am.log || true
+          fi
+
