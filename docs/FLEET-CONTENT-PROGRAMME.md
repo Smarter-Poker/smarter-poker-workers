@@ -200,17 +200,51 @@ DONE:
   because a queue that stops draining and a pool that stops growing both look
   exactly like a quiet week.
 
-Live pool: **113 to 778 clips**, 72 active sources, 16 retired as dormant.
+Live pool: **113 to 1,720 clips**, 91 active sources, 16 retired as dormant, 4 poker news feeds, 0 reels stuck in the queue.
 
-STILL OPEN, carried into Phase 5:
+CLOSED OUT THE SAME DAY (Dan: finish it, do not carry it):
 
-- Reddit r/poker and Twitch/Kick as sources.
-- The seven news sources `content-health-check` monitors replacing the two RSS
-  feeds in `HorsePublisher`.
-- The daily video-library reels bridge (200 rows, all 2026-04-22, dead since)
-  is still neither repaired nor retired.
-- The registry holds 90 poker channels rather than the contract's 200. Adding
-  more is a row now, not a deploy.
+- The news feeds are rows in `content_sources`, each horse reading its own
+  slice; poker news went from 2 sources to 4 (every candidate fetched first,
+  three 404/301s not seeded). `content-health-check`'s auto-fix now APPLIES
+  its repair - it used to log "Switched from X to Y" and change nothing,
+  because the feed the horses read was a literal no log line could reach.
+- The video library is joined at last: 1,773 poker videos scraped
+  continuously and never once read by the fleet. `content_sources.aliases`
+  fixed the 172 blocked by "WSOP" vs "World Series of Poker". The library's
+  495 slots videos stay out - a source is poker because a row says so.
+- The reels bridge is repaired, not retired. It was a SCRIPT_JOB skipped on
+  the only host that fires, so the library gained 1,573 videos and the reels
+  feed gained none. The workers route does both halves now, and spreads its
+  output: the April run put 200 reels on ONE horse in a day; the first live
+  run of this one made 40 across 39 horses, all watchable.
+- **Reddit: declined, not deferred.** `robots.txt` is `Disallow: /` and their
+  public content policy restricts automated use. Buildable; should not be
+  built.
+- **Twitch: blocked on a credential** that does not exist in this estate.
+  Ready to build given `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`.
+- **The registry holds ~91 active channels, not 200.** Two batches of
+  hand-written candidates resolved at 67% and 28% against YouTube, and the
+  rate falls because the obvious ones are in. What the contract wanted - a
+  supply that does not repeat - is met: **1,720 live clips against ~245 poker
+  video posts a week**, from a phase that began at 113. Adding more is a row.
+
+FIVE MORE DEFECTS, all found by reading output or running the code live:
+
+- A stale copy of the dispatcher pasted over the worktree would have
+  unregistered `horse-posts`, `horses-social-all` and `table-socket-probe` -
+  the whole of Phase 1. Build Safety Gate CHECK 8 caught it.
+- A YouTube throttle (755 bytes, HTTP 200) made every live channel look dead;
+  six such runs would have retired the registry.
+- `@JonathanLittle` is a real channel whose page carries no `channelId` key;
+  `og:url` is tried first now.
+- The library's slots channels drowned poker in any newest-N window, so the
+  filter moved into the query - with the names AS STORED, because `.in()` is
+  exact-match and lower-cased keys match nothing, silently.
+- A real title is not a noun: `{topic} is a spot worth sitting with` given a
+  sentence produced "Daniel Negreanu is literally trying to give his money is
+  a spot worth sitting with", and a nine-word trim turned "give his money
+  away" into "give his money" - a different claim, stated as fact.
 
 ### Phase 5: media supply, poker
 
