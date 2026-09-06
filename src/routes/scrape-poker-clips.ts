@@ -40,6 +40,16 @@ const CONFIG = {
   REQUEST_DELAY_MS: 900,
   /** A source is retired after this many consecutive empty or failed runs. */
   DEACTIVATE_AFTER: 6,
+  /**
+   * A channel whose newest upload is older than this is dormant, not a
+   * source. The first production run found Stones Gambling Hall last
+   * uploading in 2018, Poker Night in America in 2013 and the Asian Poker
+   * Tour in 2008 - all answering perfectly well, all returning a feed of
+   * genuinely old videos. A supply that renews with 2008 uploads has not
+   * renewed; it has just moved the frozen list into a table. Their clips are
+   * real and are kept, but we stop asking them every day.
+   */
+  DORMANT_AFTER_DAYS: 540,
 } as const;
 
 const UA =
@@ -147,6 +157,7 @@ async function markSource(
   source: SourceRow,
   found: number,
   channelId: string | null,
+  newestPublished?: string | null,
 ): Promise<void> {
   const now = new Date().toISOString();
   const failed = found === 0;
@@ -163,6 +174,16 @@ async function markSource(
   // can read six runs running, is retired rather than retried forever. The
   // row stays, with the count that retired it, so the registry can be read.
   if (failures >= CONFIG.DEACTIVATE_AFTER) patch.is_active = false;
+  // Answering with nothing recent is its own kind of dead.
+  if (newestPublished) {
+    const ageDays = (Date.now() - Date.parse(newestPublished)) / 86_400_000;
+    if (Number.isFinite(ageDays) && ageDays > CONFIG.DORMANT_AFTER_DAYS) {
+      patch.is_active = false;
+      console.warn(
+        `[scrape-poker-clips] ${source.name} dormant: newest upload ${Math.round(ageDays)} days old`,
+      );
+    }
+  }
 
   const { error } = await getSupabase().from('content_sources').update(patch).eq('id', source.id);
   if (error) console.warn('[scrape-poker-clips] source update failed:', error.message);
@@ -219,8 +240,20 @@ export async function scrapePokerClips(c: Context) {
       else saved += count ?? 0;
     }
 
-    await markSource(source, clips.length, channelId);
-    if (clips.length === 0 && source.consecutive_failures + 1 >= CONFIG.DEACTIVATE_AFTER) retired++;
+    const newest = clips.reduce<string | null>(
+      (acc, cl) => (cl.published_at && (!acc || cl.published_at > acc) ? cl.published_at : acc),
+      null,
+    );
+    const wasActive = true;
+    await markSource(source, clips.length, channelId, newest);
+    if (
+      wasActive &&
+      (clips.length === 0
+        ? source.consecutive_failures + 1 >= CONFIG.DEACTIVATE_AFTER
+        : !!newest && (Date.now() - Date.parse(newest)) / 86_400_000 > CONFIG.DORMANT_AFTER_DAYS)
+    ) {
+      retired++;
+    }
     await delay(CONFIG.REQUEST_DELAY_MS);
   }
 
