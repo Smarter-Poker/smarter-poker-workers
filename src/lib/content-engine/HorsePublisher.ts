@@ -32,7 +32,9 @@ import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse }
 import { isUninformativeTitle } from './PostBrief.js';
 import {
   candidateClips,
+  newsSources,
   recordValidity,
+  sliceForHorse,
   sportsShareFor,
   type SupplyClip,
 } from './ClipSupply.js';
@@ -121,17 +123,25 @@ export function _resetFeedCache(): void {
   feedCache.clear();
 }
 
-const POKER_NEWS_SOURCES = [
-  { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news.rss' },
-  { name: 'Upswing Poker', rss: 'https://upswingpoker.com/feed/' },
-];
-
-const SPORTS_NEWS_SOURCES = [
-  { name: 'ESPN', rss: 'https://www.espn.com/espn/rss/news' },
-  { name: 'ESPN NBA', rss: 'https://www.espn.com/espn/rss/nba/news' },
-  { name: 'ESPN NFL', rss: 'https://www.espn.com/espn/rss/nfl/news' },
-  { name: 'CBS Sports', rss: 'https://www.cbssports.com/rss/headlines/' },
-];
+/**
+ * The last-resort feeds, used ONLY when the registry cannot be read.
+ *
+ * Phase 4 moved news into `content_sources` so the seven sources
+ * `content-health-check` monitors - with fallback URLs and auto-repair - are
+ * the ones horses actually read. These literals are no longer the list; they
+ * are what keeps a horse posting if Postgres is unreachable at that instant,
+ * which is the one failure the registry cannot help with.
+ */
+const FALLBACK_NEWS_SOURCES: Record<'poker' | 'sports', Array<{ name: string; rss: string }>> = {
+  poker: [
+    { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news.rss' },
+    { name: 'PokerNews', rss: 'https://www.pokernews.com/rss.php' },
+  ],
+  sports: [
+    { name: 'ESPN', rss: 'https://www.espn.com/espn/rss/news' },
+    { name: 'CBS Sports', rss: 'https://www.cbssports.com/rss/headlines/' },
+  ],
+};
 
 
 interface SportsClipRow {
@@ -500,8 +510,25 @@ async function postNewsLink(
   fleet: AuthorHorse[],
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
-  const sources = newsType === 'poker' ? POKER_NEWS_SOURCES : SPORTS_NEWS_SOURCES;
-  const source = sources[fleetHash(horse.profile_id, `news:${newsType}`) % sources.length]!;
+
+  // The registry first. A failed READ falls back to the literals so a horse
+  // does not go silent because Postgres blinked; an EMPTY registry is a real
+  // answer and falls back too, because no feeds registered still means this
+  // horse has something to say.
+  const registered = await newsSources(newsType);
+  let candidates: Array<{ name: string; rss: string }>;
+  if (registered && registered.length) {
+    // Each horse reads its own slice of the feeds, the same way it draws its
+    // own slice of channels: a thousand horses all quoting CardPlayer is the
+    // repetition this phase exists to end.
+    const mine = sliceForHorse(registered, horse.profile_id, Math.min(3, registered.length));
+    candidates = mine.map((r) => ({ name: r.name, rss: r.feed_url }));
+    bumpSupplyStat('news_from_registry');
+  } else {
+    candidates = FALLBACK_NEWS_SOURCES[newsType];
+    bumpSupplyStat(registered ? 'news_registry_empty' : 'news_registry_unreadable');
+  }
+  const source = candidates[fleetHash(horse.profile_id, `news:${newsType}`) % candidates.length]!;
 
   try {
     const articles = (await fetchFeed(source.rss)).slice(0, 20).filter((a) => !!a.link);

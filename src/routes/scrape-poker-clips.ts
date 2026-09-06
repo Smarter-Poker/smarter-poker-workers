@@ -32,6 +32,7 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { pokerChannelIndex } from '../lib/content-engine/ClipSupply.js';
 
 const CONFIG = {
   MAX_SOURCES_PER_RUN: 25,
@@ -72,17 +73,39 @@ interface FoundClip {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchText(url: string): Promise<string | null> {
+/**
+ * A page fetch that distinguishes "not there" from "not answered".
+ *
+ * YouTube answers a burst of channel-page requests with a ~755-byte throttle
+ * page: HTTP 200, no channel data, indistinguishable from a 404 if you only
+ * look at whether you got a string back. Measured 2026-09-06 while checking
+ * the registry: after roughly sixty rapid requests EVERY handle came back
+ * "missing", including @LiveattheBike and @PhilHellmuth, which plainly exist -
+ * the same three that had resolved fine minutes earlier.
+ *
+ * Reading that as "the channel is gone" would have retired most of the
+ * registry in six runs. It is exactly the mistake revalidate-poker-clips is
+ * written to avoid on the clip side ("a 429 or 403 is never read as dead"),
+ * arriving at the source level instead.
+ */
+const THROTTLE_PAGE_BYTES = 5_000;
+
+async function fetchText(url: string): Promise<{ body: string | null; throttled: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': UA } });
     clearTimeout(timer);
-    if (!res.ok) return null;
-    return await res.text();
+    if (res.status === 429 || res.status >= 500) return { body: null, throttled: true };
+    if (!res.ok) return { body: null, throttled: false };
+    const body = await res.text();
+    // A 200 this small is the throttle page, not a channel.
+    if (body.length < THROTTLE_PAGE_BYTES) return { body: null, throttled: true };
+    return { body, throttled: false };
   } catch {
     clearTimeout(timer);
-    return null;
+    // A timeout or a dropped connection is not evidence about the channel.
+    return { body: null, throttled: true };
   }
 }
 
@@ -90,14 +113,22 @@ async function fetchText(url: string): Promise<string | null> {
  * Resolve @handle to the UC... channel id, once. Both shapes appear in the
  * channel page; either is fine and the first hit wins.
  */
-export async function resolveChannelId(handle: string): Promise<string | null> {
-  const html = await fetchText(`https://www.youtube.com/${handle}`);
-  if (!html) return null;
+export async function resolveChannelId(
+  handle: string,
+): Promise<{ channelId: string | null; throttled: boolean }> {
+  const { body: html, throttled } = await fetchText(`https://www.youtube.com/${handle}`);
+  if (!html) return { channelId: null, throttled };
+  // og:url first: it is the page's own canonical statement of which channel
+  // this is, and it survives the layout changes that move the JSON blobs
+  // around. Measured 2026-09-06 on @JonathanLittle - a real channel whose
+  // page carried no "channelId" key at all, so a resolver checking only that
+  // would have called it missing and retired it after six runs.
   const m =
+    html.match(/og:url"\s+content="https:\/\/www\.youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})"/) ??
     html.match(/"channelId":"(UC[A-Za-z0-9_-]{22})"/) ??
     html.match(/"externalId":"(UC[A-Za-z0-9_-]{22})"/) ??
     html.match(/channel\/(UC[A-Za-z0-9_-]{22})/);
-  return m?.[1] ?? null;
+  return { channelId: m?.[1] ?? null, throttled: false };
 }
 
 /**
@@ -158,10 +189,13 @@ async function markSource(
   found: number,
   channelId: string | null,
   newestPublished?: string | null,
+  throttled = false,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const failed = found === 0;
-  const failures = failed ? source.consecutive_failures + 1 : 0;
+  // A run we were throttled out of says nothing about the channel. Recording
+  // it as a failure is how a rate limit retires a registry.
+  const failed = found === 0 && !throttled;
+  const failures = failed ? source.consecutive_failures + 1 : source.consecutive_failures;
   const patch: Record<string, unknown> = {
     last_scraped_at: now,
     consecutive_failures: failures,
@@ -189,6 +223,91 @@ async function markSource(
   if (error) console.warn('[scrape-poker-clips] source update failed:', error.message);
 }
 
+/**
+ * Harvest the video library we already maintain.
+ *
+ * `video_library_videos` holds 1,773 poker videos, scraped continuously and
+ * updated today. 896 of them come from channels already in this registry and
+ * had never reached a horse - the fleet was scraping YouTube for videos that
+ * were sitting in our own database. Nobody built the join, so nobody noticed.
+ *
+ * ONLY registered POKER channels are imported. The library also carries slots
+ * content - Brian Christopher Slots, Lady Luck HQ, The Big Jackpot, 370 videos
+ * between them - and a slots pull in a poker horse's feed is exactly the kind
+ * of off-key content this phase exists to stop. Matching on the registry is
+ * what keeps that line, and it is the registry's job: a source is poker
+ * because a row says so.
+ */
+export async function importFromVideoLibrary(): Promise<{ found: number; saved: number }> {
+  const supa = getSupabase();
+
+  // Names AND aliases: the library says "WSOP" where the registry says "World
+  // Series of Poker", and 172 videos sat behind that spelling.
+  const { byName, rawNames } = await pokerChannelIndex();
+  if (!byName.size) return { found: 0, saved: 0 };
+
+  // Filtered in the query for the same reason the reels bridge is: the
+  // library's slots channels publish daily and would otherwise fill any
+  // "newest N" window before a poker video appeared in it.
+  const { data: videos, error: vErr } = await supa
+    .from('video_library_videos')
+    .select('youtube_video_id, video_url, title, source_name, published_at, thumbnail_url')
+    .not('youtube_video_id', 'is', null)
+    .in('source_name', rawNames)
+    .order('published_at', { ascending: false, nullsFirst: false })
+    .limit(1500);
+  if (vErr) {
+    console.warn('[scrape-poker-clips] video library read failed:', vErr.message);
+    return { found: 0, saved: 0 };
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  for (const v of (videos ?? []) as Array<Record<string, string | null>>) {
+    const src = v.source_name ? byName.get(v.source_name.toLowerCase()) : undefined;
+    if (!src || !v.youtube_video_id || !v.title) continue;
+    rows.push({
+      video_id: v.youtube_video_id,
+      source_url: v.video_url ?? `https://www.youtube.com/watch?v=${v.youtube_video_id}`,
+      title: v.title.slice(0, 200),
+      source: src.name,
+      source_id: src.id,
+      channel_handle: src.handle,
+      category: src.category ?? 'clip',
+      published_at: v.published_at,
+      thumbnail_url: v.thumbnail_url,
+      source_type: 'youtube',
+      origin: 'video_library',
+    });
+  }
+  if (!rows.length) return { found: 0, saved: 0 };
+
+  // In chunks. A single upsert of ~1,000 rows failed with a bare
+  // "TypeError: fetch failed" - the payload, not the data - and a failure that
+  // reports nothing about which row was at fault is one nobody can debug. 200
+  // is comfortably inside the limit and turns one all-or-nothing request into
+  // five that each say what they did.
+  //
+  // ignoreDuplicates keeps a tombstoned dead video dead: the library does not
+  // know we already proved that id is gone.
+  const CHUNK = 200;
+  let saved = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const batch = rows.slice(i, i + CHUNK);
+    const { error, count } = await supa
+      .from('poker_clips')
+      .upsert(batch, { onConflict: 'video_id', ignoreDuplicates: true, count: 'exact' });
+    if (error) {
+      console.warn(
+        `[scrape-poker-clips] library import chunk ${i / CHUNK + 1} failed:`,
+        error.message,
+      );
+      continue;
+    }
+    saved += count ?? 0;
+  }
+  return { found: rows.length, saved };
+}
+
 export async function scrapePokerClips(c: Context) {
   const started = Date.now();
   const sources = await dueSources();
@@ -197,23 +316,29 @@ export async function scrapePokerClips(c: Context) {
   let saved = 0;
   let resolved = 0;
   let retired = 0;
+  let throttled = 0;
 
   for (const source of sources) {
     scanned++;
     let channelId = source.channel_id;
+    let wasThrottled = false;
     if (!channelId && source.handle) {
-      channelId = await resolveChannelId(source.handle);
+      const r = await resolveChannelId(source.handle);
+      channelId = r.channelId;
+      wasThrottled = r.throttled;
       if (channelId) resolved++;
+      if (r.throttled) throttled++;
       await delay(CONFIG.REQUEST_DELAY_MS);
     }
     if (!channelId) {
-      await markSource(source, 0, null);
-      if (source.consecutive_failures + 1 >= CONFIG.DEACTIVATE_AFTER) retired++;
+      await markSource(source, 0, null, null, wasThrottled);
+      if (!wasThrottled && source.consecutive_failures + 1 >= CONFIG.DEACTIVATE_AFTER) retired++;
       continue;
     }
 
-    const xml = await fetchText(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
-    const clips = xml ? parseChannelFeed(xml, CONFIG.MAX_CLIPS_PER_SOURCE) : [];
+    const feed = await fetchText(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
+    if (feed.throttled) throttled++;
+    const clips = feed.body ? parseChannelFeed(feed.body, CONFIG.MAX_CLIPS_PER_SOURCE) : [];
     found += clips.length;
 
     if (clips.length) {
@@ -244,18 +369,21 @@ export async function scrapePokerClips(c: Context) {
       (acc, cl) => (cl.published_at && (!acc || cl.published_at > acc) ? cl.published_at : acc),
       null,
     );
-    const wasActive = true;
-    await markSource(source, clips.length, channelId, newest);
+    await markSource(source, clips.length, channelId, newest, feed.throttled);
     if (
-      wasActive &&
-      (clips.length === 0
-        ? source.consecutive_failures + 1 >= CONFIG.DEACTIVATE_AFTER
-        : !!newest && (Date.now() - Date.parse(newest)) / 86_400_000 > CONFIG.DORMANT_AFTER_DAYS)
+      clips.length === 0
+        ? !feed.throttled && source.consecutive_failures + 1 >= CONFIG.DEACTIVATE_AFTER
+        : !!newest && (Date.now() - Date.parse(newest)) / 86_400_000 > CONFIG.DORMANT_AFTER_DAYS
     ) {
       retired++;
     }
     await delay(CONFIG.REQUEST_DELAY_MS);
   }
+
+  // Second phase: the library we already maintain, which no join had ever
+  // reached. Cheap (one read, one upsert) and it runs even when the channel
+  // walk found nothing new.
+  const library = await importFromVideoLibrary();
 
   const { count: poolSize } = await getSupabase()
     .from('poker_clips')
@@ -269,8 +397,11 @@ export async function scrapePokerClips(c: Context) {
     sources_scanned: scanned,
     handles_resolved: resolved,
     sources_retired: retired,
+    requests_throttled: throttled,
     clips_found: found,
     clips_saved: saved,
+    library_candidates: library.found,
+    library_saved: library.saved,
     pool_size: poolSize ?? null,
   });
 }

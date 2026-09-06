@@ -223,3 +223,95 @@ export async function recordValidity(clipId: string, ok: boolean): Promise<void>
     .eq('id', clipId);
   if (error) console.warn('[clip-supply] validity write failed:', error.message);
 }
+
+/** An RSS news source, as registered in content_sources. */
+export interface NewsSource {
+  id: string;
+  name: string;
+  feed_url: string;
+  fallback_urls: string[] | null;
+}
+
+/**
+ * The news feeds for a domain, from the registry.
+ *
+ * The publisher used to carry its own literals - TWO poker feeds - while
+ * `content-health-check` monitored SEVEN sources with fallbacks and repaired
+ * broken ones in place. Two lists of the same thing, one watched and one not,
+ * so a repair never reached the horses: they were reading the other list.
+ *
+ * Falls back to the caller's literals ONLY if the registry read fails
+ * outright. An empty registry is a real answer (nothing is registered) and
+ * the caller handles it; a failed READ is not, and a horse must not go silent
+ * because Postgres blinked.
+ */
+export async function newsSources(domain: 'poker' | 'sports'): Promise<NewsSource[] | null> {
+  const { data, error } = await getSupabase()
+    .from('content_sources')
+    .select('id, name, feed_url, fallback_urls')
+    .eq('domain', domain)
+    .eq('kind', 'rss')
+    .eq('is_active', true)
+    .not('feed_url', 'is', null)
+    .order('name');
+  if (error) {
+    console.warn('[clip-supply] news source read failed:', error.message);
+    return null;
+  }
+  return (data ?? []) as NewsSource[];
+}
+
+/**
+ * Every name a registered poker channel answers to, lower-cased, mapped back
+ * to its registry row.
+ *
+ * The video library calls a channel "WSOP" and the registry calls it "World
+ * Series of Poker" - same channel, and the join between them is on the name,
+ * so 106 poker videos sat unusable behind a spelling. Renaming one side only
+ * moves the problem to the next system that spells it differently, so a
+ * source answers to its name AND its aliases, and every join asks here.
+ */
+export interface ChannelEntry {
+  id: string;
+  name: string;
+  handle: string | null;
+  category: string | null;
+}
+
+export interface ChannelIndex {
+  /** Lower-cased name AND alias -> the registry row. For matching. */
+  byName: Map<string, ChannelEntry>;
+  /**
+   * The names AS STORED, original casing, names and aliases together. For
+   * `.in('source_name', ...)`, which is exact-match: passing the lower-cased
+   * lookup keys there matches nothing, silently, and the bridge reports zero
+   * candidates as though the library were empty.
+   */
+  rawNames: string[];
+}
+
+export async function pokerChannelIndex(): Promise<ChannelIndex> {
+  const { data, error } = await getSupabase()
+    .from('content_sources')
+    .select('id, name, handle, category, aliases')
+    .eq('domain', 'poker')
+    .eq('kind', 'youtube_channel');
+  const byName = new Map<string, ChannelEntry>();
+  const rawNames: string[] = [];
+  if (error) {
+    console.warn('[clip-supply] channel index read failed:', error.message);
+    return { byName, rawNames };
+  }
+  for (const row of (data ?? []) as Array<{
+    id: string; name: string; handle: string | null; category: string | null; aliases: string[] | null;
+  }>) {
+    const entry: ChannelEntry = { id: row.id, name: row.name, handle: row.handle, category: row.category };
+    byName.set(row.name.toLowerCase(), entry);
+    rawNames.push(row.name);
+    for (const alias of row.aliases ?? []) {
+      byName.set(alias.toLowerCase(), entry);
+      rawNames.push(alias);
+    }
+  }
+  return { byName, rawNames };
+}

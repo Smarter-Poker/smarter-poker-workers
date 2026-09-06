@@ -165,3 +165,67 @@ describe('only a named agent can be watched doing something', () => {
     expect(anchorOf(b)).not.toBeNull();
   });
 });
+
+describe('an instrument that cannot answer must not vote', () => {
+  it('a throttled fetch is never recorded as a missing channel', async () => {
+    // Measured 2026-09-06: YouTube answers a burst of channel-page requests
+    // with a ~755-byte throttle page, HTTP 200. A probe that only asked "did
+    // I get a string back" reported EVERY handle as missing, including
+    // @LiveattheBike and @PhilHellmuth, which had resolved minutes earlier.
+    // Six of those in a row retires a live channel.
+    //
+    // This pins the shape rather than the network: resolveChannelId reports
+    // `throttled` separately from `channelId`, so the caller can tell "not
+    // there" from "not answered", and only the first counts as a failure.
+    const { resolveChannelId } = await import('../../routes/scrape-poker-clips.js');
+    const original = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () =>
+        new Response('<html>throttled</html>', { status: 200 })) as typeof fetch;
+      const r = await resolveChannelId('@AnyHandle');
+      expect(r.channelId).toBeNull();
+      expect(r.throttled).toBe(true);
+
+      globalThis.fetch = (async () => new Response('nope', { status: 404 })) as typeof fetch;
+      const missing = await resolveChannelId('@GoneForever');
+      expect(missing.channelId).toBeNull();
+      expect(missing.throttled).toBe(false);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('a channel page with no channelId key still resolves via og:url', async () => {
+    // @JonathanLittle is a real channel whose page carries no "channelId"
+    // key at all. A resolver checking only that would have called it missing.
+    const { resolveChannelId } = await import('../../routes/scrape-poker-clips.js');
+    const original = globalThis.fetch;
+    try {
+      const page =
+        '<html><head><meta property="og:url" content="https://www.youtube.com/channel/UC_o_HlX7ut2GO-IdtQSnLDg">' +
+        '</head><body>' + 'x'.repeat(6000) + '</body></html>';
+      globalThis.fetch = (async () => new Response(page, { status: 200 })) as typeof fetch;
+      const r = await resolveChannelId('@JonathanLittle');
+      expect(r.channelId).toBe('UC_o_HlX7ut2GO-IdtQSnLDg');
+      expect(r.throttled).toBe(false);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe('a poker feed does not fill with slots', () => {
+  it('the library import is filtered by the registry, in the query', async () => {
+    // video_library_videos carries 495 slots videos across eight channels
+    // that publish daily, so they dominate any "newest N" window. Reading the
+    // newest 400 and filtering afterwards surfaced 21 poker videos and made
+    // the bridge look finished when it had barely started. The filter belongs
+    // in the query, and the names passed to it must be the ones AS STORED -
+    // .in() is exact-match, so lower-cased lookup keys match nothing, quietly.
+    const src = await import('node:fs').then((fs) =>
+      fs.readFileSync(new URL('../../routes/scrape-poker-clips.ts', import.meta.url), 'utf8'),
+    );
+    expect(src).toContain(".in('source_name', rawNames)");
+    expect(src).not.toContain('[...byName.keys()]');
+  });
+});
