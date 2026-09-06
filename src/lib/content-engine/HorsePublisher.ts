@@ -27,6 +27,7 @@
  */
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
+import { postModeEnabled } from './Fleet.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
 import { isUninformativeTitle } from './PostBrief.js';
@@ -602,6 +603,13 @@ async function postNewsLink(
  * of that: it is the most specific thing the fleet can publish.
  */
 async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
+  // Dan approves a way of posting before it reaches players (CLAUDE.md 10.11).
+  // grounded_hand is OFF: it shipped reading as raw card notation -
+  // "Qh8c7d6sAd5c on 5s 4s Td 3c 6d. won 184bb" - and 59 of those were hidden
+  // from the feed on 2026-09-06. It stays off until he has seen the rewrite.
+  if (!(await postModeEnabled('grounded_hand'))) {
+    return { horse: horse.name, profile_id: horse.profile_id, success: false, error: 'grounded posts await approval' };
+  }
   const base = { horse: horse.name, profile_id: horse.profile_id };
   const written = await writeGrounded(horse as AuthorHorse);
   if (!written || !written.text) return { ...base, success: false, error: 'No hand worth telling' };
