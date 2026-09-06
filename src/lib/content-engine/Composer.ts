@@ -69,6 +69,11 @@ const POKER_TAKES: Record<string, string[]> = {
     'ICM turns a clear call into a fold and everybody knows it',
     'the shortest stack sets the pace at that table whether they mean to or not',
   ],
+  heads_up: [
+    'heads-up poker strips the table down to pressure and adjustment',
+    'with two players left, every tendency gets expensive quickly',
+    'heads up rewards the player who adjusts first and keeps adjusting',
+  ],
   bracelet: [
     'a bracelet changes how the rest of a career reads',
     'people remember the win, not the four days it took',
@@ -130,6 +135,10 @@ const POKER_TAKES: Record<string, string[]> = {
   study: [
     'the study is where results come from, the table is just where they show up',
     'reviewing your own losses is worse and better than anything else you can do',
+  ],
+  pot: [
+    'a pot that size makes every decision feel louder',
+    'the pot gets the headline, the line is what is worth studying',
   ],
   read: [
     'a read like that is a hundred small hands paying off at once',
@@ -385,14 +394,14 @@ function contentWords(s: string): Set<string> {
  * two-sentence style produced "the detail in X is what makes it. the details
  * are what make it." (measured 2026-09-05).
  */
-function pickDistinct(arr: string[], avoid: string, seed: string, salt: string): string {
+function pickDistinct(arr: string[], avoid: string, seed: string, salt: string): string | null {
   const taken = contentWords(avoid);
   const fresh = arr.filter((c) => {
     for (const w of contentWords(c)) if (taken.has(w)) return false;
     return true;
   });
-  const pool = fresh.length ? fresh : arr;
-  return pool[fleetHash(seed, salt) % pool.length]!;
+  if (!fresh.length) return null;
+  return fresh[fleetHash(seed, salt) % fresh.length]!;
 }
 
 /** The noun the sentence hangs on: a real name from the post. */
@@ -430,23 +439,29 @@ export function anchorOf(b: PostBrief): string | null {
   return null;
 }
 
-function takePool(b: PostBrief): string[] {
-  const table = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
+function specificTakePool(b: PostBrief): string[] {
+  // Never cross domains. A stored poker brief containing a stale sports
+  // concept once turned an EPT debut into "doing that as a rookie". General
+  // briefs are intentionally unsupported until their domain is known.
+  const table = b.domain === 'poker' ? POKER_TAKES : b.domain === 'sports' ? SPORT_TAKES : null;
+  if (!table) return [];
   const hits: string[] = [];
   for (const c of b.concepts) {
     const lines = table[c];
     if (lines) hits.push(...lines);
   }
   if (hits.length) return hits;
-  // No known concept: fall back to the other domain's table before tone, in
-  // case the brief's domain guess was the weaker signal.
-  const other = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
-  for (const c of b.concepts) {
-    const lines = other[c];
-    if (lines) hits.push(...lines);
-  }
-  if (hits.length) return hits;
-  return TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!;
+  return [];
+}
+
+/** A caption is publishable only when its title supports a domain take. */
+export function hasSpecificTake(b: PostBrief): boolean {
+  return specificTakePool(b).length > 0;
+}
+
+function takePool(b: PostBrief): string[] {
+  const specific = specificTakePool(b);
+  return specific.length ? specific : (TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!);
 }
 
 function fill(template: string, b: PostBrief, anchor: string | null): string {
@@ -474,6 +489,8 @@ export interface ComposeResult {
   relevance: number;
   /** What the sentence was built from, for the audit trail. */
   grounding: string[];
+  /** Unstyled meaning, used to prevent two styled copies on one post. */
+  semanticKey?: string;
 }
 
 /**
@@ -519,7 +536,7 @@ function chooseOpening(
 ): { text: string; grounding: string[] } {
   const candidates: Array<{ text: string; grounding: string[] }> = [];
 
-  for (const tpl of takePool(b)) {
+  for (const tpl of specificTakePool(b)) {
     const filled = fill(tpl, b, anchor);
     if (!filled) continue;
     const g: string[] = [];
@@ -528,7 +545,9 @@ function chooseOpening(
     candidates.push({ text: filled, grounding: g });
   }
 
-  if (b.topic) {
+  // A supported domain take is stronger than quoting a scraped title. Only
+  // use a topic frame when no grounded take survived interpolation.
+  if (!candidates.length && b.topic) {
     // A title that is already a sentence is stated and reacted to; only a
     // noun-phrase title can be dropped into the middle of one. See
     // titleIsAClause() for the sentence this stopped producing.
@@ -559,6 +578,12 @@ export function composeCaption(
   style: StyleSheet,
   variantSeed = '0',
 ): ComposeResult {
+  // A title alone is not comprehension. The old fallback wrapped arbitrary
+  // scraped text in "worth a look" and scored the repeated title as relevant,
+  // allowing poker posts about aliens and sports clips with clipped captions.
+  // Silence is recoverable; publishing something we did not understand is not.
+  if (!hasSpecificTake(b)) return { text: '', relevance: 0, grounding: [] };
+
   const seed = `${style.profileId}:${b.postId ?? b.title}:${variantSeed}`;
   const anchor = anchorOf(b);
   const grounding: string[] = [];
@@ -571,8 +596,9 @@ export function composeCaption(
 
   // Extra sentences for the longer styles.
   if (sentences >= 2 && b.concepts.length) {
-    const groundedAngles = takePool(b).filter((t) => !t.includes('{'));
-    if (groundedAngles.length) lines.push(pickDistinct(groundedAngles, lines[0]!, seed, 'angle1'));
+    const groundedAngles = specificTakePool(b).filter((t) => !t.includes('{'));
+    const angle = groundedAngles.length ? pickDistinct(groundedAngles, lines[0]!, seed, 'angle1') : null;
+    if (angle) lines.push(angle);
   }
 
   // The question habit, when the style has one.
@@ -584,7 +610,8 @@ export function composeCaption(
 
   const text = render(lines, style, seed) + (wantsQuestion ? '?' : '');
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
-  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
+  const semantic = lines[0]!.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding, semanticKey: `caption:${semantic}` };
 }
 
 /** Reaction pools for commenting, by how the commenter relates to the post. */
@@ -754,7 +781,8 @@ function composeHandComment(
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
   // Grounded by construction: it names the hand's own category, board or
   // holding, so it does not go through the clip relevance scorer.
-  return { text: cleaned, relevance: 1, grounding };
+  const semanticKey = `comment:${lines[0]!.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()}`;
+  return { text: cleaned, relevance: 1, grounding, semanticKey };
 }
 
 /**
@@ -777,14 +805,10 @@ export function composeComment(
   // those fragments into actor-shaped frames caused visibly robotic live
   // comments on 2026-09-06.
   const anchor = agentOf(b);
-  const specificTakes = takePool(b).filter((line) => {
+  const specificTakes = specificTakePool(b).filter((line) => {
     if (line.includes('{anchor}') && !anchor) return false;
     if (line.includes('{amount}') && !b.amounts.length) return false;
-    return b.concepts.some((concept) => {
-      const primary = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
-      const secondary = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
-      return Boolean(primary[concept]?.includes(line) || secondary[concept]?.includes(line));
-    });
+    return true;
   });
 
   // No named subject and no domain sentence we can support means no comment.
@@ -860,7 +884,8 @@ export function composeComment(
   const capped = lines.slice(0, Math.min(2, Math.max(1, sentences)));
   const text = render(capped, style, seed) + (asking ? '?' : '');
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
-  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
+  const semanticKey = `comment:${lines[0]!.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()}`;
+  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding, semanticKey };
 }
 
 /**

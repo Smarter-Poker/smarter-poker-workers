@@ -488,6 +488,7 @@ async function postVideoClip(
   const key = assetKeyFor(clip.source_url);
   if (key) await recordAssetUse(key, horse.profile_id, postId);
   await recordPhrase(picked.norm, horse.profile_id, postId);
+  if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, postId);
   if (postId) await recordBrief(postId, written.brief);
   return {
     ...base,
@@ -575,6 +576,7 @@ async function postNewsLink(
     const key = assetKeyFor(article.link);
     if (key) await recordAssetUse(key, horse.profile_id, postId);
     await recordPhrase(picked.norm, horse.profile_id, postId);
+    if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, postId);
     if (postId) await recordBrief(postId, written.brief);
     return {
       ...base,

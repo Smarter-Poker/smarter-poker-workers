@@ -86,7 +86,8 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   cooler: ['cooler', 'set over set', 'aces cracked'],
   bad_beat: ['bad beat', 'brutal beat', 'suck out', 'sucked out', 'runner runner', 'one outer', 'two outer'],
   all_in: ['all in', 'all-in', 'shove', 'shoved', 'jam', 'jammed'],
-  final_table: ['final table', 'ft bubble', 'heads up', 'heads-up'],
+  final_table: ['final table', 'ft bubble'],
+  heads_up: ['heads up', 'heads-up'],
   bracelet: ['bracelet', 'wsop', 'world series'],
   main_event: ['main event'],
   river: ['river', 'rivered'],
@@ -130,7 +131,9 @@ const SPORT_CONCEPTS: Record<string, string[]> = {
   save: ['save', 'saves', 'point blank'],
   knockout: ['knockout', 'ko', 'finish', 'submission'],
   comeback: ['comeback', 'came back', 'rally', 'rallied'],
-  rookie: ['rookie', 'debut'],
+  // "Debut" also describes a poker player's first EPT win. Treating it as
+  // an NBA/NFL rookie signal produced a sports comment under a poker article.
+  rookie: ['rookie', 'first-year player'],
   record: ['record', 'franchise record', 'career high', 'career-high'],
   playoffs: ['playoff', 'playoffs', 'finals', 'game 7', 'game seven'],
   injury: ['injury', 'injured', 'hurt'],
@@ -452,7 +455,15 @@ export function topicOf(title: string): string | undefined {
   if (CLAUSE_MARKERS_TOPIC.test(t)) {
     if (words.length > CLAUSE_CAP) return undefined;
   } else if (words.length > 9) {
-    t = words.slice(0, 9).join(' ');
+    // A noun phrase is not safe to cut at an arbitrary word either. Live
+    // output proved the old assumption wrong: headlines became "...and the",
+    // "...fall short of" and "...Game of All-Time with". Drop the topic and
+    // let the relevance gate choose another asset instead of publishing half
+    // a headline.
+    return undefined;
+  }
+  if (/\b(the|a|an|and|or|but|of|with|to|for|from|in|on|at|by|as|his|her|its)$/i.test(t)) {
+    return undefined;
   }
   if (t.split(/\s+/).length < 2) return undefined;
   // Lower-case the leading word unless it is a name or acronym, so the phrase

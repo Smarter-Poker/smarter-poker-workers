@@ -165,6 +165,22 @@ domain-specific take, or fail closed as an empty draft. The exact live failures
 are regression laws. That revision is running in production; ongoing natural-run
 sampling remains part of operations, not a reason to call unreviewed output done.
 
+The 16:10 UTC natural post run proved why that last sentence matters. Its
+counters were green (25/25 posted, relevance 0.86, zero below-floor), while
+manual review found arbitrary nine-word headline cuts ending in `and the`,
+`fall short of`, `do you` and `with`. All 25 posts were removed. Long topics
+are now dropped rather than cut, function-word endings fail closed, and a
+supported poker/sports concept gets a domain take before any headline wrapper.
+Those exact production titles are regression laws.
+
+The 16:30 UTC engagement run then validated the new skip behavior (107 skipped,
+10 published, zero below-floor) and exposed two narrower defects in manual
+review: `debut` was interpreted as the sports concept `rookie` under a poker
+article, and different style openers hid the same core sentence from the text
+ledger. Domain takes no longer cross between poker and sports; `debut` is not
+a rookie synonym; and the unstyled semantic sentence is now ledgered per target
+post so two horses cannot make the same point there in different formatting.
+
 ### Phase 3: grounded content (BUILT, REJECTED, DISABLED)
 
 - `HandStoryService.ts`: pick the week's hand from `horse_hand_reviews`
@@ -180,8 +196,34 @@ sampling remains part of operations, not a reason to call unreviewed output done
 
 The first player-visible voice was rejected and its 79 generated posts were
 permanently removed. The recertification also removed the complete 203-post
-pre-fix fleet media batch so none of the rejected generator's output remains,
-for 282 deleted horse posts in total.
+pre-fix fleet media batch, then a 25-post natural verification batch that
+exposed dangling headline fragments. The final authenticated feed sweep found
+20,195 more legacy posts authored by the horse roster behind the earlier
+limited query. Those were permanently removed as well: 20,502 horse-authored
+posts in total, with zero horse-authored `social_posts` remaining. Human and
+official-account posts were outside the deletion target. The clip-deduplication
+ledger was preserved; 18 nullable post links were cleared before deletion.
+
+The next natural 17:10 UTC run still failed human review despite reporting zero
+below-floor posts and average relevance 0.61. Its 22 posts included clipped
+ellipsis titles, an aliens video classified as poker, irrelevant article takes,
+generic wrappers and a sentence duplicated inside one caption. All 22 were
+deleted, bringing the permanent cleanup total to 20,524, and the master
+`content_settings.engine_enabled` switch was turned off. The fleet must remain
+silent until visible-output quality is repaired and a review batch is accepted.
+
+The repair now fails closed at the comprehension boundary: a clip or article
+must contain a recognised domain concept with a supported take. Merely quoting
+its title inside a generic frame no longer counts as relevance. `heads-up` is
+separate from `final_table`; an unsupported poker hint cannot turn an aliens
+video into poker; caption meanings are ledgered before style openers can hide
+duplicates; a long voice drops an overlapping second sentence; and ellipsis
+styles use one intentional ellipsis character rather than three dots that look
+like title truncation. An offline sweep of 300 current poker clips and 300
+current sports clips through 40 styles produced 24,000 drafts: 4,160 passed,
+19,840 safely stayed silent, and zero accepted drafts contained the rejected
+generic headline frames or three-dot endings. This code does not authorize
+resuming the fleet; the master switch remains off for human acceptance.
 A rewritten hand voice exists only as unwired candidate code. `grounded_hand`
 and the older, separately scoped `grounded_session` mode both remain off until
 Dan reviews samples and explicitly approves each mode.

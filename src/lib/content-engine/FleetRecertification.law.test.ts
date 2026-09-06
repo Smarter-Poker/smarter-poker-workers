@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { briefForAsset } from './PostBrief.js';
-import { composeCaption } from './Composer.js';
+import { composeCaption, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
 import { styleSheetFor } from './StyleSheet.js';
 import { fleetHash } from './FleetScheduler.js';
 
@@ -56,12 +56,20 @@ describe('captions read like a person sharing the actual item', () => {
     }
   });
 
-  it('a topic is introduced after a colon, never forced into a noun slot', () => {
-    for (const [domain, title] of titles) {
+  it('an unsupported topic stays silent instead of receiving a generic wrapper', () => {
+    for (const [domain, title] of titles.slice(0, 5)) {
       const brief = briefForAsset({ kind: 'video', title, domainHint: domain });
       const captions = fleetIds(80).map((id) => composeCaption(brief, styleSheetFor(id)).text);
-      expect(captions.filter((caption) => caption.includes(':')).length).toBeGreaterThan(60);
+      expect(captions.every((caption) => caption === '')).toBe(true);
     }
+  });
+
+  it('a supported concept earns a real take instead of a headline wrapper', () => {
+    const [domain, title] = titles[5]!;
+    const brief = briefForAsset({ kind: 'video', title, domainHint: domain });
+    const captions = fleetIds(80).map((id) => composeCaption(brief, styleSheetFor(id)).text);
+    expect(captions.filter((caption) => caption.includes(':')).length).toBe(0);
+    for (const caption of captions) expect(relevanceOf(caption, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
   });
 });
 
@@ -71,6 +79,14 @@ describe('quality controls fail closed', () => {
     const fn = fleet.slice(fleet.indexOf('export async function engineEnabled'));
     expect(fn).toMatch(/if \(error \|\| !data\)[\s\S]*return false;/);
     expect(fn).not.toMatch(/error \|\| !data \? true/);
+  });
+
+  it('same-post semantic duplicates are checked and recorded', () => {
+    const writer = source('VoiceWriter.ts');
+    const social = source('HorseSocialEngine.ts');
+    expect(writer).toMatch(/phraseUsedOnPost\(draft\.semanticKey, postId\)/);
+    expect(writer).toMatch(/composeComment\(brief, style, variant\)[\s\S]*post\.postId/);
+    expect(social).toMatch(/recordPhrase\(written\.semanticKey, horse\.profile_id, post\.id\)/);
   });
 
   it('below-floor or repeated drafts are never inserted as empty-quality posts', () => {
