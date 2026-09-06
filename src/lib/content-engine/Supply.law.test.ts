@@ -60,21 +60,21 @@ describe('a horse draws from its own slice of the catalogue', () => {
 describe('how much sport a horse posts is a trait of the horse', () => {
   const ids = fleetIds(600);
 
-  it('horses differ, and the fleet still averages near a quarter', () => {
+  it('horses differ, and a poker platform stays poker-first', () => {
     // Phase 1-3 used one global Math.random() < 0.75, so every horse had the
     // same appetite and the mix was a property of that line rather than of
     // the characters.
     const shares = ids.map(sportsShareFor);
     expect(new Set(shares).size).toBeGreaterThan(3);
     const mean = shares.reduce((a, b) => a + b, 0) / shares.length;
-    expect(mean).toBeGreaterThan(0.15);
-    expect(mean).toBeLessThan(0.35);
+    expect(mean).toBeGreaterThan(0.08);
+    expect(mean).toBeLessThan(0.18);
   });
 
   it('some horses are nearly pure poker and none is pure sport', () => {
     const shares = ids.map(sportsShareFor);
     expect(shares.some((s) => s <= 0.05)).toBe(true);
-    expect(Math.max(...shares)).toBeLessThan(0.8);
+    expect(Math.max(...shares)).toBeLessThan(0.6);
     expect(Math.min(...shares)).toBeGreaterThan(0);
   });
 
