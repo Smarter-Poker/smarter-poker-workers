@@ -31,6 +31,7 @@ import {
   briefForHand,
   briefForSession,
 } from './GroundedComposer.js';
+import { composeComment } from './Composer.js';
 import { styleSheetFor } from './StyleSheet.js';
 import { fleetHash } from './FleetScheduler.js';
 
@@ -296,6 +297,128 @@ describe('house rules still hold on grounded posts', () => {
         const t = composeHandPost(f, styleSheetFor(id)).text;
         expect(t).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
         expect(t).not.toContain('—');
+      }
+    }
+  });
+});
+
+/**
+ * The four defects found by reading eight hours of live grounded output on
+ * 2026-09-06, after Phase 3 shipped and before Phase 4 began. Every one of
+ * them was true, well-formed and passing every test that existed.
+ */
+describe('a hand post does not read like a template', () => {
+  const ids = fleetIds(90);
+
+  it('the fleet does not tell every hand through the same sentence', () => {
+    // Measured live: 58 grounded posts drawn from 14 skeletons in eight
+    // hours, "got there with {hole}, {board} runout" seven times. The phrase
+    // ledger could not see it, because the cards make every post unique.
+    //
+    // The guarantee is per category: while its pool holds out, no two horses
+    // reach for the same skeleton. Eight is the smallest pool any category
+    // has, so eight horses on one hand must produce eight different ones -
+    // which is also what stops anybody shrinking a pool below eight.
+    for (const f of HANDS) {
+      const used = new Set<string>();
+      for (const id of fleetIds(90).slice(0, 8)) {
+        const r = composeHandPost(f, styleSheetFor(id), '0', used);
+        expect(r.text.length).toBeGreaterThan(3);
+        expect(r.frameKey).toMatch(/^frame:hand:/);
+        expect(used.has(r.frameKey)).toBe(false);
+        used.add(r.frameKey);
+      }
+      expect(used.size).toBe(8);
+    }
+  });
+
+  it('a horse still speaks when every frame is taken', () => {
+    // Failing open matters more than repeating: a horse that cannot post is
+    // a defect, a horse reusing a skeleton is a blemish.
+    const f = HANDS[0]!;
+    const all = new Set<string>();
+    for (let i = 0; i < 40; i++) all.add(`frame:hand:${f.category}:${i}`);
+    const r = composeHandPost(f, styleSheetFor(fleetIds(1)[0]!), '0', all);
+    expect(r.text.length).toBeGreaterThan(3);
+  });
+});
+
+describe('a sentence never names a street the hand never reached', () => {
+  const ids = fleetIds(60);
+  it('a hand that ended on the flop has no river in it', () => {
+    // The numbers-are-the-ledger's rule covers streets. "the whole thing
+    // went in on the river" is a claim about the hand as surely as a pot is.
+    const river = HANDS[0]!;
+    const flop = {
+      ...river,
+      board: river.board.slice(0, 3),
+      boardNotation: river.boardNotation.split(' ').slice(0, 3).join(' '),
+      street: 'flop' as const,
+    };
+    for (const cat of ['big_win', 'bad_beat', 'cooler', 'river_aggression', 'big_fold', 'stackoff', 'grind'] as const) {
+      for (const id of ids) {
+        const t = composeHandPost({ ...flop, category: cat }, styleSheetFor(id)).text;
+        expect(t.toLowerCase()).not.toContain('river');
+      }
+    }
+  });
+});
+
+describe('a comment under a hand is written as poker, not as a column value', () => {
+  const ids = fleetIds(60);
+
+  it('the category label never reaches a sentence', () => {
+    // Live 2026-09-06: "how often is the big win actually the right call
+    // there", "what does the grind look like a street earlier". A brief's
+    // concepts are internal labels; only HAND_REACT turns them into English.
+    for (const f of HANDS) {
+      const b = { ...briefForHand(f), postId: `p:${f.handId}` };
+      for (const id of ids) {
+        const t = composeComment(b, styleSheetFor(id)).text.toLowerCase();
+        for (const label of ['big win', 'bad beat', 'river aggression', 'big fold', 'stackoff', 'the grind']) {
+          expect(t).not.toContain(`the ${label} `);
+          expect(t).not.toContain(`the ${label},`);
+        }
+        expect(t).not.toMatch(/\b(river_aggr|big_fold|preflop_stackoff|_won|_lost)\b/);
+      }
+    }
+  });
+
+  it('a holding is never spoken about as if it were a person', () => {
+    // anchorOf() falls back to keyPhrase, and briefForHand sets that to the
+    // hole cards: "curious how 8cKdQsJsTd plays that at a different stake".
+    for (const f of HANDS) {
+      const b = { ...briefForHand(f), postId: `p:${f.handId}` };
+      for (const id of ids) {
+        const t = composeComment(b, styleSheetFor(id)).text;
+        expect(t).not.toMatch(/what does \S*[AKQJT2-9][hdcs]\S* do there/i);
+        expect(t).not.toMatch(/curious how \S*[AKQJT2-9][hdcs]/i);
+      }
+    }
+  });
+
+  it('a commenter does not ask about a river that never came', () => {
+    const river = HANDS[0]!;
+    const flop = {
+      ...river,
+      board: river.board.slice(0, 3),
+      boardNotation: river.boardNotation.split(' ').slice(0, 3).join(' '),
+      street: 'flop' as const,
+    };
+    const b = { ...briefForHand(flop), postId: 'p:flop' };
+    for (const id of ids) {
+      expect(composeComment(b, styleSheetFor(id)).text.toLowerCase()).not.toContain('river');
+    }
+  });
+
+  it('every comment on a hand says something', () => {
+    for (const f of HANDS) {
+      const b = { ...briefForHand(f), postId: `p:${f.handId}` };
+      for (const id of ids.slice(0, 20)) {
+        const t = composeComment(b, styleSheetFor(id)).text;
+        expect(t.trim().length).toBeGreaterThan(8);
+        expect(t).not.toContain('undefined');
+        expect(t).not.toContain('{');
       }
     }
   });

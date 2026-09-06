@@ -574,6 +574,10 @@ async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
   if (error) return { ...base, success: false, error: error.message };
   const postId = (post as { id: string } | null)?.id ?? null;
   await recordPhrase(normalizePhrase(written.text), horse.profile_id, postId);
+  // The skeleton is ledgered as well as the sentence. Two horses telling
+  // different hands through the same frame is the repetition a reader
+  // actually notices, and the cards hide it from the phrase ledger.
+  if (written.frameKey) await recordPhrase(written.frameKey, horse.profile_id, postId);
   if (postId) await recordBrief(postId, written.brief);
   return {
     ...base,
