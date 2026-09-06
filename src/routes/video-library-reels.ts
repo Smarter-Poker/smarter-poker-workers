@@ -46,6 +46,7 @@
 import type { Context } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { getSupabase } from '../lib/supabase.js';
+import { engineEnabled } from '../lib/content-engine/Fleet.js';
 import { fleetHash } from '../lib/content-engine/FleetScheduler.js';
 import { pokerChannelIndex } from '../lib/content-engine/ClipSupply.js';
 
@@ -223,6 +224,14 @@ export async function bridgeLibraryToReels(dryRun: boolean): Promise<{
 
 export async function videoLibraryReels(c: Context) {
   try {
+    if (!(await engineEnabled())) {
+      return c.json({
+        success: true,
+        skipped: 'engine_disabled',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const supabase = getSupabase();
     const dryRun = c.req.query('dry_run') === '1';
     const limit = Number(c.req.query('limit')) || DEFAULT_LIMIT;
