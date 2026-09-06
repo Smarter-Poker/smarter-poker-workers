@@ -423,6 +423,10 @@ function keyPhraseOf(title: string, people: string[], teams: string[]): string |
  * Strong Enough to Raise: Garrett Adelstein's $60K Bluff"), so that half wins
  * when it is substantial.
  */
+/** Verbs that make a title a sentence rather than a noun phrase. */
+const CLAUSE_MARKERS_TOPIC =
+  /\b(is|are|was|were|has|have|had|does|did|will|wont|can|cant|gets|got|goes|went|makes|made|takes|took|wins|won|loses|lost|calls|folds|shoves|says|said|thinks|tried|trying)\b/i;
+
 export function topicOf(title: string): string | undefined {
   if (!title) return undefined;
   let t = title.trim();
@@ -435,7 +439,21 @@ export function topicOf(title: string): string | undefined {
   // Trailing shouts add nothing and read as scraped text.
   t = t.replace(/\s+\b(omg|lol|lmao|wow|smh|wtf|insane|crazy)\b\s*$/i, '').trim();
   const words = t.split(/\s+/);
-  if (words.length > 9) t = words.slice(0, 9).join(' ');
+  // Trimming a NOUN PHRASE at nine words loses nothing that matters. Trimming
+  // a SENTENCE changes what it says: the real title "Daniel Negreanu is
+  // literally trying to give his money away" became "...give his money", which
+  // is a different claim, and the caption then stated it as fact. Phase 4
+  // feeds real YouTube titles in, and real titles are often whole clauses.
+  //
+  // So a clause keeps its words up to a generous cap, and beyond that the
+  // topic is dropped rather than misquoted - the composer has other lines to
+  // reach for, and none of them puts words in the video's mouth.
+  const CLAUSE_CAP = 16;
+  if (CLAUSE_MARKERS_TOPIC.test(t)) {
+    if (words.length > CLAUSE_CAP) return undefined;
+  } else if (words.length > 9) {
+    t = words.slice(0, 9).join(' ');
+  }
   if (t.split(/\s+/).length < 2) return undefined;
   // Lower-case the leading word unless it is a name or acronym, so the phrase
   // drops into the middle of a sentence.

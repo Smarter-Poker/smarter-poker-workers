@@ -229,3 +229,47 @@ describe('a poker feed does not fill with slots', () => {
     expect(src).not.toContain('[...byName.keys()]');
   });
 });
+
+describe('a real title is not turned into a claim it never made', () => {
+  it('a clause title is never truncated into a different statement', async () => {
+    // Phase 4 feeds real YouTube titles in, and real titles are often whole
+    // sentences. The nine-word trim - fine for the hand-written noun-phrase
+    // titles it was built for - turned "Daniel Negreanu is literally trying to
+    // give his money away" into "...give his money", and the caption then
+    // stated that as fact.
+    const { topicOf } = await import('./PostBrief.js');
+    expect(topicOf('Daniel Negreanu is literally trying to give his money away')).toBe(
+      'Daniel Negreanu is literally trying to give his money away',
+    );
+    // Past a generous cap the topic is dropped rather than misquoted.
+    expect(
+      topicOf('This is a very long clause title that just keeps going on and on and on past any cap'),
+    ).toBeUndefined();
+    // A noun phrase is still trimmed - nothing that matters is lost there.
+    expect(topicOf('NEVER Slow Play ACES on Television')).toBe('NEVER Slow Play ACES on Television');
+  });
+
+  it('a sentence title is stated and reacted to, never used as a noun', async () => {
+    const { titleIsAClause } = await import('./Composer.js');
+    const { briefForPost } = await import('./PostBrief.js');
+    const { composeCaption } = await import('./Composer.js');
+    const { styleSheetFor } = await import('./StyleSheet.js');
+
+    expect(titleIsAClause('Daniel Negreanu is literally trying to give his money away')).toBe(true);
+    expect(titleIsAClause('$26K on the Line')).toBe(false);
+
+    const b = briefForPost({
+      postId: 'p',
+      contentType: 'video',
+      mediaTitle: 'Daniel Negreanu is literally trying to give his money away',
+      channel: 'PokerGO',
+      metadata: { clip_type: 'poker' },
+    });
+    for (const id of fleetIds(40)) {
+      const text = composeCaption(b, styleSheetFor(id)).text;
+      // The failure shape: the title's own verb followed by the frame's verb.
+      expect(text).not.toMatch(/give his money (away )?is a spot/i);
+      expect(text).not.toMatch(/money is the part worth/i);
+    }
+  });
+});
