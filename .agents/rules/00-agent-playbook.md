@@ -12,6 +12,11 @@ git status --porcelain # must be empty of tracked files
 git log --oneline origin/main..HEAD # must be empty
 git branch -r --contains HEAD # must name your branch
 gh pr list --head <your-branch> # must show a PR, or explain why not
+# `gh` is NOT installed on the Mac. There, ask the API directly:
+# curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+#   "https://api.github.com/repos/Smarter-Poker/<repo>/pulls?head=Smarter-Poker:<branch>&state=all"
+# And MERGED IS NOT LANDED - the tick is not evidence, the files are:
+# git fetch origin main && git cat-file -e origin/main:<path> && echo on-main
 If any of those is wrong, you are not finished. Fix it before continuing.
 
 PART B — DID YOU FOLLOW THE RULES?
@@ -62,20 +67,48 @@ A task is not finished when the code is written. It is finished when the commit
 is on GitHub, the CI checks are green, and the PR is MERGED.
 
 ```bash
-git push -u origin HEAD && gh pr create --fill
+git push origin HEAD:refs/heads/<your-branch>
 ```
 
-**YOU MUST NOT ORPHAN OR ABANDON YOUR WORK.** Do not exit immediately after pushing! You must verify the PR actually goes green and merges. You must automatically do all push and publish procedures. If you don't do this, you are explicitly violating the playbook.
-Use the **`schedule`** tool:
+The pull request opens itself - `agent-open-pr.yml` fires on the push, for any
+branch name. Do NOT run `gh pr create`: **`gh` is not installed on the Mac**
+agents work on, so that command dies with `command not found` after the push has
+already succeeded. On the Mac, ask the REST API with `curl` and the
+`GITHUB_TOKEN` in `~/Documents/club-arena/.env`.
 
-1. Call `schedule` with `DurationSeconds=300` (5 minutes) and `Prompt="Check if the PR went green and merged. If it failed, fix it, and push again."`
-2. End your turn. The system will wake you up when the timer fires.
-3. Check `gh pr status` and `gh run list --branch <branch>`.
-   - If **Merged**: You are done!
-   - If **Pending**: Set another timer and go back to sleep.
-   - If **Failed/Blocked**: Fix the issue, force-push, and set a new timer.
-4. **Never report task complete** to the user until the PR is verified green and merged.
-5. You must run the clock checks to ensure it actually pushes, publishes, and leaves github with zero errors ALWAYS, without the user having to specifically ask you to check.
+**YOU MUST NOT ORPHAN OR ABANDON YOUR WORK** - and you avoid that by PUSHING,
+not by waiting. Push, report the branch and the pull request number, and END
+YOUR SESSION. Autopilot merges it, the publisher ships it, and the watchdogs
+verify it, all server-side, on infrastructure that does not care which account
+you were.
+
+**NEVER SET A TIMER, AND NEVER USE THE `schedule` TOOL.** This block used to
+say the opposite - "Call `schedule` with `DurationSeconds=300`" - and it broke
+two binding laws while not working:
+
+- Club Arena `CLAUDE.md` 10.85 / World Hub 10.9, Dan verbatim: "MAKE IT A HARD
+  LAW THAT NO OTHER AGENT SCHEDULES ANY CRITICAL TASK, WATCH DOG OR ANYTHING
+  ELSE THERE". A scheduled task belongs to ONE Claude account and Dan works
+  across several, so one installed from your session is unreachable from the
+  next. It does not error and does not warn: it reports `enabled: true` and
+  never fires again. `smarter-poker-cron-health` sat exactly like that from
+  2026-06-17 for two and a half months while reading as healthy.
+- Club Arena `CLAUDE.md` 10.8 rule 3: "NEVER SET A TIMER TO WATCH CI ... 'I've
+  set another brief timer and will be back shortly' is the forbidden
+  `wait_and_merge.sh` written in prose."
+
+Checking ONCE at the end to say why something is BLOCKED is fine. Sitting in a
+loop is not, and neither is force-pushing to make a red branch go green.
+
+**MERGED IS NOT LANDED.** Autopilot squash-merges the moment the required
+checks pass - under two minutes on a small change - so a SECOND push to that
+branch lands on a closed pull request, exits 0, and reaches nobody. World Hub
+#1387 shipped 1 of its 3 commits that way. A follow-up commit needs a NEW
+BRANCH off current `main`, and you verify with the files rather than the tick:
+
+```bash
+git fetch origin main && git cat-file -e origin/main:<path> && echo on-main
+```
 
 ## RULE 2 — STRICT GSD COMPLIANCE (WORKTREES ONLY).
 
@@ -105,7 +138,7 @@ Any updates to Club Arena must STRICTLY flow through a merged PR on the `club-ar
 You have every single credential (CLI, backend, DB access, GitHub, Supabase) to do every single task yourself.
 
 - If a database migration needs to be run, YOU run it via `psql` or `supabase` CLI.
-- If the database is timing out, YOU set a background cron/schedule to keep retrying until it works. Do not abandon the task and do not ask the user to "paste this in the Supabase SQL editor".
+- If the database is timing out, retry it yourself now, or put the job on **Open Claw** (`scripts/openclaw-cron-dispatcher.py`) - never on the Claude `schedule` tool, which `CLAUDE.md` 10.85 bans because it reports `enabled: true` and never fires. Do not abandon the task and do not ask the user to "paste this in the Supabase SQL editor".
 - If a server needs to be restarted, YOU restart it.
 - If a PR needs to be merged, YOU merge it or wait for autopilot.
   Never tell Dan to run a command, pull a branch, start a server, open a PR, merge anything, or run a SQL query. If a step needs doing, DO IT YOURSELF.
@@ -119,7 +152,19 @@ paste the count. "It is deployed" means you checked what production serves.
 
 If your PR fails CI, has a merge conflict, or gets blocked from deploying, **YOU MUST FIX IT YOURSELF IMMEDIATELY.**
 Do not abandon the PR. Do not wait for another agent to fix it. Do not wait for a human to fix it.
-Check the failing logs, resolve the issue, force-push the fix, and restart your `schedule` timer to verify it goes green.
+Read the failing check, fix the cause, and push the fix.
+
+Three corrections to how that used to read (2026-09-06):
+
+- **Not `schedule`.** See RULE 1 - the tool is banned by `CLAUDE.md` 10.85 and
+  silently never fires. Push the fix and end the session; autopilot re-runs the
+  checks and merges when they are green.
+- **Not a force-push, by default.** If your branch's pull request is still open,
+  an ordinary push updates it. Force-pushing is what rewound `main` and dropped
+  four commits already serving in production.
+- **If the pull request already MERGED, a push to that branch changes nothing**
+  and exits 0. Make a NEW BRANCH off current `main`. `scripts/guard-merged-branch.sh`
+  refuses that push from `.husky/pre-push` and prints the recovery.
 
 ## RULE 8 — THE ZERO-ASSUMPTION DOCTRINE (PROOF OF RESOLUTION)
 

@@ -25,6 +25,11 @@ git status --porcelain # must be empty of tracked files
 git log --oneline origin/main..HEAD # must be empty
 git branch -r --contains HEAD # must name your branch
 gh pr list --head <your-branch> # must show a PR, or explain why not
+# `gh` is NOT installed on the Mac. There, ask the API directly:
+# curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+#   "https://api.github.com/repos/Smarter-Poker/<repo>/pulls?head=Smarter-Poker:<branch>&state=all"
+# MERGED IS NOT LANDED. The tick is not the evidence; the files are:
+# git fetch origin main && git cat-file -e origin/main:<path> && echo on-main
 If any of those is wrong, you are not finished. Fix it before continuing.
 
 PART B — DID YOU FOLLOW THE RULES?
@@ -93,11 +98,17 @@ eval "$(bash scripts/agent-workspace.sh <your-agent-name> fix/<short-slug>)"
 # 2. Do the work. Commit normally.
 git add -A && git commit -m "fix(scope): what changed"
 
-# 3. Push and open a pull request.
-git push -u origin HEAD && gh pr create --fill
+# 3. Push. THE PULL REQUEST OPENS ITSELF.
+git push origin HEAD:refs/heads/<your-branch>
 
 # 4. STOP. You are done.
 ```
+
+`agent-open-pr.yml` opens the pull request within seconds of the push, on
+`create` AND on `push`, for any branch name. You do not open it, and on the Mac
+you cannot: **`gh` is not installed there** (see 8b). This step used to read
+`gh pr create --fill`, which meant every agent in a Cowork session watched the
+push succeed and the next command die with `command not found`.
 
 Autopilot enables squash auto-merge within seconds, keeps the branch fresh, and
 GitHub merges it the moment the required checks are green. **You never merge.**
@@ -426,8 +437,27 @@ Some agent sandboxes have no route to `api.github.com` — `git` gets through an
 `gh` does not. Two answers, in order:
 
 **1. Use the host shell.** Cowork sessions have `mcp__counselors__host_terminal`,
-which runs on the Mac where `gh` is already authenticated. Everything in this
-playbook works there. Check with `gh auth status` before concluding anything.
+which runs real bash on the Mac, where `git@github.com` over SSH works and
+`api.github.com` is reachable.
+
+**BUT `gh` IS NOT INSTALLED ON THAT MAC.** This paragraph used to say it was
+("where `gh` is already authenticated. Everything in this playbook works
+there"), and that sentence was false for every Cowork session ever run.
+Corrected 2026-09-06 after an agent traced it: `command -v gh` returns nothing,
+and Club Arena `CLAUDE.md` 11.0 has said so correctly the whole time. The two
+documents disagreed and the wrong one was the one every agent is told to read
+first.
+
+On the Mac, use `curl` against the REST API. The token is `GITHUB_TOKEN` in
+`~/Documents/club-arena/.env`:
+
+```bash
+curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "https://api.github.com/repos/Smarter-Poker/<repo>/pulls?state=open"
+```
+
+You rarely need even that: pushing is the whole job, and `agent-open-pr.yml`
+opens the pull request for you.
 
 **2. If you genuinely cannot reach the API at all, PUSHING IS ENOUGH.**
 
@@ -507,11 +537,12 @@ That happened on 2026-08-22: the MCP's token was dead while `gh` worked
 perfectly, and an agent reported itself blocked on a repository it could read.
 
 Every guard, script and workflow in this estate is written against `gh` and the
-REST API for exactly this reason. Use them:
+REST API for exactly this reason. Use them **where `gh` exists** - it does in
+CI, and it does NOT on the Mac (see 8b), so on the Mac take the second column:
 
 ```bash
-gh pr create --fill                    # not the MCP's create_pull_request
-gh api repos/OWNER/REPO/contents/PATH  # not the MCP's get_file_contents
+gh pr create --fill                    # or: the push alone; agent-open-pr.yml opens it
+gh api repos/OWNER/REPO/contents/PATH  # or: curl -H "Authorization: Bearer $GITHUB_TOKEN" ...
 ```
 
 If you find the MCP dead, say so once and carry on with `gh`. Do not treat it

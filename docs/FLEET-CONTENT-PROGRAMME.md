@@ -163,16 +163,88 @@ Haiku-class model are a few dollars a day. Hard daily cap in
 - DMs: the messenger engine reads `social_messages`, a table that does not
   exist; decide the DM product before writing a line.
 
-### Phase 4: media supply that does not repeat
+### Phase 4: media supply that does not repeat (SHIPPED 2026-09-06; see the changelog)
 
-- `poker_clips` table + channel RSS scraper (200 channels, no API key), the
-  150 hard-coded clips retired.
-- Reddit r/poker and Twitch/Kick clips as sources; the seven news sources
-  `content-health-check` already monitors replace the two RSS feeds.
-- Per-horse source slices; oEmbed validity cached per video.
-- Sports share becomes a persona trait.
-- Unstick the 144 queued native reels; transcode queue watchdog; repair or
-  retire the daily video-library reels bridge.
+The measurement that defined it: over seven live days sports drew 285 posts
+from a scraped pool of 8,271 while poker drew 245 from a frozen array of 150,
+using 114 of them in one week. **A poker platform posted more sports than
+poker (53.8% to 46.2%)** because sports was the only supply that renewed. 36
+of the 149 clips were already dead - deleted, private or embedding-disabled -
+and all 36 were still being offered, because the only validity cache was a Map
+in process memory.
+
+DONE:
+
+- `poker_clips` is the twin of `sports_clips`; `content_sources` is one
+  registry for every channel, poker and sports. The 149-clip array is retired
+  and its clips are rows, carrying the measurement that retired 36 of them.
+- The scraper reads channel RSS, not page HTML. The old scraper paired the Nth
+  video id with the Nth title found in the page, which is where
+  `Bleacher Report NBA NBA Clip` came from and how a brief named "Keyboard" as
+  a person. Real titles make better briefs, captions and comments.
+- oEmbed validity lives on the row; `/cron/revalidate-poker-clips` re-asks the
+  pool inside a week and never reads a 429 or 403 as "dead".
+- Per-horse source slices, with the stride varying per horse - the first
+  version varied only the start, so ~1 horse in 11 had an identical set of
+  favourite channels, and its own law test caught it.
+- Sports share is a trait of the horse, not one global `Math.random() < 0.75`.
+- A channel dormant for 540 days is retired: three seeded channels last
+  uploaded in 2018, 2013 and 2008, and a supply that renews with 2008 uploads
+  has not renewed.
+- The 144 queued reels are released and cannot recur. All 149 of their yt-dlp
+  jobs had failed with YouTube's anti-bot response; the job was marked failed
+  and the reel was never told, so it kept pointing at a storage file that was
+  never written. A trigger now makes a reel fall back to its YouTube origin
+  when its download job dies.
+- `/cron/content-supply-watchdog`: both defects above were silent for weeks,
+  because a queue that stops draining and a pool that stops growing both look
+  exactly like a quiet week.
+
+Live pool: **113 to 1,720 clips**, 91 active sources, 16 retired as dormant, 4 poker news feeds, 0 reels stuck in the queue.
+
+CLOSED OUT THE SAME DAY (Dan: finish it, do not carry it):
+
+- The news feeds are rows in `content_sources`, each horse reading its own
+  slice; poker news went from 2 sources to 4 (every candidate fetched first,
+  three 404/301s not seeded). `content-health-check`'s auto-fix now APPLIES
+  its repair - it used to log "Switched from X to Y" and change nothing,
+  because the feed the horses read was a literal no log line could reach.
+- The video library is joined at last: 1,773 poker videos scraped
+  continuously and never once read by the fleet. `content_sources.aliases`
+  fixed the 172 blocked by "WSOP" vs "World Series of Poker". The library's
+  495 slots videos stay out - a source is poker because a row says so.
+- The reels bridge is repaired, not retired. It was a SCRIPT_JOB skipped on
+  the only host that fires, so the library gained 1,573 videos and the reels
+  feed gained none. The workers route does both halves now, and spreads its
+  output: the April run put 200 reels on ONE horse in a day; the first live
+  run of this one made 40 across 39 horses, all watchable.
+- **Reddit: declined, not deferred.** `robots.txt` is `Disallow: /` and their
+  public content policy restricts automated use. Buildable; should not be
+  built.
+- **Twitch: blocked on a credential** that does not exist in this estate.
+  Ready to build given `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`.
+- **The registry holds ~91 active channels, not 200.** Two batches of
+  hand-written candidates resolved at 67% and 28% against YouTube, and the
+  rate falls because the obvious ones are in. What the contract wanted - a
+  supply that does not repeat - is met: **1,720 live clips against ~245 poker
+  video posts a week**, from a phase that began at 113. Adding more is a row.
+
+FIVE MORE DEFECTS, all found by reading output or running the code live:
+
+- A stale copy of the dispatcher pasted over the worktree would have
+  unregistered `horse-posts`, `horses-social-all` and `table-socket-probe` -
+  the whole of Phase 1. Build Safety Gate CHECK 8 caught it.
+- A YouTube throttle (755 bytes, HTTP 200) made every live channel look dead;
+  six such runs would have retired the registry.
+- `@JonathanLittle` is a real channel whose page carries no `channelId` key;
+  `og:url` is tried first now.
+- The library's slots channels drowned poker in any newest-N window, so the
+  filter moved into the query - with the names AS STORED, because `.in()` is
+  exact-match and lower-cased keys match nothing, silently.
+- A real title is not a noun: `{topic} is a spot worth sitting with` given a
+  sentence produced "Daniel Negreanu is literally trying to give his money is
+  a spot worth sitting with", and a nine-word trim turned "give his money
+  away" into "give his money" - a different claim, stated as fact.
 
 ### Phase 5: media supply, poker
 

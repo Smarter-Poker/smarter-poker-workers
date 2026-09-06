@@ -34,7 +34,7 @@ import {
   relevanceOf,
   RELEVANCE_FLOOR,
 } from './Composer.js';
-import { normalizePhrase, phraseRecentlyUsed } from './ContentLedger.js';
+import { normalizePhrase, phraseRecentlyUsed, recentFrameKeys } from './ContentLedger.js';
 import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
@@ -61,6 +61,20 @@ export interface WrittenText {
   stale: boolean;
   /** The friend tagged, if any. */
   tagged?: { alias: string; reason: string };
+  /**
+   * For grounded posts: the sentence skeleton used, so the publisher can
+   * ledger it once the post actually exists. A draft that never publishes
+   * must not consume a frame.
+   */
+  frameKey?: string;
+  /**
+   * True when the brief came out of post_briefs rather than being derived
+   * here. The caller must NOT write it back: loadBrief() sanitises on read,
+   * and persisting that sanitised copy makes the downgrade permanent and
+   * compounding - a brief that loses a little confidence on every comment
+   * ends up describing nothing.
+   */
+  briefWasStored?: boolean;
 }
 
 const MAX_DRAFTS = 6;
@@ -202,8 +216,13 @@ export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | n
   const hand = await pickHandStory(horse.profile_id);
   if (hand) {
     const brief = briefForHand(hand);
+    // What the rest of the fleet has just said, in this hand's own category.
+    // One read for the whole draft loop; see FRAME_GLOBAL_HOURS for why the
+    // rendered text cannot carry this (the cards make every post unique).
+    const group = hand.street === 'preflop' ? `pre_${hand.category}` : hand.category;
+    const used = await recentFrameKeys('hand', group);
     for (let i = 0; i < MAX_DRAFTS; i++) {
-      const draft = composeHandPost(hand, style, String(i));
+      const draft = composeHandPost(hand, style, String(i), used);
       if (!draft.text) continue;
       // A post may never state a number the row does not carry.
       if (!factsMatch(draft.text, hand)) {
@@ -221,6 +240,7 @@ export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | n
         attempts: i + 1,
         belowFloor: false,
         stale: false,
+        frameKey: draft.frameKey,
       };
     }
   }
@@ -228,8 +248,10 @@ export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | n
   const session = await pickSessionStory(horse.profile_id);
   if (session) {
     const brief = briefForSession(session);
+    const group = session.netBb > 5 ? 'up' : session.netBb < -5 ? 'down' : 'flat';
+    const used = await recentFrameKeys('session', group);
     for (let i = 0; i < MAX_DRAFTS; i++) {
-      const draft = composeSessionPost(session, style, String(i));
+      const draft = composeSessionPost(session, style, String(i), used);
       if (!draft.text) continue;
       const norm = normalizePhrase(draft.text);
       if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
@@ -242,6 +264,7 @@ export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | n
         attempts: i + 1,
         belowFloor: false,
         stale: false,
+        frameKey: draft.frameKey,
       };
     }
   }
@@ -271,15 +294,24 @@ export async function loadBrief(postId: string | undefined): Promise<PostBrief |
     const row = data as Record<string, unknown>;
     const storedTitle = (row.title as string) ?? '';
     const storedSource = (row.source as string) ?? undefined;
+    const storedKind = (row.kind as PostBrief['kind']) ?? 'text';
     // Rows written before a title rule tightened still carry what that rule
     // now rejects: post_briefs from 2026-09-05 hold "Bleacher Report NBA NBA
     // Clip" as a topic and "Keyboard" as a person. A cache must never make
     // the engine dumber than deriving fresh would, so the same test is
     // applied on the way out.
-    const junk = isUninformativeTitle(storedTitle, storedSource);
+    //
+    // ONLY to briefs that came from somebody else's media. isUninformative-
+    // Title asks whether a SCRAPED title says anything, and its yardstick is
+    // words longer than two letters - so "AA on Qc 8s Qs 9c 9d", a title this
+    // engine wrote itself out of a settled hand, scored zero informative
+    // words and every grounded post was downgraded to 0.35 the first time
+    // anybody commented on it (measured live 2026-09-06). A hand title has no
+    // scraper between us and it; there is nothing to distrust.
+    const junk = storedKind !== 'hand' && isUninformativeTitle(storedTitle, storedSource);
     return {
       postId,
-      kind: (row.kind as PostBrief['kind']) ?? 'text',
+      kind: storedKind,
       domain: (row.domain as PostBrief['domain']) ?? 'general',
       sport: (row.sport as PostBrief['sport']) ?? undefined,
       title: (row.title as string) ?? '',
@@ -307,7 +339,8 @@ export async function writeComment(
   horse: AuthorHorse,
   post: BriefSource,
 ): Promise<WrittenText> {
-  const brief = (await loadBrief(post.postId)) ?? briefForPost(post);
+  const stored = await loadBrief(post.postId);
+  const brief = stored ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
     (variant) => composeComment(brief, style, variant),
@@ -315,7 +348,7 @@ export async function writeComment(
     style,
     horse.profile_id,
   );
-  return { ...core, brief, style };
+  return { ...core, brief, style, briefWasStored: Boolean(stored) };
 }
 
 /** A reply to a specific incoming comment. Short by design. */
@@ -325,7 +358,8 @@ export async function writeReply(
   incoming: string,
   reason: 'addressed' | 'question' | 'disagreement',
 ): Promise<WrittenText> {
-  const brief = (await loadBrief(post.postId)) ?? briefForPost(post);
+  const stored = await loadBrief(post.postId);
+  const brief = stored ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
     (variant) => composeReply(brief, style, incoming, reason, variant),
@@ -333,7 +367,7 @@ export async function writeReply(
     style,
     horse.profile_id,
   );
-  return { ...core, brief, style };
+  return { ...core, brief, style, briefWasStored: Boolean(stored) };
 }
 
 /** For logs and for the post_briefs row. */

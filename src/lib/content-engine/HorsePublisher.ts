@@ -27,10 +27,18 @@
  */
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
+import { postModeEnabled } from './Fleet.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
 import { isUninformativeTitle } from './PostBrief.js';
-import { getRandomClip } from './ClipLibrary.js';
+import {
+  candidateClips,
+  newsSources,
+  recordValidity,
+  sliceForHorse,
+  sportsShareFor,
+  type SupplyClip,
+} from './ClipSupply.js';
 import {
   assetKeyFor,
   filterUnusedAssets,
@@ -116,17 +124,25 @@ export function _resetFeedCache(): void {
   feedCache.clear();
 }
 
-const POKER_NEWS_SOURCES = [
-  { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news.rss' },
-  { name: 'Upswing Poker', rss: 'https://upswingpoker.com/feed/' },
-];
-
-const SPORTS_NEWS_SOURCES = [
-  { name: 'ESPN', rss: 'https://www.espn.com/espn/rss/news' },
-  { name: 'ESPN NBA', rss: 'https://www.espn.com/espn/rss/nba/news' },
-  { name: 'ESPN NFL', rss: 'https://www.espn.com/espn/rss/nfl/news' },
-  { name: 'CBS Sports', rss: 'https://www.cbssports.com/rss/headlines/' },
-];
+/**
+ * The last-resort feeds, used ONLY when the registry cannot be read.
+ *
+ * Phase 4 moved news into `content_sources` so the seven sources
+ * `content-health-check` monitors - with fallback URLs and auto-repair - are
+ * the ones horses actually read. These literals are no longer the list; they
+ * are what keeps a horse posting if Postgres is unreachable at that instant,
+ * which is the one failure the registry cannot help with.
+ */
+const FALLBACK_NEWS_SOURCES: Record<'poker' | 'sports', Array<{ name: string; rss: string }>> = {
+  poker: [
+    { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news.rss' },
+    { name: 'PokerNews', rss: 'https://www.pokernews.com/rss.php' },
+  ],
+  sports: [
+    { name: 'ESPN', rss: 'https://www.espn.com/espn/rss/news' },
+    { name: 'CBS Sports', rss: 'https://www.cbssports.com/rss/headlines/' },
+  ],
+};
 
 
 interface SportsClipRow {
@@ -325,26 +341,41 @@ async function postVideoClip(
   let clip: LibraryClip | SportsClipRow | null = null;
 
   if (clipType === 'poker') {
-    // Candidate set: 20 draws from the library, filtered through the ledger
-    // in ONE read, then validated in order.
-    const candidates: LibraryClip[] = [];
-    for (let i = 0; i < 20; i++) {
-      const c = getRandomClip() as LibraryClip | null;
-      if (c) candidates.push(c);
-    }
-    const keys = candidates.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
+    // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
+    // source registry first, the whole pool only if that slice is thin. The
+    // 150-literal ClipLibrary.ts array this replaced was used 114 deep in one
+    // week and had 36 dead videos in it; see ClipSupply.ts for the numbers.
+    const { clips: pool, widened } = await candidateClips('poker', horse.profile_id);
+    if (widened) bumpSupplyStat('poker_widened_to_platform');
+    if (!pool.length) return { ...base, success: false, error: 'No poker clips in supply' };
+
+    const keys = pool.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
     const usable = await filterUnusedAssets(keys, horse.profile_id);
-    for (const c of candidates) {
+    const fresh = pool.filter((c) => {
       const k = assetKeyFor(c.source_url);
-      if (!k || !usable.has(k)) continue;
-      // The library was hand-verified; only a definite "bad" drops it.
-      if ((await youtubeValidity(c.source_url)) !== 'bad') {
-        clip = c;
+      return !!k && usable.has(k);
+    });
+    bumpSupplyStat(
+      'poker_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'),
+    );
+    if (!fresh.length) return { ...base, success: false, error: 'All poker clips already posted' };
+
+    // Three candidates, as sports does. The row already carries the last
+    // oEmbed answer, so a definite "bad" here is rare and worth persisting:
+    // a dead video should cost the fleet one question, not one per container.
+    for (let i = 0; i < 3 && fresh.length > 0; i++) {
+      const idx = Math.floor(Math.random() * fresh.length);
+      const candidate = fresh[idx]!;
+      const verdict = await youtubeValidity(candidate.source_url);
+      if (verdict !== 'bad') {
+        clip = candidate as unknown as LibraryClip;
         break;
       }
-      usable.delete(k);
+      await recordValidity(candidate.id, false);
+      bumpSupplyStat('poker_clip_retired_on_use');
+      fresh.splice(idx, 1);
     }
-    if (!clip) return { ...base, success: false, error: 'All poker clips already posted' };
+    if (!clip) return { ...base, success: false, error: 'No valid poker clips found' };
   } else {
     const supa = getSupabase();
     const assigned = await getHorseSources(horse.profile_id);
@@ -480,8 +511,25 @@ async function postNewsLink(
   fleet: AuthorHorse[],
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
-  const sources = newsType === 'poker' ? POKER_NEWS_SOURCES : SPORTS_NEWS_SOURCES;
-  const source = sources[fleetHash(horse.profile_id, `news:${newsType}`) % sources.length]!;
+
+  // The registry first. A failed READ falls back to the literals so a horse
+  // does not go silent because Postgres blinked; an EMPTY registry is a real
+  // answer and falls back too, because no feeds registered still means this
+  // horse has something to say.
+  const registered = await newsSources(newsType);
+  let candidates: Array<{ name: string; rss: string }>;
+  if (registered && registered.length) {
+    // Each horse reads its own slice of the feeds, the same way it draws its
+    // own slice of channels: a thousand horses all quoting CardPlayer is the
+    // repetition this phase exists to end.
+    const mine = sliceForHorse(registered, horse.profile_id, Math.min(3, registered.length));
+    candidates = mine.map((r) => ({ name: r.name, rss: r.feed_url }));
+    bumpSupplyStat('news_from_registry');
+  } else {
+    candidates = FALLBACK_NEWS_SOURCES[newsType];
+    bumpSupplyStat(registered ? 'news_registry_empty' : 'news_registry_unreadable');
+  }
+  const source = candidates[fleetHash(horse.profile_id, `news:${newsType}`) % candidates.length]!;
 
   try {
     const articles = (await fetchFeed(source.rss)).slice(0, 20).filter((a) => !!a.link);
@@ -555,6 +603,13 @@ async function postNewsLink(
  * of that: it is the most specific thing the fleet can publish.
  */
 async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
+  // Dan approves a way of posting before it reaches players (CLAUDE.md 10.11).
+  // grounded_hand is OFF: it shipped reading as raw card notation -
+  // "Qh8c7d6sAd5c on 5s 4s Td 3c 6d. won 184bb" - and 59 of those were hidden
+  // from the feed on 2026-09-06. It stays off until he has seen the rewrite.
+  if (!(await postModeEnabled('grounded_hand'))) {
+    return { horse: horse.name, profile_id: horse.profile_id, success: false, error: 'grounded posts await approval' };
+  }
   const base = { horse: horse.name, profile_id: horse.profile_id };
   const written = await writeGrounded(horse as AuthorHorse);
   if (!written || !written.text) return { ...base, success: false, error: 'No hand worth telling' };
@@ -574,6 +629,10 @@ async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
   if (error) return { ...base, success: false, error: error.message };
   const postId = (post as { id: string } | null)?.id ?? null;
   await recordPhrase(normalizePhrase(written.text), horse.profile_id, postId);
+  // The skeleton is ledgered as well as the sentence. Two horses telling
+  // different hands through the same frame is the repetition a reader
+  // actually notices, and the cards hide it from the phrase ledger.
+  if (written.frameKey) await recordPhrase(written.frameKey, horse.profile_id, postId);
   if (postId) await recordBrief(postId, written.brief);
   return {
     ...base,
@@ -604,7 +663,11 @@ export async function publishForHorse(
     return { ...base, success: false, skipped: 'posted_recently' };
   }
 
-  let isPoker = Math.random() < 0.75;
+  // Phase 4: how much sport this horse posts is a trait of the horse, not a
+  // constant in the code. `Math.random() < 0.75` gave every one of a thousand
+  // horses the same appetite, so the fleet's mix was a property of this line
+  // rather than of the characters; see sportsShareFor().
+  let isPoker = Math.random() >= sportsShareFor(horse.profile_id);
   try {
     const { data: lastPosts } = await getSupabase()
       .from('social_posts')

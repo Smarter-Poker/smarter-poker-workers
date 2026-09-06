@@ -63,29 +63,53 @@ async function checkSource(url: string): Promise<{ ok: boolean; status: number; 
   }
 }
 
+/**
+ * Try each fallback and, when one answers, ACTUALLY SWITCH TO IT.
+ *
+ * This function used to write a `system_logs` row saying
+ * "<source>: Switched from <old> to <new>" and then return - it changed
+ * nothing anywhere. The message was true about intent and false about the
+ * world: the feed the horses read was a literal in HorsePublisher.ts, which
+ * no log line can reach. An auto-fix that only announces itself is worse than
+ * none, because the log says the problem was handled.
+ *
+ * Phase 4 put the feeds in `content_sources`, so there is now somewhere to
+ * write the repair. The log row is kept - it is the audit trail - but the
+ * UPDATE is what makes it true, and `applied` records which of the two
+ * happened.
+ */
 async function tryFallbacks(
   source: Source,
   configPath: string,
-): Promise<{ fixed: boolean; new_url?: string }> {
+): Promise<{ fixed: boolean; new_url?: string; applied?: boolean }> {
   const supabase = getSupabase();
   for (const fallback of source.fallbacks) {
     const result = await checkSource(fallback);
-    if (result.ok) {
-      await supabase
-        .from('system_logs')
-        .insert({
-          type: 'content_health_autofix',
-          message: `${source.name}: Switched from ${source.primary} to ${fallback}`,
-          metadata: {
-            source: source.name,
-            old_url: source.primary,
-            new_url: fallback,
-            config_path: configPath,
-            auto_fixed: true,
-          },
-        });
-      return { fixed: true, new_url: fallback };
-    }
+    if (!result.ok) continue;
+
+    const { error: upErr, count } = await supabase
+      .from('content_sources')
+      .update({ feed_url: fallback, updated_at: new Date().toISOString() }, { count: 'exact' })
+      .eq('kind', 'rss')
+      .eq('feed_url', source.primary);
+    const applied = !upErr && (count ?? 0) > 0;
+    if (upErr) console.warn('[content-health] could not apply the fallback:', upErr.message);
+
+    await supabase.from('system_logs').insert({
+      type: 'content_health_autofix',
+      message: applied
+        ? `${source.name}: switched from ${source.primary} to ${fallback}`
+        : `${source.name}: ${fallback} works, but no registry row pointed at ${source.primary}`,
+      metadata: {
+        source: source.name,
+        old_url: source.primary,
+        new_url: fallback,
+        config_path: configPath,
+        auto_fixed: applied,
+        rows_updated: count ?? 0,
+      },
+    });
+    return { fixed: true, new_url: fallback, applied };
   }
   return { fixed: false };
 }

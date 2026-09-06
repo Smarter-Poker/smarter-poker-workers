@@ -276,6 +276,60 @@ const TONE_TAKES: Record<string, string[]> = {
  * 2026-09-05: without these, a clip titled "Angel holding her own in the
  * paint" produced "came across this and it stuck with me".
  */
+/**
+ * A title that is already a SENTENCE cannot be used as a noun.
+ *
+ * The Phase 4 scraper feeds real YouTube titles in, and real titles are often
+ * whole clauses: "Daniel Negreanu is literally trying to give his money away".
+ * Dropped into "{topic} is a spot worth sitting with" that produced
+ *
+ *   "Daniel Negreanu is literally trying to give his money is a spot worth
+ *    sitting with."
+ *
+ * Two verbs, one subject, no meaning. The frames below are written for a
+ * NOUN PHRASE - "the $26K bluff", "a four way all in" - which is what a clip
+ * title used to be when they were hand-written.
+ *
+ * So a clause-shaped title gets frames that quote it rather than embed it:
+ * it is stated, then commented on, which reads the way a person actually
+ * shares a video.
+ */
+const CLAUSE_MARKERS =
+  /\b(is|are|was|were|has|have|had|does|did|will|wont|can|cant|gets|got|goes|went|makes|made|takes|took|wins|won|loses|lost|calls|folds|shoves|says|said|thinks|tried|trying)\b/i;
+
+export function titleIsAClause(title: string): boolean {
+  const t = title.trim();
+  if (!t) return false;
+  // A question is a clause too, and reads badly embedded either way.
+  if (t.endsWith('?') || t.endsWith('!')) return true;
+  return CLAUSE_MARKERS.test(t);
+}
+
+/**
+ * Frames for a title that is already a sentence: state it, then react.
+ * `{topic}` sits at the start followed by a full stop, never mid-clause.
+ */
+const CLAUSE_FRAMES: Record<string, string[]> = {
+  poker: [
+    '{topic}. that is a spot worth sitting with',
+    '{topic}. still thinking about that one',
+    '{topic}. the discipline there is the part worth copying',
+    '{topic}. the interesting part is what happens one street earlier',
+    '{topic}. and the sizing is the whole tell',
+    '{topic}. that is the clearest example of it I have seen',
+  ],
+  sports: [
+    '{topic}. that is the whole clip',
+    '{topic}. still thinking about it',
+    '{topic}. nobody in the building blinked',
+    '{topic}. it looked routine at full speed',
+  ],
+  general: [
+    '{topic}. worth the two minutes',
+    '{topic}. still thinking about it',
+  ],
+};
+
 const TOPIC_FRAMES: Record<string, string[]> = {
   sports: [
     '{topic} is the whole clip',
@@ -353,10 +407,37 @@ function pickDistinct(arr: string[], avoid: string, seed: string, salt: string):
 }
 
 /** The noun the sentence hangs on: a real name from the post. */
+/** "AcKh2s7d", "AKs", "JJ" - a holding, not a name. */
+const CARD_GROUP = /^(?:[AKQJT2-9][hdcs]){2,}$|^[AKQJT2-9]{2}[so]?$/;
+
+/**
+ * A NAMED AGENT - somebody or something that can act. Never a topic.
+ *
+ * `anchorOf` falls back to the brief's key phrase, which is a fragment of the
+ * title, and a fragment cannot "do" anything: with the Phase 4 scraper
+ * feeding real YouTube titles in, "DISASTER In Biggest Pot Of The Day"
+ * produced "anyone else watch DISASTER do this?" and "Nobody Folds In
+ * Montreal" produced "anyone else watch Nobody Folds do this?". The same
+ * shape as the "Keyboard" case PostBrief.ts already guards on the extraction
+ * side, arriving by the other road.
+ *
+ * A frame whose subject has to be an agent asks for this, and simply is not
+ * offered when the post names nobody.
+ */
+export function agentOf(b: PostBrief): string | null {
+  if (b.people.length) return b.people[0]!;
+  if (b.teams.length) return b.teams[0]!;
+  return null;
+}
+
 export function anchorOf(b: PostBrief): string | null {
   if (b.people.length) return b.people[0]!;
   if (b.teams.length) return b.teams[0]!;
-  if (b.keyPhrase && b.keyPhrase.length >= 4) return b.keyPhrase;
+  // A key phrase stands in for a name in frames like "what does {anchor} do
+  // there" - so a holding must never reach one. briefForHand sets keyPhrase
+  // to the hole cards, which would have produced "curious how 8cKdQsJsTd
+  // plays that at a different stake".
+  if (b.keyPhrase && b.keyPhrase.length >= 4 && !CARD_GROUP.test(b.keyPhrase)) return b.keyPhrase;
   return null;
 }
 
@@ -459,7 +540,11 @@ function chooseOpening(
   }
 
   if (b.topic) {
-    const frames = TOPIC_FRAMES[b.domain] ?? TOPIC_FRAMES.general!;
+    // A title that is already a sentence is stated and reacted to; only a
+    // noun-phrase title can be dropped into the middle of one. See
+    // titleIsAClause() for the sentence this stopped producing.
+    const table = titleIsAClause(b.topic) ? CLAUSE_FRAMES : TOPIC_FRAMES;
+    const frames = table[b.domain] ?? table.general!;
     for (const tpl of frames) {
       candidates.push({ text: tpl.replace(/\{topic\}/g, b.topic), grounding: [`topic:${b.topic}`] });
     }
@@ -508,7 +593,10 @@ export function composeCaption(
   // The question habit, when the style has one.
   const wantsQuestion = style.questionRate > 0 && (fleetHash(seed, 'q') % 100) / 100 < style.questionRate;
   if (wantsQuestion) {
-    lines.push(anchor ? `anyone else watch ${anchor} do this` : 'am I the only one still thinking about this');
+    // Only a named agent can be watched DOING something. A title fragment in
+    // that slot reads as nonsense; see agentOf().
+    const agent = agentOf(b);
+    lines.push(agent ? `anyone else watch ${agent} do this` : 'am I the only one still thinking about this');
   }
 
   const text = render(lines, style, seed) + (wantsQuestion ? '?' : '');
@@ -551,6 +639,152 @@ const PUSH_ANCHORED = [
 ];
 
 /**
+ * What a horse says under somebody else's HAND post.
+ *
+ * A hand post is not a clip: there is no channel, no person to name, and the
+ * only nouns are the cards. The Phase 2 pools were written for clips and,
+ * pointed at a hand brief, substituted the internal category label straight
+ * into a sentence - "how often is the big win actually the right call there",
+ * "what does the grind look like a street earlier". Ten of those reached the
+ * feed on 2026-09-06. A label is a column value, not a noun phrase.
+ *
+ * So hands get their own pools, per category, written as poker.
+ */
+const HAND_REACT: Record<string, string[]> = {
+  big_win: [
+    'that is the runout you wait a month for',
+    'nice one, those pay for a lot of folds',
+    'no notes, that is just a hand playing itself',
+    'stack looks a lot better after that one',
+  ],
+  bad_beat: [
+    'brutal. that is the one you are still thinking about tomorrow',
+    'nothing to do differently there',
+    'the maths was on your side and the deck was not',
+    'that runout is why people quit and why people stay',
+  ],
+  cooler: [
+    'no fold exists there, do not let anyone tell you otherwise',
+    'both hands were always getting it in',
+    'that is the deck, not a leak',
+    'you cannot get away from that and neither could they',
+  ],
+  river_aggression: [
+    'takes nerve to fire the last one',
+    'the line only works if it adds up from the flop',
+    'good bet, most people check that back and never find out',
+    'that is the bet people talk themselves out of',
+  ],
+  big_fold: [
+    'the fold nobody makes a clip about, and the one that pays',
+    'that is discipline, most of us are calling there',
+    'saving a stack counts the same as winning one',
+    'hard to lay down, easy to be glad about later',
+  ],
+  stackoff: [
+    'once it is in the rest is arithmetic',
+    'no way back from that one either way',
+    'stack in and hope, we have all been there',
+  ],
+  grind: [
+    'most of the game looks exactly like that',
+    'small clean pots, that is the job',
+    'nothing flashy and nothing wrong with it',
+  ],
+};
+
+/**
+ * Questions a reader would actually ask about a hand. `river` marks the ones
+ * that name the last street, so they are not asked about a hand that ended on
+ * the flop - the same rule the post frames follow.
+ */
+const HAND_QUESTIONS: Array<{ t: string; river?: boolean }> = [
+  { t: 'what was the sizing on the river', river: true },
+  { t: 'were they repping anything by then' },
+  { t: 'how deep were you there' },
+  { t: 'what does that look like if the last card bricks', river: true },
+  { t: 'would you play it the same at a bigger stake' },
+  { t: 'did they show' },
+  { t: 'what did the flop action look like' },
+  { t: 'how much was behind at that point' },
+];
+
+/** Sentences that name the board or the holding the post already stated. */
+const HAND_ANCHORED = [
+  'that {board} board was never going to be simple',
+  '{hole} on that runout is a hard one to get away from',
+  'the moment {board} landed it was always going to the end',
+];
+
+/** The category, as words a person would say, when a sentence needs it. */
+const CATEGORY_WORDS: Record<string, string> = {
+  big_win: 'that pot',
+  bad_beat: 'that beat',
+  cooler: 'that cooler',
+  // Street-neutral: this phrase is appended to comments on hands that ended
+  // on the flop too, and "that river bet" would be naming a street that
+  // never came.
+  river_aggression: 'that bet',
+  big_fold: 'that fold',
+  stackoff: 'that stackoff',
+  grind: 'that one',
+};
+
+/** "AA on Qc 8s Qs 9c 9d" -> the two halves, when they are there. */
+function splitHandTitle(title: string): { hole?: string; board?: string } {
+  const m = title.match(/^(\S+)\s+on\s+(.+)$/);
+  if (!m) return {};
+  return { hole: m[1]!, board: m[2]! };
+}
+
+/**
+ * A comment under a hand post: about the hand, in this horse's voice.
+ * Returns null when the brief does not actually describe a hand, so the
+ * caller falls back to the general path rather than inventing poker.
+ */
+function composeHandComment(
+  b: PostBrief,
+  style: StyleSheet,
+  seed: string,
+): ComposeResult | null {
+  const category = b.concepts.find((c) => c in HAND_REACT);
+  if (!category) return null;
+  const { hole, board } = splitHandTitle(b.title);
+  const grounding: string[] = [`category:${category}`];
+  const lines: string[] = [];
+
+  const roll = fleetHash(seed, 'handstance') % 100;
+  if (roll < 20 && board) {
+    lines.push(
+      pickFrom(HAND_ANCHORED, seed, 'hAnchor')
+        .replace(/\{board\}/g, board)
+        .replace(/\{hole\}/g, hole ?? category),
+    );
+    grounding.push(`board:${board}`);
+  } else if (roll < 45) {
+    // A five-card board is the only thing that proves there was a river.
+    const toRiver = (board ?? '').split(/\s+/).filter(Boolean).length >= 5;
+    const asks = HAND_QUESTIONS.filter((q) => toRiver || !q.river);
+    lines.push(pickFrom(asks, seed, 'hQ').t);
+  } else {
+    lines.push(pickFrom(HAND_REACT[category]!, seed, 'hReact'));
+  }
+
+  const { sentences } = targetWords(style);
+  if (sentences >= 2 && roll >= 45) {
+    lines.push(`${CATEGORY_WORDS[category] ?? 'that one'} is going to sit with you a while`);
+  }
+
+  const capped = lines.slice(0, 2);
+  const asking = roll >= 20 && roll < 45;
+  const text = render(capped, style, seed) + (asking ? '?' : '');
+  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.\?$/, '?');
+  // Grounded by construction: it names the hand's own category, board or
+  // holding, so it does not go through the clip relevance scorer.
+  return { text: cleaned, relevance: 1, grounding };
+}
+
+/**
  * A comment ON somebody else's post. Reads the brief first, so the comment is
  * about what the post is about rather than a category guess.
  */
@@ -560,6 +794,10 @@ export function composeComment(
   variantSeed = '0',
 ): ComposeResult {
   const seed = `${style.profileId}:c:${b.postId ?? b.title}:${variantSeed}`;
+  if (b.kind === 'hand') {
+    const handed = composeHandComment(b, style, seed);
+    if (handed) return handed;
+  }
   const anchor = anchorOf(b);
   const grounding: string[] = [];
   const lines: string[] = [];

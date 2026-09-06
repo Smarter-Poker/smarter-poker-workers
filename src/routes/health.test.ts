@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { health } from './health.js';
 
 // Minimal Hono Context stub — just enough for health() to call c.json()
@@ -14,15 +14,32 @@ const makeCtx = () => {
 };
 
 describe('GET /health', () => {
+  const originalGitSha = process.env.GIT_SHA;
+
+  afterEach(() => {
+    if (originalGitSha === undefined) delete process.env.GIT_SHA;
+    else process.env.GIT_SHA = originalGitSha;
+  });
+
   it('returns status ok with expected fields', async () => {
     const ctx = makeCtx();
     await health(ctx);
-    const body = (ctx as any).captured as {
+    const body = ctx.captured as {
       status: string; service: string; uptime_s: number; memory: { heapUsedMB: number };
     };
     expect(body.status).toBe('ok');
     expect(body.service).toBe('smarter-poker-workers');
     expect(body.uptime_s).toBeGreaterThanOrEqual(0);
     expect(body.memory.heapUsedMB).toBeGreaterThan(0);
+  });
+
+  it('reports the revision injected into the runtime image', async () => {
+    process.env.GIT_SHA = 'abc123def45';
+    const ctx = makeCtx();
+
+    await health(ctx);
+
+    const body = ctx.captured as { version: string };
+    expect(body.version).toBe('abc123def45');
   });
 });

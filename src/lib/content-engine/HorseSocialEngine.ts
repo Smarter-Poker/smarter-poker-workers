@@ -468,7 +468,11 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
         relevanceCount += 1;
         if (written.belowFloor) belowFloor++;
         if (written.stale) staleDrafts++;
-        await recordBrief(post.id, written.brief);
+        // Only a brief we DERIVED is written. A stored brief comes back
+        // sanitised by loadBrief(), and writing that copy back would make
+        // every read a small permanent downgrade (2026-09-06: grounded posts
+        // went from confidence 1.00 to 0.35 the first time anybody commented).
+        if (!written.briefWasStored) await recordBrief(post.id, written.brief);
 
         // 🟢 DYNAMIC TYPING INDICATOR (Phase 11)
         // Broadcast a typing payload to all connected clients viewing this post
