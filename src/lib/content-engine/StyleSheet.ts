@@ -253,11 +253,11 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   if (s.casing === 'lower') {
     joined = joined.toLowerCase();
   } else if (s.casing === 'emphatic') {
-    joined = upperFirst(joined);
+    joined = capitalizeSentenceStarts(joined);
   } else {
     joined = joined
       .split('\n')
-      .map((line) => upperFirst(line))
+      .map((line) => capitalizeSentenceStarts(line))
       .join('\n');
   }
   joined = restoreCards(joined, protectedCards.cards);
@@ -308,6 +308,12 @@ export function stripBannedGlyphs(s: string): string {
 
 function upperFirst(s: string): string {
   return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+function capitalizeSentenceStarts(s: string): string {
+  return upperFirst(s).replace(
+    /([.!?]\s+)([a-z])/g,
+    (_match, lead: string, letter: string) => `${lead}${letter.toUpperCase()}`,
+  );
 }
 function lowerFirst(s: string): string {
   // Never lower-case a proper noun, an acronym, or card notation. An opener

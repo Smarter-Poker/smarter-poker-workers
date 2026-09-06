@@ -600,21 +600,11 @@ const PUSHBACK_LEADS = [
   'respectfully, the sizing tells a different story',
   'I think that is closer than you are making it',
 ];
-const CURIOUS_LEADS = [
-  'what did the rest of the action look like',
-  'genuinely curious what happens if that card bricks',
-  'do you think that changes at a different stake',
-];
 /** Grounded versions, used whenever the brief gives us something to name. */
 const CURIOUS_ANCHORED = [
   'what does {anchor} do there if the card bricks',
   'curious how {anchor} plays that at a different stake',
   'did anyone catch what {anchor} did right before this',
-];
-const CURIOUS_CONCEPT = [
-  'what does the {concept} look like a street earlier',
-  'does the {concept} read change if the sizing is smaller',
-  'how often is the {concept} actually the right call there',
 ];
 const PUSH_ANCHORED = [
   'I read {anchor} differently there',
@@ -781,7 +771,28 @@ export function composeComment(
     const handed = composeHandComment(b, style, seed);
     if (handed) return handed;
   }
-  const anchor = anchorOf(b);
+  // Comment grammar may only treat a person or team as an actor. A keyPhrase
+  // is useful for relevance scoring and captions, but it is usually a title
+  // fragment ("Proxy Sports Betting", "the study", "the three"). Letting
+  // those fragments into actor-shaped frames caused visibly robotic live
+  // comments on 2026-09-06.
+  const anchor = agentOf(b);
+  const specificTakes = takePool(b).filter((line) => {
+    if (line.includes('{anchor}') && !anchor) return false;
+    if (line.includes('{amount}') && !b.amounts.length) return false;
+    return b.concepts.some((concept) => {
+      const primary = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
+      const secondary = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
+      return Boolean(primary[concept]?.includes(line) || secondary[concept]?.includes(line));
+    });
+  });
+
+  // No named subject and no domain sentence we can support means no comment.
+  // The caller already treats an empty draft as a clean skip. Repeating or
+  // truncating the article title is not a useful fallback.
+  if (!anchor && !specificTakes.length) {
+    return { text: '', relevance: 0, grounding: [] };
+  }
   const grounding: string[] = [];
   const lines: string[] = [];
   const { sentences } = targetWords(style);
@@ -799,54 +810,55 @@ export function composeComment(
           ? 'curious'
           : 'take';
 
+  let asking = false;
   if (stance === 'take') {
-    const opening = chooseOpening(b, seed, anchor);
-    lines.push(opening.text);
-    grounding.push(...opening.grounding);
-  } else if (stance === 'agree') {
-    lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
-    if (anchor) {
+    if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'commentTake'), b, anchor));
+      grounding.push(`concept:${b.concepts[0]}`);
+    } else if (anchor) {
       lines.push(`${anchor} made that look simple`);
       grounding.push(`anchor:${anchor}`);
-    } else if (b.concepts.length) {
-      lines.push(`the ${b.concepts[0]!.replace(/_/g, ' ')} is the whole story there`);
+    }
+  } else if (stance === 'agree') {
+    if (anchor) {
+      lines.push(`${anchor} made that look simple`);
+      if (sentences >= 2) lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
+      grounding.push(`anchor:${anchor}`);
+    } else if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'agreeTake'), b, anchor));
+      if (sentences >= 2) lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
       grounding.push(`concept:${b.concepts[0]}`);
     }
   } else if (stance === 'push') {
-    if (b.concepts.length) {
-      lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
-      lines.push(`the ${b.concepts[0]!.replace(/_/g, ' ')} part is doing more work than you are giving it`);
-      grounding.push(`concept:${b.concepts[0]}`);
-    } else if (anchor) {
+    if (anchor) {
       lines.push(pickFrom(PUSH_ANCHORED, seed, 'pushA').replace(/\{anchor\}/g, anchor));
       grounding.push(`anchor:${anchor}`);
-    } else {
-      lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
+    } else if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'pushTake'), b, anchor));
+      if (sentences >= 2) lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
+      grounding.push(`concept:${b.concepts[0]}`);
     }
   } else {
-    // Prefer a question that names the subject; the generic pool is the last
-    // resort, because "what did the rest of the action look like" under a
-    // basketball clip is the old category-guessing bug in a new costume.
+    // A question needs an actual grammatical subject. Concepts use a factual
+    // domain take instead of pretending "study", "pot" or "three" is a
+    // person who can make a decision.
     if (anchor) {
       lines.push(pickFrom(CURIOUS_ANCHORED, seed, 'curiousA').replace(/\{anchor\}/g, anchor));
       grounding.push(`anchor:${anchor}`);
-    } else if (b.concepts.length) {
-      lines.push(pickFrom(CURIOUS_CONCEPT, seed, 'curiousC').replace(/\{concept\}/g, b.concepts[0]!.replace(/_/g, ' ')));
+      asking = true;
+    } else if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'curiousTake'), b, anchor));
       grounding.push(`concept:${b.concepts[0]}`);
-    } else {
-      lines.push(pickFrom(CURIOUS_LEADS, seed, 'curious'));
     }
   }
 
-  if (!lines.length) {
-    lines.push(pickFrom(TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!, seed, 'fallback'));
-  }
+  if (!lines.length) return { text: '', relevance: 0, grounding: [] };
   if (b.concepts.length && !grounding.length) grounding.push(`concept:${b.concepts[0]}`);
 
   // Comments run shorter than captions: at most two sentences whatever the
   // style says, because a paragraph under somebody's clip reads like a bot.
   const capped = lines.slice(0, Math.min(2, Math.max(1, sentences)));
-  const text = render(capped, style, seed) + (stance === 'curious' ? '?' : '');
+  const text = render(capped, style, seed) + (asking ? '?' : '');
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
   return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
 }
