@@ -28,7 +28,8 @@
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
-import { writeCaption, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
+import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
+import { isUninformativeTitle } from './PostBrief.js';
 import { getRandomClip } from './ClipLibrary.js';
 import {
   assetKeyFor,
@@ -164,6 +165,16 @@ interface LibraryClip {
  */
 export type YtValidity = 'ok' | 'bad' | 'unknown';
 const validityCache = new Map<string, { v: YtValidity; at: number }>();
+/**
+ * Real titles, straight from YouTube, keyed by asset. oEmbed already tells us
+ * the title on the call we make anyway, and half the stored titles are the
+ * player's menu rather than the clip, so we keep it and repair the row.
+ */
+const oembedTitles = new Map<string, string>();
+export function cachedOembedTitle(url: string | null | undefined): string | null {
+  const key = assetKeyFor(url);
+  return (key && oembedTitles.get(key)) || null;
+}
 const VALIDITY_TTL_MS = 24 * 3_600_000;
 let oembedBackoffUntil = 0;
 let consecutive403 = 0;
@@ -230,7 +241,8 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     if (!response.ok) {
       v = 'bad';
     } else {
-      const body = (await response.json()) as { html?: string };
+      const body = (await response.json()) as { html?: string; title?: string };
+      if (body.title && body.title.trim()) oembedTitles.set(key, body.title.trim());
       v = body.html && body.html.includes('iframe') ? 'ok' : 'bad';
     }
     validityCache.set(key, { v, at: Date.now() });
@@ -250,6 +262,7 @@ export async function validateYouTubeVideo(url: string | null | undefined): Prom
 /** Test hook. */
 export function _resetValidityCache(): void {
   validityCache.clear();
+  oembedTitles.clear();
   oembedBackoffUntil = 0;
   consecutive403 = 0;
 }
@@ -391,7 +404,23 @@ async function postVideoClip(
   // Phase 2: the caption is written from a brief of THIS clip - its title,
   // channel and sport - not drawn from a pool keyed on a category. See
   // PostBrief.ts for what the old path produced.
-  const title = (clip as LibraryClip).title || '';
+  // Prefer the title YouTube just gave us over the one the scraper stored,
+  // and repair the row while we are here (self-healing, bounded, one write).
+  const storedTitle = (clip as LibraryClip).title || '';
+  const realTitle = cachedOembedTitle(clip.source_url);
+  let title = storedTitle;
+  if (realTitle && isUninformativeTitle(storedTitle, (clip as SportsClipRow).source ?? undefined)
+      && !isUninformativeTitle(realTitle, (clip as SportsClipRow).source ?? undefined)) {
+    title = realTitle;
+    if (clipType === 'sports' && (clip as SportsClipRow).id) {
+      const { error: fixErr } = await getSupabase()
+        .from('sports_clips')
+        .update({ title: realTitle })
+        .eq('id', (clip as SportsClipRow).id);
+      if (fixErr) console.warn('[horse-publisher] title repair failed:', fixErr.message);
+      else bumpSupplyStat('title_repaired');
+    }
+  }
   const written = await writeCaption(
     horse as AuthorHorse,
     {
@@ -518,6 +547,49 @@ async function postNewsLink(
 }
 
 /**
+ * A post about the horse's own poker. Text only: the subject is the hand, and
+ * there is no asset to attach until the Phase 9 renderer exists.
+ *
+ * The "no text-only posts" rule this lifts was written when a text post meant
+ * a sentence from a pool with nothing behind it. A hand recap is the opposite
+ * of that: it is the most specific thing the fleet can publish.
+ */
+async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
+  const base = { horse: horse.name, profile_id: horse.profile_id };
+  const written = await writeGrounded(horse as AuthorHorse);
+  if (!written || !written.text) return { ...base, success: false, error: 'No hand worth telling' };
+
+  const { data: post, error } = await getSupabase()
+    .from('social_posts')
+    .insert({
+      author_id: horse.profile_id,
+      content: written.text,
+      content_type: 'text',
+      visibility: 'public',
+      metadata: { clip_type: 'poker', scheduler: 'fleet', grounded: true, grounding: written.grounding },
+    })
+    .select('id')
+    .maybeSingle();
+
+  if (error) return { ...base, success: false, error: error.message };
+  const postId = (post as { id: string } | null)?.id ?? null;
+  await recordPhrase(normalizePhrase(written.text), horse.profile_id, postId);
+  if (postId) await recordBrief(postId, written.brief);
+  return {
+    ...base,
+    success: true,
+    postId: postId ?? undefined,
+    type: 'grounded_hand',
+    caption: written.text.slice(0, 60),
+    relevance: written.relevance,
+    grounding: written.grounding,
+    drafts: written.attempts,
+    belowFloor: false,
+    briefSummary: summarise(written.brief),
+  };
+}
+
+/**
  * Publish one post for this horse. 75/25 poker/sports with streak
  * prevention (three of a kind forces a switch), news first, video fallback.
  * Honours the recent-post guard so the hourly fleet route and the legacy
@@ -560,6 +632,22 @@ export async function publishForHorse(
   const preferred: 'poker' | 'sports' = isPoker ? 'poker' : 'sports';
   const other: 'poker' | 'sports' = isPoker ? 'sports' : 'poker';
   const attempts: string[] = [];
+
+  // Phase 3: the horse's own poker.
+  //
+  // Grounded posts cannot repeat and cannot be about nothing - two horses did
+  // not play the same hand, and there are 204,474 of them a week across the
+  // fleet. They lead most of the time, but not always: a feed of nothing but
+  // hand recaps is its own kind of monotony, and the clips and articles give
+  // it texture. The split is a hash of the horse and the day, so it is stable
+  // across a retry and varies across the fleet.
+  const groundedFirst = fleetHash(`${horse.profile_id}:${new Date().toISOString().slice(0, 10)}`, 'grounded') % 100 < 60;
+  if (groundedFirst) {
+    const grounded = await postGrounded(horse);
+    if (grounded.success) return grounded;
+    attempts.push(`grounded: ${grounded.error}`);
+  }
+
   for (const kind of [preferred, other]) {
     let result = await postNewsLink(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
@@ -568,5 +656,14 @@ export async function publishForHorse(
     if (result.success) return result;
     attempts.push(`${kind}_video: ${result.error}`);
   }
+
+  // The media pools are exhausted for this horse. Its own poker is the
+  // fallback that never is.
+  if (!groundedFirst) {
+    const grounded = await postGrounded(horse);
+    if (grounded.success) return grounded;
+    attempts.push(`grounded: ${grounded.error}`);
+  }
+
   return { ...base, success: false, error: attempts.join(' | ') };
 }

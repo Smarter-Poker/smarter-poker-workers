@@ -52,6 +52,8 @@ Do not edit them; Phase 9 deletes them.
 
 ## Defaults taken (Dan can overrule any of these)
 
+- Grounded posts lead 60% of the time and are the fallback when the media
+  pools are dry (Phase 3, 2026-09-06).
 - Cadence (Dan, 2026-09-05: "10% OF HORSES SHOULD BE POSTING DAILY"): weekly
   floor; 45% 1/wk, 30% 2/wk, 15% 3/wk, 10% daily. `fn_fleet_cadence()` in
   Postgres is the same hash and buckets, so `personality.cadence_per_week`
@@ -86,7 +88,7 @@ Measured before: 100 posts/day from 100 horses, 640 silent, 59 horses
 commenting/week. Expected after: ~235 posts/day across the fleet, every horse
 at least weekly, engagement open to every awake horse.
 
-### Phase 2: comprehension and voice (Dan, 2026-09-05)
+### Phase 2: comprehension and voice (SHIPPED 2026-09-05; see the changelog for the live numbers and the data defects the first fires exposed)
 
 Dan, verbatim: "WE NEED LIKE 100+ DIFFERENT WRITING STYLES WHEN POSTING, THEY
 CAN NOT APPEAR SIMILAR OR SAME FORMATTING OR ANYTHING ELSE. THEY ALSO NEED TO
@@ -141,7 +143,7 @@ Cost: briefs and captions at ~250 posts and ~500 comments a day on a
 Haiku-class model are a few dollars a day. Hard daily cap in
 `content_settings`, template fallback when spent.
 
-### Phase 3: grounded content (the horse's own poker)
+### Phase 3: grounded content (SHIPPED 2026-09-06; see the changelog)
 
 - `HandStoryService.ts`: pick the week's hand from `horse_hand_reviews`
   (biggest pot won, worst beat by `net_bb`, a bluff that got through, a

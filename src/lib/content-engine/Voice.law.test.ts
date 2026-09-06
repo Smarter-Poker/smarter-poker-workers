@@ -20,9 +20,9 @@
  * pin here is a decision that has to be argued rather than a refactor.
  */
 import { describe, it, expect } from 'vitest';
-import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlineCase } from './PostBrief.js';
+import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlineCase, isUninformativeTitle } from './PostBrief.js';
 import { styleSheetFor, styleId, render, stripBannedGlyphs } from './StyleSheet.js';
-import { composeCaption, composeComment, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
+import { composeCaption, composeComment, composeReply, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
 import { areFriends, friendsOf, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
 import { decideReply, MAX_TURNS_PER_HORSE, MAX_HORSE_TURNS, type ThreadComment } from './ReplyEngine.js';
 import { fleetHash } from './FleetScheduler.js';
@@ -93,10 +93,93 @@ describe('the brief reads the real subject', () => {
       .toBe("Garrett Adelstein's $60K Bluff");
   });
 
+  it('knows a placeholder title when it sees one', () => {
+    // Measured 2026-09-05: 3,487 of 8,236 sports_clips titles contain their
+    // own channel name. The first Phase 2 fire published "Bleacher Report NBA
+    // NBA Clip and nobody in the building blinked" before this existed.
+    expect(isUninformativeTitle('Bleacher Report NBA NBA Clip', 'Bleacher Report NBA')).toBe(true);
+    expect(isUninformativeTitle('NBA Highlights', 'NBA')).toBe(true);
+    expect(isUninformativeTitle('Lakers Clip', 'Lakers')).toBe(true);
+    expect(isUninformativeTitle('Angel holding her own in the paint', 'Bleacher Report')).toBe(false);
+  });
+
+  it('knows YouTube player furniture is not a clip title', () => {
+    // 3,855 of 8,236 sports_clips rows had one of these as their title.
+    for (const junk of ['Keyboard shortcuts', 'Playback', 'Subtitles and closed captions', 'Spherical Videos', 'Sign in to YouTube']) {
+      expect(isUninformativeTitle(junk, 'NBA')).toBe(true);
+      const b = briefForAsset({ kind: 'video', title: junk, source: 'NBA' });
+      expect(b.topic).toBeUndefined();
+      for (const id of fleetIds(10)) {
+        const t = composeCaption(b, styleSheetFor(id)).text.toLowerCase();
+        expect(t).not.toContain('keyboard');
+        expect(t).not.toContain('spherical');
+        expect(t).not.toContain('closed caption');
+      }
+    }
+  });
+
+  it('refuses to quote a placeholder title', () => {
+    const b = briefForAsset({ kind: 'video', title: 'Bleacher Report NBA NBA Clip', source: 'Bleacher Report NBA' });
+    expect(b.topic).toBeUndefined();
+    expect(b.confidence).toBeLessThanOrEqual(0.35);
+    for (const id of fleetIds(30)) {
+      const t = composeCaption(b, styleSheetFor(id)).text;
+      expect(t.toLowerCase()).not.toContain('nba clip');
+      expect(t.toLowerCase()).not.toContain('bleacher report');
+      expect(t.trim().length).toBeGreaterThan(3);
+    }
+  });
+
   it('never claims confidence it does not have', () => {
     const empty = briefForAsset({ kind: 'video', title: '', source: null });
     expect(empty.confidence).toBeLessThan(0.3);
     expect(empty.people).toEqual([]);
+  });
+});
+
+describe('a caption is commentary, never the subject', () => {
+  // Measured in production 2026-09-05 23:30. A horse's video post carries no
+  // link_title, so briefForPost fell through to the post's own text - the
+  // AUTHOR'S composed caption - and the commenter quoted it back:
+  //   "Still thinking about Not many people on earth can do what he"
+  //   "The part that gets me is Come on now, the crowd reaction said everything that"
+  // The real subject lives in post_briefs, written when the post was
+  // published; this pins the fallback so it can never guess again.
+  it('a video post with no link title yields no topic from its own caption', () => {
+    const b = briefForPost({
+      postId: 'p1',
+      contentType: 'video',
+      content: 'Not many people on earth can do what he just did there',
+      linkTitle: null,
+      linkSiteName: null,
+      metadata: { clip_type: 'sports' },
+    });
+    expect(b.topic).toBeUndefined();
+    expect(b.title).toBe('');
+    expect(b.confidence).toBeLessThan(0.5);
+  });
+
+  it('a comment never quotes the caption it is replying under', () => {
+    const caption = 'Not many people on earth can do what he just did there';
+    const b = briefForPost({
+      postId: 'p1', contentType: 'video', content: caption,
+      linkTitle: null, linkSiteName: null, metadata: { clip_type: 'sports' },
+    });
+    for (const id of fleetIds(40)) {
+      const t = composeComment(b, styleSheetFor(id)).text.toLowerCase();
+      expect(t).not.toContain('not many people on earth');
+      expect(t).not.toContain('can do what he');
+    }
+  });
+
+  it('a link post still reads its headline, which IS the subject', () => {
+    const b = briefForPost({
+      postId: 'p2', contentType: 'link', content: 'worth a read',
+      linkTitle: 'Phil Ivey Wins 11th WSOP Bracelet', linkSiteName: 'CardPlayer',
+      metadata: { news_type: 'poker' },
+    });
+    expect(b.people).toContain('Phil Ivey');
+    expect(b.topic).toBeTruthy();
   });
 });
 
@@ -318,6 +401,58 @@ describe('threads end', () => {
       thread.push({ id: `q-${i}`, post_id: post, parent_id: `r-${i}`, author_id: 'horse-2', content: 'but why though?', created_at: t(19 - i), isHorse: true });
     }
     expect(turns).toBeLessThanOrEqual(MAX_TURNS_PER_HORSE);
+  });
+});
+
+describe('a reply only ever names a real subject', () => {
+  // Production, 2026-09-05 23:30: replies read "with hard i think it holds
+  // up" and "with exactly why you I think it holds up" - anchorOf() had
+  // fallen back to a key phrase lifted from prose. Only a person or a team
+  // may be named in a reply.
+  it('never names a key phrase pulled out of prose', () => {
+    const b = briefForPost({
+      postId: 'p3', contentType: 'text',
+      content: 'exactly why you have to be careful with that spot, hard to say',
+      metadata: null,
+    });
+    for (const id of fleetIds(40)) {
+      const t = composeReply(b, styleSheetFor(id), 'what do you reckon', 'question').text.toLowerCase();
+      expect(t).not.toMatch(/with (hard|exactly why you|wild) /);
+    }
+  });
+
+  it('does name a public figure when the brief has one', () => {
+    const b = briefForAsset({ kind: 'link', title: 'Phil Ivey Wins 11th WSOP Bracelet', source: 'CardPlayer' });
+    const texts = fleetIds(40).map((id) => composeReply(b, styleSheetFor(id), 'still holds?', 'question').text);
+    expect(texts.some((t) => t.includes('Phil Ivey'))).toBe(true);
+  });
+});
+
+describe('a mention is a friend, addressed by alias', () => {
+  // Production, 2026-09-06 00:52: "@sophie andersson 2 And again, watching
+  // nGL, ..." - the legacy 15% mention picked a uniformly random horse from
+  // the whole fleet and addressed it by profiles.username, a display name
+  // with spaces. Dan: horses tag horses they are FRIENDS with, and not
+  // everyone is friends with everyone.
+  const fleet = fleetCandidates(400);
+
+  it('only ever proposes a horse this one is actually friends with', () => {
+    let checked = 0;
+    for (const me of fleet.slice(0, 120)) {
+      const cand = tagCandidateFor(me, fleet, { domain: 'sports', concepts: [] }, `seed:${me.profile_id}`);
+      if (!cand) continue;
+      checked++;
+      expect(areFriends(me, cand.friend)).toBe(true);
+      expect(cand.friend.profile_id).not.toBe(me.profile_id);
+    }
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  it('an alias is a handle: no spaces, usable after an @', () => {
+    for (const me of fleet.slice(0, 60)) {
+      const cand = tagCandidateFor(me, fleet, { domain: 'poker', concepts: ['cash_game'] }, 'seed');
+      if (cand?.friend.alias) expect(cand.friend.alias).not.toMatch(/\s/);
+    }
   });
 });
 

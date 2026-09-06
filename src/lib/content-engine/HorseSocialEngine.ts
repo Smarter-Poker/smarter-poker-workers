@@ -17,7 +17,6 @@
  *   replyToComments(maxReplies)
  *   reactToComments(maxReactions)
  *   runSocialInteractions(options)
- *   getRandomComment(type)
  */
 
 /**
@@ -36,9 +35,10 @@
  */
 
 import { getSupabase } from '../supabase.js';
-import { getHorseActivityRate, applyWritingStyle } from './HorseScheduler.js';
+import { getHorseActivityRate } from './HorseScheduler.js';
 import { isOnlineNow } from './FleetScheduler.js';
 import { writeComment, writeReply, recordBrief, recordThreadTurn } from './VoiceWriter.js';
+import { tagCandidateFor } from './FriendGraph.js';
 import { normalizePhrase, recordPhrase } from './ContentLedger.js';
 import { decideReply, composerReason, type ThreadComment } from './ReplyEngine.js';
 
@@ -86,174 +86,8 @@ async function sendSocialPush(targetId, horseIds, title, message, urlString) {
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTHENTIC COMMENT TEMPLATES (100+ phrases)
 // ═══════════════════════════════════════════════════════════════════════════
-const COMMENT_TEMPLATES = {
-    video: [
-        // Fire reactions
-        "insane", "this is SICK", "bro this hand is insane", "absolute madness",
-        "ice cold", "legendary play", "unreal", "that was beautiful",
-
-        // Strategic observations
-        "need to study this spot more", "the read tho", "exploitative poker at its finest",
-        "GTO says fold but soul says call", "this is a solved spot actually",
-        "the sizing tells the story", "perfect bet sizing", "range advantage is real",
-
-        // Personal reactions
-        "this is why i love poker", "sending this to my home game group",
-        "been watching this on repeat", "i would've folded pre tbh",
-        "imagine being at that table", "the tank was so painful to watch",
-        "studying this for my next session", "taking notes rn",
-
-        // Player specific
-        "mariano is built different", "airball is a menace fr", "garret is on another level",
-        "wesley plays so aggro", "henry always finds a fold", "polk is a sicko",
-        "dwan would've called here", "negreanu reads are insane",
-
-        // Commentary
-        "the commentary makes it 10x better", "bart's analysis is spot on",
-        "love the hand breakdown", "this is textbook poker",
-
-        // Hero calls/folds
-        "hero call of the year", "discipline on display", "soul read fr",
-        "he knew. HE KNEW.", "the read was too good", "heart of a champion"
-    ],
-
-    photo: [
-        // Stack pics
-        "nice hit", "stack looking good", "get that bread",
-        "that's a nice tower", "love to see it", "congrats on the session!",
-        "jeez thats a lot of chips", "rack em up!", "casino hates this guy",
-
-        // Grind culture
-        "grind never stops", "LFG lets go", "lets gooo", "back at it",
-        "the commitment is real", "outwork everyone", "session god",
-
-        // Curiosity
-        "what stakes?", "where is this?", "that bellagio?", "commerce?",
-        "jealous of that action", "been there, feels good", "wish my games ran this good"
-    ],
-
-    bad_beat: [
-        // Sympathy
-        "brutal", "pain.", "been there way too many times", "variance is cruel",
-        "you got coolered so hard", "thats poker unfortunately", "i felt that in my soul",
-        "RIP bankroll", "F in chat", "happens to the best of us",
-
-        // Dark humor
-        "at least its not real money... wait", "poker is not a game of skill i guess",
-        "dealer had other plans", "the deck hates you fr", "run bad is real",
-        "one outer strikes again", "runner runner gods were angry",
-
-        // Encouragement
-        "recovery session incoming?", "bouncing back soon", "next session different",
-        "variance evens out", "you played it right tho", "long run will be kind",
-        "shake it off king/queen", "book says you won that pot"
-    ],
-
-    general: [
-        "facts", "hundred percent", "this is the way", "couldn't agree more", "real talk",
-        "same tbh", "underrated take", "big if true", "W post", "based",
-        "fr fr", "no cap", "lowkey valid", "kinda true", "honest",
-        "vibes", "very true", "deadass", "literally me", "i felt this",
-        "let's GOOO", "banger post", "needed this today", "saving this",
-        "legendary content", "chef's kiss", "immaculate", "perfect"
-    ],
-    hcl: [
-        "HCL never disappoints", "hustler games are different",
-        "this is why HCL is the best stream", "RIP production budget",
-        "dgaf about entertainment value", "peak HCL content"
-    ],
-    tournament: [
-        "ICM nightmare", "bubble factor is wild", "chip leader mentality",
-        "final table vibes", "bracelet or bust", "deep run loading",
-        "satellite paid off", "field was tough", "that final table was stacked"
-    ],
-    plo: [
-        "PLO is a different beast", "wrap city", "double suited for value",
-        "thats so PLO", "aces cracked as usual", "runout was brutal",
-        "running it twice saved him"
-    ],
-    // Phase 26: Keyword-based contextual comment categories
-    cash_game: [
-        "what stakes?", "cash game life", "reload button is dangerous",
-        "session was wild", "grinding the live tables", "the action was insane tonight",
-        "miss these stakes", "love a good cash session", "how deep were you?"
-    ],
-    bluff: [
-        "absolute stone cold bluff", "that takes guts", "heart of a lion",
-        "risky but respect it", "he had to fold there", "the balls on this guy",
-        "bluff of the year candidate", "fearless at the table"
-    ],
-    river: [
-        "river card always has something to say", "the river giveth and taketh",
-        "classic one-outer", "river brings the drama every time",
-        "that runout was disgusting", "nothing like a river card to ruin your day",
-        "the river was a movie", "river rat strikes again"
-    ],
-    strategy: [
-        "interesting line here", "the bet sizing tells a story",
-        "think about this from a range perspective", "EV is king",
-        "this is a textbook spot", "solver would approve",
-        "the math checks out", "optimal play right there"
-    ],
-    session_report: [
-        "solid session", "the grind pays off", "congrats on the win",
-        "love seeing positive results", "keep stacking",
-        "nice profit", "good to book a win", "the hours put in show"
-    ],
-    grind: [
-        "grinder mentality", "respect the grind", "putting in volume",
-        "every hand counts", "the work ethic is real",
-        "outwork outgrind outplay", "this is what dedication looks like"
-    ],
-    wsop: [
-        "WSOP dreams", "bracelet hunting season", "the Rio is calling",
-        "one time for the bracelet", "main event vibes",
-        "that WSOP energy is unmatched", "bracelet or nothing"
-    ],
-    variance: [
-        "variance is a beast", "long run will sort it out",
-        "standard deviation in action", "the swings are real",
-        "trust the process", "keep playing your game", "sample size matters"
-    ],
-    sports: [
-        // Win reactions
-        "well deserved", "that W was earned", "nobody gave them a chance and here we are",
-        "statement game right there", "momentum is real now", "squeezed that one out",
-        // Loss/adversity
-        "tough one to watch", "that one stings", "gotta bounce back fast",
-        "the season just got more interesting", "rough timing for that result",
-        // Record/Achievement
-        "history being made", "generational stuff right there",
-        "the record stood for a reason", "you have to see it to believe it",
-        // Game commentary
-        "always tune in for games like this", "every week is a movie in this league",
-        "the talent level right now is insane", "coaching mattered a lot in this one",
-        "this league never has a slow stretch", "parity is wild this season",
-        // Roster/transactions
-        "front office making moves", "bold move", "someone got a steal here",
-        "depth is going to be tested now", "ripple effects from this are gonna be felt",
-        // General engagement
-        "love watching this play out", "the sport keeps delivering",
-        "athletes at this level are just built different", "respect the grind",
-        "could watch this all day", "the storylines this season are unreal",
-        "good time to be a fan honestly", "wild to see",
-    ],
-    bankroll: [
-        "bankroll management is key", "protect the roll",
-        "smart money management", "never risk more than you can afford",
-        "the roll is healthy", "responsible grinding"
-    ]
-};
 
 // Horse personality modifiers for comments
-const PERSONALITY_MODIFIERS = {
-    aggressive: ["fr fr", "no cap", "straight up", "period", "on god", "deadass"],
-    chill: ["honestly", "ngl", "lowkey", "vibes", "kinda", "maybe"],
-    analytical: ["mathematically", "from a GTO perspective", "if we think about ranges", "+EV move", "solver approved"],
-    funny: ["haha", "lmaooo", "bro", "dead", "crying", "i cant"],
-    supportive: ["king", "legend", "goated", "built different", "respect"],
-    skeptical: ["idk about this one", "sus play ngl", "questionable", "risky but ok"]
-};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ANTI-SPAM GUARD SYSTEM - Database backed for persistence
@@ -527,10 +361,6 @@ export async function acceptFriendRequests(maxAccepts = 15) {
 // COMMENT ENGINE
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function getRandomComment(type = 'general') {
-    const templates = COMMENT_TEMPLATES[type] || COMMENT_TEMPLATES.general;
-    return templates[Math.floor(Math.random() * templates.length)];
-}
 
 /**
  * Horses comment on posts from horses AND real users
@@ -679,14 +509,25 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
                 content: comment
             });
 
-        // Phase 28: @Mention — 15% chance to tag a horse friend
+        // Phase 2 (2026-09-06): a mention goes to a FRIEND, by alias.
+        //
+        // This used to pick a uniformly random horse out of the whole fleet
+        // and address it by profiles.username, which produced
+        // "@sophie andersson 2 ..." in production - a display name with
+        // spaces, from a horse this one has never interacted with. Dan:
+        // "HORSES NEED TO BE ADDING AND TAGGING OTHER HORSES IN POSTS THAT
+        // THEY ARE FRIENDS WITH. BUT NOT EVERY HORSE SHOULD BE FRIENDS WITH
+        // EVERY OTHER HORSE, THAT WOULD BE WEIRD AND SUSPICIOUS."
         if (!error && Math.random() < 0.15) {
-            const otherHorses = allHorses.filter(h => h.profile_id !== horse.profile_id);
-            if (otherHorses.length > 0) {
-                const friend = otherHorses[Math.floor(Math.random() * otherHorses.length)];
-                const { data: friendProfile } = await getSupabase()
-                    .from('profiles').select('username').eq('id', friend.profile_id).maybeSingle();
-                if (friendProfile?.username) {
+            const cand = tagCandidateFor(
+                horse,
+                allHorses,
+                { domain: written.brief.domain, concepts: written.brief.concepts, sport: written.brief.sport },
+                `${horse.profile_id}:${post.id}`,
+            );
+            const friend = cand?.friend;
+            if (friend?.alias) {
+                const friendProfile = { username: friend.alias };
                     const mentionComment = `@${friendProfile.username} ${comment}`;
                     // BUG-WR03 FIX: match by author+post+timestamp window instead of content string
                     // (content-match was fragile: two horses posting same text to same post → wrong row updated)
@@ -711,7 +552,6 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
 
                     // Trigger push notification to mentioned user
                     await sendSocialPush(friend.profile_id, horseIds, 'New Mention', `${horse.name} mentioned you in a comment.`, `/hub/social-media?post_id=${post.id}`);
-                }
             }
         }
 

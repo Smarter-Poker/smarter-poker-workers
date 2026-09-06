@@ -25,7 +25,7 @@
  * none. When a key exists, `ModelWriter` slots in at the marked point and
  * everything here stays as its fallback.
  */
-import { briefForAsset, briefForPost, summarise, type PostBrief, type BriefSource } from './PostBrief.js';
+import { briefForAsset, briefForPost, summarise, isUninformativeTitle, type PostBrief, type BriefSource } from './PostBrief.js';
 import { styleSheetFor, styleId, describeStyle, type StyleSheet } from './StyleSheet.js';
 import {
   composeCaption,
@@ -38,6 +38,14 @@ import { normalizePhrase, phraseRecentlyUsed } from './ContentLedger.js';
 import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
+import { pickHandStory, pickSessionStory } from './HandStory.js';
+import {
+  composeHandPost,
+  composeSessionPost,
+  briefForHand,
+  briefForSession,
+  factsMatch,
+} from './GroundedComposer.js';
 
 export interface WrittenText {
   text: string;
@@ -150,12 +158,156 @@ export async function writeCaption(
   return out;
 }
 
+/**
+ * A story: the horse's own short thought, seeded by a topic.
+ *
+ * Stories were the last route on the old engine (measured 2026-09-06): video
+ * stories drew from the caption pools and text stories were 15 fixed
+ * sentences, 48 fires a day. The seed still supplies the subject, but the
+ * sentence is composed and styled like everything else, so the 974 style
+ * sheets and the phrase ledger apply here too.
+ */
+export async function writeStory(
+  horse: AuthorHorse,
+  seedTopic: string,
+  domainHint: 'poker' | 'sports' = 'poker',
+): Promise<WrittenText> {
+  const brief = briefForAsset({ kind: 'text', title: seedTopic, source: null, domainHint });
+  const style = styleSheetFor(horse.profile_id);
+  const core = await writeGated(
+    (variant) => composeCaption(brief, style, variant),
+    brief,
+    style,
+    horse.profile_id,
+  );
+  return { ...core, brief, style };
+}
+
+/**
+ * A post about the poker this horse actually played.
+ *
+ * Phase 3. Tried before any clip or article, because a hand is the only
+ * source that cannot repeat and cannot be about nothing: two horses did not
+ * play the same hand. Returns null when the horse has nothing worth telling
+ * (a quiet week, or only trivial pots), and the caller falls back to the
+ * shared media pools.
+ *
+ * The freshness ledger still applies - a horse should not tell the same hand
+ * twice - and `factsMatch` refuses any draft that states a number the ledger
+ * does not carry.
+ */
+export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | null> {
+  const style = styleSheetFor(horse.profile_id);
+
+  const hand = await pickHandStory(horse.profile_id);
+  if (hand) {
+    const brief = briefForHand(hand);
+    for (let i = 0; i < MAX_DRAFTS; i++) {
+      const draft = composeHandPost(hand, style, String(i));
+      if (!draft.text) continue;
+      // A post may never state a number the row does not carry.
+      if (!factsMatch(draft.text, hand)) {
+        console.warn('[voice] grounded draft rejected: facts did not match the hand');
+        continue;
+      }
+      const norm = normalizePhrase(draft.text);
+      if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
+      return {
+        text: draft.text,
+        brief,
+        style,
+        relevance: 1,
+        grounding: draft.grounding,
+        attempts: i + 1,
+        belowFloor: false,
+        stale: false,
+      };
+    }
+  }
+
+  const session = await pickSessionStory(horse.profile_id);
+  if (session) {
+    const brief = briefForSession(session);
+    for (let i = 0; i < MAX_DRAFTS; i++) {
+      const draft = composeSessionPost(session, style, String(i));
+      if (!draft.text) continue;
+      const norm = normalizePhrase(draft.text);
+      if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
+      return {
+        text: draft.text,
+        brief,
+        style,
+        relevance: 1,
+        grounding: draft.grounding,
+        attempts: i + 1,
+        belowFloor: false,
+        stale: false,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The brief recorded when a post was published, if there is one.
+ *
+ * This is the whole reason post_briefs exists. A horse's own video post
+ * carries no link_title, so deriving a brief from the post row means
+ * deriving it from the author's caption - and a caption is commentary, not
+ * subject. The publisher already knew the clip's real title, channel and
+ * concepts and wrote them down; a commenter should read that rather than
+ * guess from the sentence above it.
+ */
+export async function loadBrief(postId: string | undefined): Promise<PostBrief | null> {
+  if (!postId) return null;
+  try {
+    const { data, error } = await getSupabase()
+      .from('post_briefs')
+      .select('*')
+      .eq('post_id', postId)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as Record<string, unknown>;
+    const storedTitle = (row.title as string) ?? '';
+    const storedSource = (row.source as string) ?? undefined;
+    // Rows written before a title rule tightened still carry what that rule
+    // now rejects: post_briefs from 2026-09-05 hold "Bleacher Report NBA NBA
+    // Clip" as a topic and "Keyboard" as a person. A cache must never make
+    // the engine dumber than deriving fresh would, so the same test is
+    // applied on the way out.
+    const junk = isUninformativeTitle(storedTitle, storedSource);
+    return {
+      postId,
+      kind: (row.kind as PostBrief['kind']) ?? 'text',
+      domain: (row.domain as PostBrief['domain']) ?? 'general',
+      sport: (row.sport as PostBrief['sport']) ?? undefined,
+      title: (row.title as string) ?? '',
+      source: (row.source as string) ?? undefined,
+      people: junk ? [] : ((row.people as string[]) ?? []),
+      teams: (row.teams as string[]) ?? [],
+      concepts: (row.concepts as string[]) ?? [],
+      amounts: (row.amounts as string[]) ?? [],
+      topic: junk ? undefined : ((row.topic as string) ?? undefined),
+      tone: (row.tone as PostBrief['tone']) ?? 'neutral',
+      isQuestion: Boolean(row.is_question),
+      confidence: junk ? Math.min(Number(row.confidence ?? 0), 0.35) : Number(row.confidence ?? 0),
+      // De-duplicated: this row is read and written back on every comment,
+      // so a plain append grows the array in the database forever.
+      builtFrom: [...new Set([...(((row.built_from as string[]) ?? [])), 'post_briefs'])],
+    };
+  } catch (e) {
+    console.warn('[voice] brief read failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
 /** A comment on somebody else's post, written after reading it. */
 export async function writeComment(
   horse: AuthorHorse,
   post: BriefSource,
 ): Promise<WrittenText> {
-  const brief = briefForPost(post);
+  const brief = (await loadBrief(post.postId)) ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
     (variant) => composeComment(brief, style, variant),
@@ -173,7 +325,7 @@ export async function writeReply(
   incoming: string,
   reason: 'addressed' | 'question' | 'disagreement',
 ): Promise<WrittenText> {
-  const brief = briefForPost(post);
+  const brief = (await loadBrief(post.postId)) ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
     (variant) => composeReply(brief, style, incoming, reason, variant),
@@ -214,7 +366,7 @@ export async function recordBrief(postId: string, brief: PostBrief): Promise<voi
         is_question: brief.isQuestion,
         confidence: brief.confidence,
         summary: summarise(brief),
-        built_from: brief.builtFrom,
+        built_from: [...new Set(brief.builtFrom)],
       },
       { onConflict: 'post_id' },
     );

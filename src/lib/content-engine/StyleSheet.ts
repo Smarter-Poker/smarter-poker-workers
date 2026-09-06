@@ -218,10 +218,16 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
 
   // Numerals.
   if (s.numerals === 'words') {
-    // Never reword a stakes level, a score or a fraction: "1/3" is a game,
-    // not a number, and "one/three" is nonsense at a poker table.
+    // Never reword a number that is part of a token: card notation ("9c",
+    // "Ts"), a variant name ("PLO5"), a stake ("1/3"), a score or a decimal.
+    // Measured 2026-09-06: without the letter guards this style turned
+    // "QsJc9cKh3h on Qc 3c 7s" into "QsJcninecKhthreeh on Qc threec sevens",
+    // which is not a hand any player could read.
     parts = parts.map((p) =>
-      p.replace(/(^|[^\d/$.-])(\d{1,2})(?![\d/.-])/g, (_m, pre: string, n: string) => `${pre}${NUMBER_WORDS[n] ?? n}`),
+      p.replace(
+        /(^|[^\dA-Za-z/$.-])(\d{1,2})(?![\dA-Za-z/.-])/g,
+        (_m, pre: string, n: string) => `${pre}${NUMBER_WORDS[n] ?? n}`,
+      ),
     );
   }
 
@@ -242,7 +248,9 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   else if (s.punctuation === 'ellipsis') joined = `${joined}...`;
   else if (s.punctuation === 'minimal' && parts.length > 1) joined = `${joined}.`;
 
-  // Casing.
+  // Casing. Cards are lifted out first: their case is meaning, not style.
+  const protectedCards = protectCards(joined);
+  joined = protectedCards.text;
   if (s.casing === 'lower') {
     joined = joined.toLowerCase();
   } else if (s.casing === 'emphatic') {
@@ -254,11 +262,40 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
       .map((line) => upperFirst(line))
       .join('\n');
   }
+  joined = restoreCards(joined, protectedCards.cards);
 
   // House rules, unconditional.
   joined = stripBannedGlyphs(joined);
 
   return joined.replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+/**
+ * Card notation, which never changes case.
+ *
+ * "AsQd7sTd" is a hand; "asqd7std" is nothing. Measured in production
+ * 2026-09-06 02:10, the lower-case and emphatic styles were flattening every
+ * grounded post's cards: "well asqd7std on ts 6s 5s kh 4c" and "Nah
+ * tc6h4dAhAd". Ranks and suits carry meaning in their case, so they are
+ * lifted out before a casing rule runs and put back afterwards.
+ */
+const CARD_TOKEN = /\b(?:(?:[AKQJT2-9][hdcs]){2,}|[AKQJT2-9]{2}[so]?|[AKQJT2-9][hdcs])\b/g;
+
+function protectCards(s: string): { text: string; cards: string[] } {
+  const cards: string[] = [];
+  const text = s.replace(CARD_TOKEN, (m) => {
+    // Only protect what actually looks like cards: a bare "22" or "AA" is a
+    // hand, but so is a plain number, so require a suit letter or a real
+    // rank pair.
+    if (!/[hdcs]/.test(m) && !/^[AKQJT2-9]{2}[so]?$/.test(m)) return m;
+    cards.push(m);
+    return `\u0000${cards.length - 1}\u0000`;
+  });
+  return { text, cards };
+}
+
+function restoreCards(s: string, cards: string[]): string {
+  return s.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => cards[Number(i)] ?? '');
 }
 
 /** No emoji, no em dashes, anywhere a horse publishes. */
@@ -286,13 +323,26 @@ function upperFirst(s: string): string {
   return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 function lowerFirst(s: string): string {
-  // Never lower-case a proper noun or an acronym.
+  // Never lower-case a proper noun, an acronym, or card notation. An opener
+  // runs before the casing pass, so this is a second place cards can be
+  // flattened: "One more time, qsJc9cKh3h on Qc 3c 7s" (caught by the law
+  // test, 2026-09-06).
   if (/^[A-Z]{2,}/.test(s)) return s;
   const first = s.split(' ')[0] ?? '';
+  if (isCardToken(first)) return s;
   if (first.length > 1 && first === upperFirst(first) && /^[A-Z][a-z]+$/.test(first)) {
     return s;
   }
   return s.length ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+
+/** Is this token a hand or a card, where case carries meaning? */
+function isCardToken(w: string): boolean {
+  const bare = w.replace(/[^A-Za-z0-9]/g, '');
+  if (!bare) return false;
+  if (/^(?:[AKQJT2-9][hdcs]){2,}$/.test(bare)) return true;
+  if (/^[AKQJT2-9][hdcs]$/.test(bare)) return true;
+  return /^[AKQJT2-9]{2}[so]?$/.test(bare) && /[AKQJT]/.test(bare);
 }
 
 /** A readable copy for content_authors.personality and the admin console. */
