@@ -91,20 +91,18 @@ const TAG_RATES = [0, 0, 0.1, 0.25];
 // dimensions still reach for different words.
 
 const INTERJECTIONS = [
-  'ok', 'right', 'well', 'man', 'nah', 'yeah', 'listen', 'honestly', 'seriously',
-  'wait', 'look', 'alright', 'hmm', 'jeez', 'wow', 'oh', 'so', 'and', 'yep', 'nope',
+  'okay', 'well', 'honestly', 'look', 'fair enough', 'for me', 'I keep coming back to this',
+  'one thing', 'my first thought', 'on another watch', 'the interesting part', 'at first glance',
 ];
 const MARKERS = [
-  'genuinely', 'for real', 'no joke', 'not gonna lie', 'in fairness', 'to be fair',
-  'the thing is', 'here is the part', 'what gets me', 'the detail nobody mentions',
-  'people keep missing this', 'say what you want', 'every single time', 'one more time',
-  'this again', 'as always', 'and again', 'somehow',
+  'for me', 'in fairness', 'to be fair', 'the thing is', 'what gets me',
+  'the detail worth noticing', 'on another watch', 'my first thought',
+  'the part I keep coming back to', 'one thing stands out', 'at first glance',
 ];
 const VERDICTS = [
-  'that is the whole thing', 'rest is noise', 'nothing else to add', 'case closed',
-  'that is it', 'simple as that', 'no notes', 'good luck topping that',
-  'still thinking about it', 'that will sit with me', 'wild', 'unreal stuff',
-  'quality', 'proper stuff', 'top drawer', 'chef kiss level', 'elite', 'special',
+  'worth another watch', 'I keep coming back to that', 'curious what others see',
+  'that is the part I noticed', 'there is more to unpack there',
+  'one to revisit', 'that detail matters', 'plenty to discuss',
 ];
 const TAG_LEADS = [
   'you seeing this', 'thoughts', 'back me up', 'tell me I am wrong', 'your read',
@@ -199,7 +197,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   // Opener on the first sentence.
   if (s.opener === 'interjection') {
     const word = s.lexicon.interjections[fleetHash(seed, 'op') % s.lexicon.interjections.length]!;
-    parts[0] = `${word} ${lowerFirst(parts[0]!)}`;
+    parts[0] = `${word}, ${lowerFirst(parts[0]!)}`;
   } else if (s.opener === 'marker') {
     const word = s.lexicon.markers[fleetHash(seed, 'op') % s.lexicon.markers.length]!;
     parts[0] = `${word}, ${lowerFirst(parts[0]!)}`;
@@ -211,7 +209,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   if (s.closer === 'verdict') {
     parts.push(s.lexicon.verdicts[fleetHash(seed, 'cl') % s.lexicon.verdicts.length]!);
   } else if (s.closer === 'tag_question') {
-    parts[parts.length - 1] = `${parts[parts.length - 1]}, right`;
+    parts.push('what do you make of it');
   } else if (s.closer === 'trailing') {
     parts[parts.length - 1] = `${parts[parts.length - 1]}`;
   }
@@ -244,7 +242,8 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   } else {
     joined = parts.join(sep);
   }
-  if (s.punctuation === 'full') joined = `${joined}.`;
+  if (s.closer === 'tag_question') joined = `${joined}?`;
+  else if (s.punctuation === 'full') joined = `${joined}.`;
   else if (s.punctuation === 'ellipsis') joined = `${joined}...`;
   else if (s.punctuation === 'minimal' && parts.length > 1) joined = `${joined}.`;
 
@@ -255,7 +254,6 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
     joined = joined.toLowerCase();
   } else if (s.casing === 'emphatic') {
     joined = upperFirst(joined);
-    joined = emphasiseOneWord(joined, seed);
   } else {
     joined = joined
       .split('\n')
@@ -306,17 +304,6 @@ export function stripBannedGlyphs(s: string): string {
     .replace(/–/g, '-')
     .replace(/\s+([,.!?])/g, '$1')
     .replace(/[ \t]{2,}/g, ' ');
-}
-
-function emphasiseOneWord(s: string, seed: string): string {
-  const words = s.split(' ');
-  const candidates = words
-    .map((w, i) => ({ w, i }))
-    .filter(({ w }) => w.length >= 5 && /^[A-Za-z]+$/.test(w));
-  if (!candidates.length) return s;
-  const chosen = candidates[fleetHash(seed, 'emph') % candidates.length]!;
-  words[chosen.i] = chosen.w.toUpperCase();
-  return words.join(' ');
 }
 
 function upperFirst(s: string): string {

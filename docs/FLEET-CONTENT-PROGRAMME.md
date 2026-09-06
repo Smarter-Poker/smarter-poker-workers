@@ -1,9 +1,10 @@
 # Fleet Content Programme
 
-Every one of the 1,000 horses posts, engages, and sounds like itself, from
-content that is fresh because it is grounded in what that horse actually did.
-Ten phases. One at a time. Each phase is built, wired, published and verified
-in production before the next starts.
+Every one of the 1,000 horses can post and engage in a recognisable voice,
+using relevant poker-first material. Grounded player-history content is a
+separate, approval-gated mode: it is never a fallback and is never implied by
+the general engine switch. Ten phases. A phase is complete only after its code,
+deployment, production behaviour and player-visible output all pass review.
 
 Dan, 2026-09-05: "WE NEED TO GET THE ENTIRE FLEET ACTIVE AS WELL, NOT JUST A
 HANDFUL OF THEM, WE NEED TO BUILD OUT AND ENHANCE THE LIVE ENGINE MODEL TO BE
@@ -47,27 +48,30 @@ Do not edit them; Phase 9 deletes them.
 7. **Every run leaves a row.** `cron_execution_log.result` carries the counts
    (due, posted, skipped, failed, collided). A run that did nothing says so.
 8. **Kill switch**: `content_settings.engine_enabled = false` stops every
-   fleet route within 30 seconds. `update content_settings set engine_enabled=false;`
+   fleet route within 30 seconds. A missing or unreadable setting fails closed.
+   `update content_settings set engine_enabled=false;`
 9. No em dashes, no emoji, in anything a horse publishes.
+10. **Grounded modes are independently gated.** `grounded_hand` and
+   `grounded_session` each require their own explicit approval. Neither is
+   enabled as part of this programme without Dan's personal sign-off.
 
 ## Defaults taken (Dan can overrule any of these)
 
-- Grounded posts lead 60% of the time and are the fallback when the media
-  pools are dry (Phase 3, 2026-09-06).
+- Grounded posts are disabled. They are never used as a dry-pool fallback.
 - Cadence (Dan, 2026-09-05: "10% OF HORSES SHOULD BE POSTING DAILY"): weekly
   floor; 45% 1/wk, 30% 2/wk, 15% 3/wk, 10% daily. `fn_fleet_cadence()` in
   Postgres is the same hash and buckets, so `personality.cadence_per_week`
   is what the scheduler runs. Measured on the real fleet: 2,196 openings a
   week, every UTC hour between 58 and 123 of them, no hour above 5.6%.
-- Sports share stays at the 75/25 coin flip until Phase 4 makes it a persona
-  trait (target fleet average ~15%).
+- Sports share is a persona trait with a fleet target near 12%; poker remains
+  the default identity of the platform.
 - Phrase ledger: same horse never repeats in 90 days; platform-wide 48 hours
   (short because the pools are 13 to 21 lines; Phase 2 lengthens it to 30 days).
 - Model spend: none in Phase 1; from Phase 2, Haiku-class behind a daily cap.
 
 ## Phases
 
-### Phase 1: the whole fleet is eligible (SHIPPED 2026-09-05, see changelog for the live numbers and the four follow-up fixes)
+### Phase 1: the whole fleet is eligible (RECERTIFIED 2026-09-06)
 
 - `FleetScheduler.ts`: weekly slot per horse (day(s) + hour in its timezone),
   3-hour due window, hour-granular `isOnlineNow` engagement gate.
@@ -88,7 +92,14 @@ Measured before: 100 posts/day from 100 horses, 640 silent, 59 horses
 commenting/week. Expected after: ~235 posts/day across the fleet, every horse
 at least weekly, engagement open to every awake horse.
 
-### Phase 2: comprehension and voice (SHIPPED 2026-09-05; see the changelog for the live numbers and the data defects the first fires exposed)
+Recertification: 1,000/1,000 profiles are social-ready; 1,000/1,000 have active
+authors and style sheets; `fn_horses_not_social_ready()` returns zero. Cadence
+is 465 at 1/week, 289 at 2/week, 140 at 3/week and 106 daily. The control-table
+read now fails closed instead of silently enabling the engine. Seven-day fleet
+coverage remains an operational observation gate because the programme has not
+yet been live for seven days.
+
+### Phase 2: comprehension and voice (RECERTIFIED IN CODE 2026-09-06; DEPLOYMENT PROOF PENDING)
 
 Dan, verbatim: "WE NEED LIKE 100+ DIFFERENT WRITING STYLES WHEN POSTING, THEY
 CAN NOT APPEAR SIMILAR OR SAME FORMATTING OR ANYTHING ELSE. THEY ALSO NEED TO
@@ -131,19 +142,24 @@ This replaces the phrase pools. Five parts, all in the workers service:
    human's reply always earns exactly one horse answer within the horse's
    next awake hour. State lives in `thread_state(post_id, horse_id, turns,
    last_turn_at)`.
-5. **Friend graph and tagging.** Horses are friends with a small, plausible
-   set: same city or same club or same stakes, 8 to 40 friends each, never
-   the whole fleet. Built once from the data (`horse_friend_edges`) and grown
-   slowly by the existing friend-request job. A horse tags a friend in a
-   post or comment only when the brief gives a reason (same team, played the
-   same event, the friend commented earlier), at most one tag per post, and
-   never a human without opt-in.
+5. **Friend graph and tagging.** Horses use a deterministic sparse projection
+   from compatible profile traits, backed by the existing accepted
+   `friendships` rows. There is no `horse_friend_edges` table; the earlier plan
+   incorrectly claimed one existed. A horse tags a friend only when the brief
+   gives a reason, at most one tag per post, and never a human without opt-in.
 
 Cost: briefs and captions at ~250 posts and ~500 comments a day on a
 Haiku-class model are a few dollars a day. Hard daily cap in
 `content_settings`, template fallback when spent.
 
-### Phase 3: grounded content (SHIPPED 2026-09-06; see the changelog)
+Recertification found and fixed four production-significant defects: malformed
+titles could be inserted into noun-only templates; content below the relevance
+floor could publish anyway; a required human reply could be discarded by
+optional activity sampling; and thread state recorded a null comment id. The
+reply scan is now paginated across the exact 48-hour window and includes aliases.
+Production output review, rather than test passage alone, is the final gate.
+
+### Phase 3: grounded content (BUILT, REJECTED, DISABLED)
 
 - `HandStoryService.ts`: pick the week's hand from `horse_hand_reviews`
   (biggest pot won, worst beat by `net_bb`, a bluff that got through, a
@@ -156,6 +172,11 @@ Haiku-class model are a few dollars a day. Hard daily cap in
 - Law test: no human alias in any horse-authored text. Numbers must match
   the ledger.
 
+The first player-visible voice was rejected and its 79 generated posts were
+permanently removed. A rewritten hand voice exists only as unwired candidate
+code. `grounded_hand` and the older, separately scoped `grounded_session` mode
+both remain off until Dan reviews samples and explicitly approves each mode.
+
 ### Phase 3b: engagement that reaches humans
 
 - Humans-first targeting for likes and comments; reply-to-human trigger.
@@ -163,7 +184,7 @@ Haiku-class model are a few dollars a day. Hard daily cap in
 - DMs: the messenger engine reads `social_messages`, a table that does not
   exist; decide the DM product before writing a line.
 
-### Phase 4: media supply that does not repeat (SHIPPED 2026-09-06; see the changelog)
+### Phase 4: renewable poker-first supply (RECERTIFIED 2026-09-06; NEXT NATURAL RUN OBSERVATION PENDING)
 
 The measurement that defined it: over seven live days sports drew 285 posts
 from a scraped pool of 8,271 while poker drew 245 from a frozen array of 150,
@@ -200,7 +221,11 @@ DONE:
   because a queue that stops draining and a pool that stops growing both look
   exactly like a quiet week.
 
-Live pool: **113 to 1,720 clips**, 91 active sources, 16 retired as dormant, 4 poker news feeds, 0 reels stuck in the queue.
+Live pool: **1,716 active poker clips**, 95 active poker sources including four
+news feeds, and zero reels stuck in the queue. The latest revalidation passed
+40/40 and the supply watchdog was healthy. The newly deployed scraper and reels
+routes are registered; their next natural scheduled executions remain the final
+operational observation gate.
 
 CLOSED OUT THE SAME DAY (Dan: finish it, do not carry it):
 
@@ -246,10 +271,16 @@ FIVE MORE DEFECTS, all found by reading output or running the code live:
   a spot worth sitting with", and a nine-word trim turned "give his money
   away" into "give his money" - a different claim, stated as fact.
 
-### Phase 5: media supply, poker
+### Phase 5: human poker-native posting
 
-- (moved up from Phase 4 detail) `poker_clips` scraper and the seven news
-  sources; the 150 hard-coded clips retired.
+- The shared social composer uses the exact Club Arena card artwork as
+  insertable poker-card tokens, with up to six hole cards and five board cards,
+  duplicate prevention, editing, accessible fallbacks and durable drafts.
+- Cards render consistently in feeds, clubs, groups, stories, hashtags, chat,
+  game boards and trending surfaces; plain-text fallback protects unsupported
+  clients and search.
+- Next: saved hand presets, a labelled flop/turn/river flow and one-tap import
+  from Club Arena hand history.
 
 ### Phase 6: data-native and local content
 

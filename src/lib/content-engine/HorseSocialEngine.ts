@@ -746,7 +746,7 @@ export async function replyToComments(maxReplies = 15) {
     // Get all horses
     const { data: allHorses } = await getSupabase()
         .from('content_authors')
-        .select('id, name, profile_id, voice, timezone')
+        .select('id, name, alias, profile_id, voice, timezone')
         .eq('is_active', true)
         .not('profile_id', 'is', null);
 
@@ -779,11 +779,22 @@ export async function replyToComments(maxReplies = 15) {
     // and applies real rules: an unanswered human always gets exactly one
     // reply; another horse gets one only if it addressed us, asked something
     // or disagreed; and hard ceilings end the conversation either way.
-    const { data: threadRows } = await getSupabase()
-        .from('social_comments')
-        .select('id, post_id, parent_id, author_id, content, created_at')
-        .order('created_at', { ascending: false })
-        .limit(500);
+    const threadRows = [];
+    const threadCutoff = new Date(now.getTime() - 48 * 3_600_000).toISOString();
+    for (let from = 0; from < 3000; from += 1000) {
+        const { data: page, error: pageError } = await getSupabase()
+            .from('social_comments')
+            .select('id, post_id, parent_id, author_id, content, created_at')
+            .gte('created_at', threadCutoff)
+            .order('created_at', { ascending: false })
+            .range(from, from + 999);
+        if (pageError) {
+            console.warn('[replyToComments] thread read failed:', pageError.message);
+            break;
+        }
+        threadRows.push(...(page ?? []));
+        if ((page ?? []).length < 1000) break;
+    }
 
     if (!threadRows?.length) {
         console.debug('   No comments to reply to');
@@ -810,16 +821,14 @@ export async function replyToComments(maxReplies = 15) {
     const reasons: Record<string, number> = {};
 
     for (const horse of activeHorses) {
-        const activityRate = getHorseActivityRate(horse.profile_id, 'reply');
-        if (Math.random() > activityRate) continue;
-
         // Threads this horse is actually in.
-        let decided: { postId: string; decision: ReturnType<typeof decideReply> } | null = null;
+        let decided: { postId: string; decision: ReturnType<typeof decideReply>; turnIndex: number } | null = null;
         for (const [postId, list] of threads) {
             if (!list.some((c) => c.author_id === horse.profile_id)) continue;
             const decision = decideReply(horse.profile_id, horse.alias, list, now);
             if (decision.reply) {
-                decided = { postId, decision };
+                const turnIndex = list.filter((c) => c.author_id === horse.profile_id && c.parent_id !== null).length + 1;
+                decided = { postId, decision, turnIndex };
                 break;
             }
         }
@@ -827,6 +836,13 @@ export async function replyToComments(maxReplies = 15) {
 
         const target = decided.decision.target;
         const reason = decided.decision.reason!;
+
+        // A human reply is mandatory during the horse's next awake hour.
+        // Optional horse-to-horse chatter still observes the activity rate.
+        if (reason !== 'human_unanswered') {
+            const activityRate = getHorseActivityRate(horse.profile_id, 'reply');
+            if (Math.random() > activityRate) continue;
+        }
 
         const canReply = await checkCooldown(horse.profile_id, target.id, 'reply_comment');
         if (!canReply) continue;
@@ -859,14 +875,16 @@ export async function replyToComments(maxReplies = 15) {
         const comment = { id: target.id, post_id: decided.postId, author_id: target.author_id };
 
         // Insert reply
-        const { error } = await getSupabase()
+        const { data: insertedReply, error } = await getSupabase()
             .from('social_comments')
             .insert({
                 post_id: comment.post_id,
                 author_id: horse.profile_id,
                 content: replyText,
                 parent_id: comment.id
-            });
+            })
+            .select('id')
+            .maybeSingle();
 
         if (!error) {
             // Trigger push notification to the original comment author
@@ -876,8 +894,10 @@ export async function replyToComments(maxReplies = 15) {
             await recordThreadTurn({
                 postId: comment.post_id,
                 horseId: horse.profile_id,
+                commentId: insertedReply?.id ?? null,
                 parentId: comment.id,
                 reason,
+                turnIndex: decided.turnIndex,
             });
             await recordPhrase(normalizePhrase(replyText), horse.profile_id, comment.post_id);
             replied++;
@@ -1077,4 +1097,3 @@ export async function reactToComments(maxReactions = 15) {
 if (typeof window === 'undefined' && process.argv[1]?.includes('HorseSocialEngine')) {
     runSocialInteractions();
 }
-
