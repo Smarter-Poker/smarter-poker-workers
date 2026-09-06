@@ -64,6 +64,11 @@ export async function horsesSocialAll(c: Context) {
       dm: number;
       skipped: string[];
       timestamp: string;
+      comment_relevance?: number;
+      comment_below_floor?: number;
+      comment_stale?: number;
+      comment_skipped?: number;
+      reply_reasons?: Record<string, number>;
     } = {
       liked: 0,
       commented: 0,
@@ -83,7 +88,21 @@ export async function horsesSocialAll(c: Context) {
       deadline,
       'comments',
     );
-    results.commented = (commentResult as { commented?: number } | null)?.commented ?? 0;
+    const cr = commentResult as {
+      commented?: number; avg_relevance?: number; below_floor?: number;
+      stale_drafts?: number; skipped_no_content?: number;
+    } | null;
+    results.commented = cr?.commented ?? 0;
+    // Phase 2 telemetry. The engine has returned these since the phase
+    // shipped and this route was dropping them on the floor, so
+    // cron_execution_log showed a comment count and nothing about whether the
+    // words matched the post (found in the verification pass, 2026-09-06).
+    if (cr) {
+      results.comment_relevance = cr.avg_relevance ?? 0;
+      results.comment_below_floor = cr.below_floor ?? 0;
+      results.comment_stale = cr.stale_drafts ?? 0;
+      results.comment_skipped = cr.skipped_no_content ?? 0;
+    }
     if (!commentResult) results.skipped.push('comments');
 
     const replyResult = await withDeadline(
@@ -91,7 +110,10 @@ export async function horsesSocialAll(c: Context) {
       deadline,
       'replies',
     );
-    results.replied = (replyResult as { replied?: number } | null)?.replied ?? 0;
+    const rr = replyResult as { replied?: number; reply_reasons?: Record<string, number> } | null;
+    results.replied = rr?.replied ?? 0;
+    // Which rule allowed each reply: the thread engine's decisions, visible.
+    if (rr?.reply_reasons) results.reply_reasons = rr.reply_reasons;
     if (!replyResult) results.skipped.push('replies');
 
     const reactResult = await withDeadline(
