@@ -37,6 +37,53 @@ export const ASSET_GLOBAL_DAYS = 30;
 export const PHRASE_HORSE_DAYS = 90;
 export const PHRASE_GLOBAL_HOURS = 48;
 
+/**
+ * How long a grounded FRAME is spoken for.
+ *
+ * Measured 2026-09-06, eight hours of live grounded posts: 58 posts drawn
+ * from 14 distinct sentence skeletons. "got there with {hole}, {board}
+ * runout" ran seven times, "the river bet is the whole hand there" six, and
+ * a reader scrolling the feed saw the same sentence from seven different
+ * accounts. The phrase ledger could not see it, because it keys on the
+ * rendered text and the cards make every grounded post unique - the numbers
+ * that make a hand post TRUE are the same numbers that hide the repetition.
+ *
+ * So the frame itself is ledgered, under a key no caption can collide with
+ * (`frame:hand:<category>:<n>` - `normalizePhrase` strips the colons out of
+ * any real sentence). The window is short because the pool is small and
+ * bounded: a frame pool cannot be widened to 48 hours' worth of traffic, and
+ * a horse repeating a skeleton three hours later reads like a person with a
+ * turn of phrase, while three in one hour reads like a template.
+ */
+export const FRAME_GLOBAL_HOURS = 3;
+
+/** The ledger key for one sentence skeleton. */
+export function frameKey(family: string, group: string, index: number): string {
+  return `frame:${family}:${group}:${index}`;
+}
+
+/**
+ * Every frame key in this family and group spoken by ANY horse inside the
+ * window. One query, not one per candidate: the caller is choosing between a
+ * dozen frames and a round trip each would put twelve reads on the critical
+ * path of every publish.
+ */
+export async function recentFrameKeys(family: string, group: string): Promise<Set<string>> {
+  const since = new Date(Date.now() - FRAME_GLOBAL_HOURS * 3_600_000).toISOString();
+  const { data, error } = await getSupabase()
+    .from('horse_phrase_ledger')
+    .select('phrase_norm')
+    .like('phrase_norm', `frame:${family}:${group}:%`)
+    .gte('used_at', since)
+    .limit(200);
+  if (error) {
+    // Fail open: a ledger that cannot be read must not stop a horse posting.
+    console.warn('[content-ledger] frame read failed:', error.message);
+    return new Set();
+  }
+  return new Set((data ?? []).map((r) => String((r as { phrase_norm: string }).phrase_norm)));
+}
+
 const YT_PATTERNS = [
   /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
   /youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/,
