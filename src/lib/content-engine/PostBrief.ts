@@ -446,7 +446,65 @@ export function topicOf(title: string): string | undefined {
   return t;
 }
 
-// ─── the builders ───// ─── the builders ────────────────────────────────────────────────────────
+/**
+ * Does this title actually say anything?
+ *
+ * Measured 2026-09-05: 3,487 of 8,236 sports_clips titles contain their own
+ * channel name and 4,281 end in "clip"/"highlights"/"video" - the scraper
+ * stored a placeholder, not a description. Quoting one produces
+ * "Bleacher Report NBA NBA Clip and nobody in the building blinked", which is
+ * exactly the scraped-looking output Phase 2 exists to end.
+ *
+ * When a title says nothing we say so: no topic, no key phrase from it, low
+ * confidence. The Composer then reaches for a take about the concept or the
+ * tone, which is generic but clean and true. A clean generic sentence beats a
+ * specific-sounding sentence about a placeholder.
+ */
+const YOUTUBE_CHROME = [
+  'keyboard shortcuts', 'playback', 'subtitles and closed captions',
+  'spherical videos', 'sign in to youtube', 'watch later', 'share',
+  'picture-in-picture', 'full screen', 'autoplay', 'about press copyright',
+  'press copyright contact us', 'developers', 'advertise', 'terms privacy',
+  'nfl sunday ticket', 'how youtube works', 'test new features',
+];
+
+export function isUninformativeTitle(title: string, source?: string | null): boolean {
+  const t = title.trim();
+  if (!t) return true;
+
+  // The scraper stored YouTube's own player menu as the title on 3,855 of
+  // 8,236 rows (measured 2026-09-05): "Keyboard shortcuts" x1,223,
+  // "Playback" x1,000, "Subtitles and closed captions" x837, "Spherical
+  // Videos" x794. None of them is a clip.
+  const chrome = t.toLowerCase();
+  if (YOUTUBE_CHROME.some((c) => chrome === c || chrome.startsWith(c))) return true;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length <= 2) return true;
+
+  const lc = t.toLowerCase();
+  const src = (source ?? '').trim().toLowerCase();
+  // "Bleacher Report NBA NBA Clip": the channel name plus a filler noun.
+  if (src && lc.includes(src) && words.length <= 8) return true;
+
+  // Ends in a generic content noun and carries nothing else specific.
+  if (/\b(clip|clips|highlight|highlights|video|videos|short|shorts|reel|reels)\s*$/i.test(t) && words.length <= 7) {
+    return true;
+  }
+  // Only league, team and filler words.
+  const informative = words.filter((w) => {
+    const b = w.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+    if (!b) return false;
+    if (b in TEAMS) return false;
+    if (['nba', 'nfl', 'mlb', 'nhl', 'ufc', 'ncaa', 'clip', 'clips', 'highlight', 'highlights',
+         'video', 'shorts', 'short', 'official', 'full', 'best', 'top', 'the', 'and', 'vs'].includes(b)) return false;
+    return b.length > 2;
+  });
+  return informative.length < 2;
+}
+
+
+
+// ─── the builders ───────────────────────────────────────────────────────
 
 export interface BriefSource {
   postId?: string;
@@ -509,19 +567,24 @@ export function briefForAsset(input: {
       }
     }
   }
-  const people = extractPeople(title);
+  const empty = isUninformativeTitle(title, source);
+  // A title that says nothing cannot name anybody either: "Keyboard
+  // shortcuts" yielded the person "Keyboard", and a horse then asked
+  // "anyone else watch Keyboard do this".
+  const people = empty ? [] : extractPeople(title);
   const amounts = extractAmounts(title);
   const tone = detectTone(title, concepts);
 
   // Confidence: a title we could pull real entities out of is a brief worth
   // writing from. Everything is bounded so a long title cannot fake it.
   let confidence = 0;
-  if (title.length >= 12) confidence += 0.25;
+  if (!empty && title.length >= 12) confidence += 0.25;
   if (people.length) confidence += 0.25;
   if (teams.length) confidence += 0.15;
   if (concepts.length) confidence += 0.25;
   if (amounts.length) confidence += 0.1;
   if (sport || domain === 'poker') confidence += 0.1;
+  if (empty) confidence = Math.min(confidence, 0.35);
   confidence = Math.min(1, Number(confidence.toFixed(2)));
 
   return {
@@ -534,8 +597,10 @@ export function briefForAsset(input: {
     teams,
     concepts,
     amounts,
-    keyPhrase: keyPhraseOf(title, people, teams),
-    topic: topicOf(title),
+    // A placeholder title anchors nothing: quoting it is how the old engine
+    // ended up sounding scraped.
+    keyPhrase: empty ? (people[0] ?? teams[0]) : keyPhraseOf(title, people, teams),
+    topic: empty ? undefined : topicOf(title),
     tone,
     isQuestion: /\?\s*$/.test(title),
     confidence,

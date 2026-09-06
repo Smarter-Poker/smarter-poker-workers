@@ -86,7 +86,7 @@ Measured before: 100 posts/day from 100 horses, 640 silent, 59 horses
 commenting/week. Expected after: ~235 posts/day across the fleet, every horse
 at least weekly, engagement open to every awake horse.
 
-### Phase 2: comprehension and voice (Dan, 2026-09-05)
+### Phase 2: comprehension and voice (SHIPPED 2026-09-05; see the changelog for the live numbers and the data defects the first fires exposed)
 
 Dan, verbatim: "WE NEED LIKE 100+ DIFFERENT WRITING STYLES WHEN POSTING, THEY
 CAN NOT APPEAR SIMILAR OR SAME FORMATTING OR ANYTHING ELSE. THEY ALSO NEED TO

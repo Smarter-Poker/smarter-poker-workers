@@ -20,7 +20,7 @@
  * pin here is a decision that has to be argued rather than a refactor.
  */
 import { describe, it, expect } from 'vitest';
-import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlineCase } from './PostBrief.js';
+import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlineCase, isUninformativeTitle } from './PostBrief.js';
 import { styleSheetFor, styleId, render, stripBannedGlyphs } from './StyleSheet.js';
 import { composeCaption, composeComment, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
 import { areFriends, friendsOf, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
@@ -91,6 +91,43 @@ describe('the brief reads the real subject', () => {
   it('takes the meaningful half of a colon headline as the topic', () => {
     expect(topicOf("Too Weak to Call, Strong Enough to Raise: Garrett Adelstein's $60K Bluff"))
       .toBe("Garrett Adelstein's $60K Bluff");
+  });
+
+  it('knows a placeholder title when it sees one', () => {
+    // Measured 2026-09-05: 3,487 of 8,236 sports_clips titles contain their
+    // own channel name. The first Phase 2 fire published "Bleacher Report NBA
+    // NBA Clip and nobody in the building blinked" before this existed.
+    expect(isUninformativeTitle('Bleacher Report NBA NBA Clip', 'Bleacher Report NBA')).toBe(true);
+    expect(isUninformativeTitle('NBA Highlights', 'NBA')).toBe(true);
+    expect(isUninformativeTitle('Lakers Clip', 'Lakers')).toBe(true);
+    expect(isUninformativeTitle('Angel holding her own in the paint', 'Bleacher Report')).toBe(false);
+  });
+
+  it('knows YouTube player furniture is not a clip title', () => {
+    // 3,855 of 8,236 sports_clips rows had one of these as their title.
+    for (const junk of ['Keyboard shortcuts', 'Playback', 'Subtitles and closed captions', 'Spherical Videos', 'Sign in to YouTube']) {
+      expect(isUninformativeTitle(junk, 'NBA')).toBe(true);
+      const b = briefForAsset({ kind: 'video', title: junk, source: 'NBA' });
+      expect(b.topic).toBeUndefined();
+      for (const id of fleetIds(10)) {
+        const t = composeCaption(b, styleSheetFor(id)).text.toLowerCase();
+        expect(t).not.toContain('keyboard');
+        expect(t).not.toContain('spherical');
+        expect(t).not.toContain('closed caption');
+      }
+    }
+  });
+
+  it('refuses to quote a placeholder title', () => {
+    const b = briefForAsset({ kind: 'video', title: 'Bleacher Report NBA NBA Clip', source: 'Bleacher Report NBA' });
+    expect(b.topic).toBeUndefined();
+    expect(b.confidence).toBeLessThanOrEqual(0.35);
+    for (const id of fleetIds(30)) {
+      const t = composeCaption(b, styleSheetFor(id)).text;
+      expect(t.toLowerCase()).not.toContain('nba clip');
+      expect(t.toLowerCase()).not.toContain('bleacher report');
+      expect(t.trim().length).toBeGreaterThan(3);
+    }
   });
 
   it('never claims confidence it does not have', () => {
