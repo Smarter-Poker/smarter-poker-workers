@@ -200,7 +200,7 @@ const LINES: Record<string, Line[]> = {
   ],
   cooler: [
     { t: '{holding} on {board}. Sometimes the second-best hand costs the most.', needs: ['holding', 'board'] },
-    { t: 'That felt unavoidable. It was also {money}.', needs: ['money'] },
+    { t: 'That felt unavoidable. It still cost {money}.', needs: ['money'] },
     { t: 'A strong hand, a stronger one somewhere else, and a long walk back.', needs: [] },
     { t: '{holding} was not enough on {board}. Nothing pretty about that.', needs: ['holding', 'board'] },
     { t: 'One of those spots that looks obvious only after it is over.', needs: [] },
@@ -215,9 +215,9 @@ const LINES: Record<string, Line[]> = {
   river_aggression: [
     { t: 'Kept the pressure on through the river and took it down.', needs: [], when: (f) => f.street === 'river' },
     { t: 'The last bet told the story. This time it worked.', needs: [], when: (f) => f.street === 'river' },
-    { t: '{board}, one more bet, and the pot came my way.', needs: ['board'], when: (f) => f.street === 'river' },
+    { t: '{board}. One more bet, and the pot came my way.', needs: ['board'], when: (f) => f.street === 'river' },
     { t: 'River decisions are rarely comfortable. I pressed this one.', needs: [], when: (f) => f.street === 'river' },
-    { t: 'Took the aggressive route on the river. {money}.', needs: ['money'], when: (f) => f.street === 'river' },
+    { t: 'Took the aggressive route on the river and won {money}.', needs: ['money'], when: (f) => f.street === 'river' && f.isWin },
     { t: 'The river gave me a decision. I chose pressure.', needs: [], when: (f) => f.street === 'river' },
     { t: 'Stayed on the gas through {board}. Got the result.', needs: ['board'], when: (f) => f.street === 'river' },
     { t: 'One last bet was enough, with {money} coming back.', needs: ['money'], when: (f) => f.street === 'river' },
@@ -251,14 +251,14 @@ const LINES: Record<string, Line[]> = {
     { t: 'Once the stack went in, all that was left was the runout.', needs: [] },
     { t: '{board} and every chip in play. Poker gets simple fast.', needs: ['board'] },
     { t: 'Full-stack pot with {holding}. Deep breath.', needs: ['holding'] },
-    { t: 'No half measures in that one. {money}.', needs: ['money'] },
+    { t: 'No half measures in that one. {money} changed hands.', needs: ['money'] },
     { t: 'The whole stack found the middle. On to the next decision.', needs: [] },
   ],
   grind: [
     { t: 'Quiet one with {holding}. Most of the game looks like that.', needs: ['holding'] },
     { t: 'Small pot, clean decision, next hand.', needs: [] },
     { t: 'Wrapped that one up {street}. Nothing dramatic.', needs: ['street'] },
-    { t: '{money}. These are the pots that fill a session.', needs: ['money'] },
+    { t: 'This is what most of a session looks like.', needs: [] },
     { t: '{holding}, no drama, moving on.', needs: ['holding'] },
     { t: '{board} and a routine result. They count too.', needs: ['board'] },
     { t: 'Not every hand needs a speech. This one did its job.', needs: [], when: (f) => f.isWin },
@@ -305,7 +305,13 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
       text = text.replace(new RegExp(`\\{${part}\\}`, 'g'), spoken[part] ?? '');
     }
     if (text.includes('{')) continue;
-    text = text.charAt(0).toUpperCase() + text.slice(1);
+    // A replacement can begin a new sentence inside the frame: for example,
+    // "No half measures in that one. {money}." The spoken money phrase is a
+    // noun phrase and deliberately lowercase everywhere else, so capitalise
+    // only real sentence starts after interpolation.
+    text = text.replace(/(^|[.!?]\s+)([a-z])/g, (_match, lead: string, letter: string) =>
+      `${lead}${letter.toUpperCase()}`,
+    );
     const key = `frame:voice:${f.category}:${idx}`;
     if (exclude?.has(key)) continue;
     if (!spokenLineMatches(text, f)) continue;

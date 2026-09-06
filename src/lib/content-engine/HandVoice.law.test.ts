@@ -111,6 +111,7 @@ describe('every proposed sentence keeps the same laws', () => {
         expect(line.text).not.toMatch(/[{}]/);
         expect(line.text).not.toContain('—');
         expect(line.text[0]).toMatch(/[A-Z0-9]/);
+        expect(line.text).not.toMatch(/[.!?]\s+[a-z]/);
       }
     }
   });
