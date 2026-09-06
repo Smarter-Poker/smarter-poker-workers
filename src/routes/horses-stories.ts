@@ -27,7 +27,7 @@ import { writeCaption, writeStory } from '../lib/content-engine/VoiceWriter.js';
 import { getHorseActivityRate } from '../lib/content-engine/HorseScheduler.js';
 import { isOnlineNow } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
-import { getRandomClip } from '../lib/content-engine/ClipLibrary.js';
+import { candidateClips } from '../lib/content-engine/ClipSupply.js';
 
 
 const CONFIG = {
@@ -88,11 +88,17 @@ async function validateYouTubeThumbnail(videoId: string): Promise<boolean> {
 
 async function postVideoStory(horse: Horse): Promise<{ type: string; story_id?: unknown } | null> {
   try {
-    const maxAttempts = 5;
+    // Phase 4: the same renewing supply the feed draws from, and the same
+    // per-horse slice, so a horse's stories and its posts come from the
+    // channels that horse actually follows. This used to be getRandomClip()
+    // over the 150-literal array, which is how a story could show a video
+    // that had been deleted since April.
+    const { clips: pool } = await candidateClips('poker', horse.profile_id);
     let validClip = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const clip = getRandomClip();
-      if (!clip) continue;
+    for (let attempt = 0; attempt < 5 && pool.length > 0; attempt++) {
+      const idx = Math.floor(Math.random() * pool.length);
+      const clip = pool[idx]!;
+      pool.splice(idx, 1);
       if (await validateYouTubeThumbnail(clip.video_id)) {
         validClip = clip;
         break;

@@ -30,7 +30,12 @@ import { getSupabase } from '../supabase.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
 import { isUninformativeTitle } from './PostBrief.js';
-import { getRandomClip } from './ClipLibrary.js';
+import {
+  candidateClips,
+  recordValidity,
+  sportsShareFor,
+  type SupplyClip,
+} from './ClipSupply.js';
 import {
   assetKeyFor,
   filterUnusedAssets,
@@ -325,26 +330,41 @@ async function postVideoClip(
   let clip: LibraryClip | SportsClipRow | null = null;
 
   if (clipType === 'poker') {
-    // Candidate set: 20 draws from the library, filtered through the ledger
-    // in ONE read, then validated in order.
-    const candidates: LibraryClip[] = [];
-    for (let i = 0; i < 20; i++) {
-      const c = getRandomClip() as LibraryClip | null;
-      if (c) candidates.push(c);
-    }
-    const keys = candidates.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
+    // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
+    // source registry first, the whole pool only if that slice is thin. The
+    // 150-literal ClipLibrary.ts array this replaced was used 114 deep in one
+    // week and had 36 dead videos in it; see ClipSupply.ts for the numbers.
+    const { clips: pool, widened } = await candidateClips('poker', horse.profile_id);
+    if (widened) bumpSupplyStat('poker_widened_to_platform');
+    if (!pool.length) return { ...base, success: false, error: 'No poker clips in supply' };
+
+    const keys = pool.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
     const usable = await filterUnusedAssets(keys, horse.profile_id);
-    for (const c of candidates) {
+    const fresh = pool.filter((c) => {
       const k = assetKeyFor(c.source_url);
-      if (!k || !usable.has(k)) continue;
-      // The library was hand-verified; only a definite "bad" drops it.
-      if ((await youtubeValidity(c.source_url)) !== 'bad') {
-        clip = c;
+      return !!k && usable.has(k);
+    });
+    bumpSupplyStat(
+      'poker_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'),
+    );
+    if (!fresh.length) return { ...base, success: false, error: 'All poker clips already posted' };
+
+    // Three candidates, as sports does. The row already carries the last
+    // oEmbed answer, so a definite "bad" here is rare and worth persisting:
+    // a dead video should cost the fleet one question, not one per container.
+    for (let i = 0; i < 3 && fresh.length > 0; i++) {
+      const idx = Math.floor(Math.random() * fresh.length);
+      const candidate = fresh[idx]!;
+      const verdict = await youtubeValidity(candidate.source_url);
+      if (verdict !== 'bad') {
+        clip = candidate as unknown as LibraryClip;
         break;
       }
-      usable.delete(k);
+      await recordValidity(candidate.id, false);
+      bumpSupplyStat('poker_clip_retired_on_use');
+      fresh.splice(idx, 1);
     }
-    if (!clip) return { ...base, success: false, error: 'All poker clips already posted' };
+    if (!clip) return { ...base, success: false, error: 'No valid poker clips found' };
   } else {
     const supa = getSupabase();
     const assigned = await getHorseSources(horse.profile_id);
@@ -608,7 +628,11 @@ export async function publishForHorse(
     return { ...base, success: false, skipped: 'posted_recently' };
   }
 
-  let isPoker = Math.random() < 0.75;
+  // Phase 4: how much sport this horse posts is a trait of the horse, not a
+  // constant in the code. `Math.random() < 0.75` gave every one of a thousand
+  // horses the same appetite, so the fleet's mix was a property of this line
+  // rather than of the characters; see sportsShareFor().
+  let isPoker = Math.random() >= sportsShareFor(horse.profile_id);
   try {
     const { data: lastPosts } = await getSupabase()
       .from('social_posts')

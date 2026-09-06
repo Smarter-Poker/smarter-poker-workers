@@ -356,6 +356,26 @@ function pickDistinct(arr: string[], avoid: string, seed: string, salt: string):
 /** "AcKh2s7d", "AKs", "JJ" - a holding, not a name. */
 const CARD_GROUP = /^(?:[AKQJT2-9][hdcs]){2,}$|^[AKQJT2-9]{2}[so]?$/;
 
+/**
+ * A NAMED AGENT - somebody or something that can act. Never a topic.
+ *
+ * `anchorOf` falls back to the brief's key phrase, which is a fragment of the
+ * title, and a fragment cannot "do" anything: with the Phase 4 scraper
+ * feeding real YouTube titles in, "DISASTER In Biggest Pot Of The Day"
+ * produced "anyone else watch DISASTER do this?" and "Nobody Folds In
+ * Montreal" produced "anyone else watch Nobody Folds do this?". The same
+ * shape as the "Keyboard" case PostBrief.ts already guards on the extraction
+ * side, arriving by the other road.
+ *
+ * A frame whose subject has to be an agent asks for this, and simply is not
+ * offered when the post names nobody.
+ */
+export function agentOf(b: PostBrief): string | null {
+  if (b.people.length) return b.people[0]!;
+  if (b.teams.length) return b.teams[0]!;
+  return null;
+}
+
 export function anchorOf(b: PostBrief): string | null {
   if (b.people.length) return b.people[0]!;
   if (b.teams.length) return b.teams[0]!;
@@ -515,7 +535,10 @@ export function composeCaption(
   // The question habit, when the style has one.
   const wantsQuestion = style.questionRate > 0 && (fleetHash(seed, 'q') % 100) / 100 < style.questionRate;
   if (wantsQuestion) {
-    lines.push(anchor ? `anyone else watch ${anchor} do this` : 'am I the only one still thinking about this');
+    // Only a named agent can be watched DOING something. A title fragment in
+    // that slot reads as nonsense; see agentOf().
+    const agent = agentOf(b);
+    lines.push(agent ? `anyone else watch ${agent} do this` : 'am I the only one still thinking about this');
   }
 
   const text = render(lines, style, seed) + (wantsQuestion ? '?' : '');
