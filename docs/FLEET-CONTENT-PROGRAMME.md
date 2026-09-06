@@ -203,6 +203,14 @@ limited query. Those were permanently removed as well: 20,502 horse-authored
 posts in total, with zero horse-authored `social_posts` remaining. Human and
 official-account posts were outside the deletion target. The clip-deduplication
 ledger was preserved; 18 nullable post links were cleared before deletion.
+
+The next natural 17:10 UTC run still failed human review despite reporting zero
+below-floor posts and average relevance 0.61. Its 22 posts included clipped
+ellipsis titles, an aliens video classified as poker, irrelevant article takes,
+generic wrappers and a sentence duplicated inside one caption. All 22 were
+deleted, bringing the permanent cleanup total to 20,524, and the master
+`content_settings.engine_enabled` switch was turned off. The fleet must remain
+silent until visible-output quality is repaired and a review batch is accepted.
 A rewritten hand voice exists only as unwired candidate code. `grounded_hand`
 and the older, separately scoped `grounded_session` mode both remain off until
 Dan reviews samples and explicitly approves each mode.
