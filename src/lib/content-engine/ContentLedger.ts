@@ -216,6 +216,22 @@ export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): P
   return (mine.data ?? []).length > 0;
 }
 
+/** Has this unstyled sentence already been used under this exact post? */
+export async function phraseUsedOnPost(phraseNorm: string, postId: string): Promise<boolean> {
+  if (!phraseNorm || !postId) return false;
+  const { data, error } = await getSupabase()
+    .from('horse_phrase_ledger')
+    .select('id')
+    .eq('phrase_norm', phraseNorm)
+    .eq('post_id', postId)
+    .limit(1);
+  if (error) {
+    console.warn('[content-ledger] post phrase read failed:', error.message);
+    return false;
+  }
+  return (data ?? []).length > 0;
+}
+
 export async function recordPhrase(
   phraseNorm: string,
   horseId: string,

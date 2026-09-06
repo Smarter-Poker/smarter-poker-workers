@@ -435,18 +435,14 @@ export function anchorOf(b: PostBrief): string | null {
 }
 
 function specificTakePool(b: PostBrief): string[] {
-  const table = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
+  // Never cross domains. A stored poker brief containing a stale sports
+  // concept once turned an EPT debut into "doing that as a rookie". General
+  // briefs are intentionally unsupported until their domain is known.
+  const table = b.domain === 'poker' ? POKER_TAKES : b.domain === 'sports' ? SPORT_TAKES : null;
+  if (!table) return [];
   const hits: string[] = [];
   for (const c of b.concepts) {
     const lines = table[c];
-    if (lines) hits.push(...lines);
-  }
-  if (hits.length) return hits;
-  // No known concept: fall back to the other domain's table before tone, in
-  // case the brief's domain guess was the weaker signal.
-  const other = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
-  for (const c of b.concepts) {
-    const lines = other[c];
     if (lines) hits.push(...lines);
   }
   if (hits.length) return hits;
@@ -483,6 +479,8 @@ export interface ComposeResult {
   relevance: number;
   /** What the sentence was built from, for the audit trail. */
   grounding: string[];
+  /** Unstyled meaning, used to prevent two styled copies on one post. */
+  semanticKey?: string;
 }
 
 /**
@@ -765,7 +763,8 @@ function composeHandComment(
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
   // Grounded by construction: it names the hand's own category, board or
   // holding, so it does not go through the clip relevance scorer.
-  return { text: cleaned, relevance: 1, grounding };
+  const semanticKey = `comment:${lines[0]!.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()}`;
+  return { text: cleaned, relevance: 1, grounding, semanticKey };
 }
 
 /**
@@ -867,7 +866,8 @@ export function composeComment(
   const capped = lines.slice(0, Math.min(2, Math.max(1, sentences)));
   const text = render(capped, style, seed) + (asking ? '?' : '');
   const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
-  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
+  const semanticKey = `comment:${lines[0]!.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()}`;
+  return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding, semanticKey };
 }
 
 /**

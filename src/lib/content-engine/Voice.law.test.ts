@@ -578,6 +578,35 @@ describe('live comment failures cannot recur', () => {
     }
   });
 
+  it('never crosses from a stale sports concept into a poker comment', () => {
+    const base = briefForAsset({
+      kind: 'link',
+      title: 'Tiffany Michelle on her debut EPT win and the healing power of poker',
+      source: 'Poker.org',
+    });
+    const stale = { ...base, domain: 'poker' as const, concepts: ['rookie'] };
+    for (const id of ids) {
+      expect(composeComment(stale, styleSheetFor(id)).text).not.toMatch(/rookie|first-year/i);
+    }
+  });
+
+  it('exposes the unstyled meaning so styled duplicates share one key', () => {
+    const brief = briefForAsset({
+      kind: 'video',
+      title: 'Final table spots cost years of work',
+      source: 'PokerGO',
+    });
+    const byKey = new Map<string, Set<string>>();
+    for (const id of ids) {
+      const out = composeComment(brief, styleSheetFor(id));
+      expect(out.semanticKey).toMatch(/^comment:/);
+      const texts = byKey.get(out.semanticKey!) ?? new Set<string>();
+      texts.add(out.text);
+      byKey.set(out.semanticKey!, texts);
+    }
+    expect([...byKey.values()].some((texts) => texts.size > 1)).toBe(true);
+  });
+
   it('capitalizes every sentence start unless lowercase is the chosen style', () => {
     for (const id of ids) {
       const style = styleSheetFor(id);

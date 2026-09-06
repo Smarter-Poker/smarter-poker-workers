@@ -34,7 +34,7 @@ import {
   relevanceOf,
   RELEVANCE_FLOOR,
 } from './Composer.js';
-import { normalizePhrase, phraseRecentlyUsed, recentFrameKeys } from './ContentLedger.js';
+import { normalizePhrase, phraseRecentlyUsed, phraseUsedOnPost, recentFrameKeys } from './ContentLedger.js';
 import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
@@ -77,6 +77,8 @@ export interface WrittenText {
   briefWasStored?: boolean;
   /** Which separately-approved grounded mode produced this draft. */
   groundedKind?: 'hand' | 'session';
+  /** Unstyled meaning for same-post semantic de-duplication. */
+  semanticKey?: string;
 }
 
 const MAX_DRAFTS = 6;
@@ -86,12 +88,13 @@ const MAX_DRAFTS = 6;
  * same two gates.
  */
 async function writeGated(
-  make: (variant: string) => { text: string; relevance: number; grounding: string[] },
+  make: (variant: string) => { text: string; relevance: number; grounding: string[]; semanticKey?: string },
   brief: PostBrief,
   style: StyleSheet,
   horseId: string,
+  postId?: string,
 ): Promise<Omit<WrittenText, 'brief' | 'style'>> {
-  let best: { text: string; relevance: number; grounding: string[] } | null = null;
+  let best: { text: string; relevance: number; grounding: string[]; semanticKey?: string } | null = null;
   let attempts = 0;
   let sawFresh = false;
 
@@ -102,6 +105,7 @@ async function writeGated(
     if (!best || draft.relevance > best.relevance) best = draft;
 
     if (draft.relevance < RELEVANCE_FLOOR) continue;
+    if (draft.semanticKey && postId && await phraseUsedOnPost(draft.semanticKey, postId)) continue;
     const norm = normalizePhrase(draft.text);
     if (await phraseRecentlyUsed(norm, horseId)) continue;
 
@@ -110,6 +114,7 @@ async function writeGated(
       text: draft.text,
       relevance: draft.relevance,
       grounding: draft.grounding,
+      semanticKey: draft.semanticKey,
       attempts,
       belowFloor: false,
       stale: false,
@@ -119,11 +124,12 @@ async function writeGated(
   // Nothing cleared both gates. Do not publish filler, below-floor text, or
   // a repeated sentence. A missed slot is recoverable; low-quality content
   // in a player's feed is not.
-  const fallback = best ?? { text: '', relevance: 0, grounding: [] };
+  const fallback = best ?? { text: '', relevance: 0, grounding: [], semanticKey: undefined };
   return {
     text: '',
     relevance: fallback.relevance,
     grounding: fallback.grounding,
+    semanticKey: fallback.semanticKey,
     attempts,
     belowFloor: fallback.relevance < RELEVANCE_FLOOR,
     stale: !sawFresh && fallback.relevance >= RELEVANCE_FLOOR,
@@ -354,6 +360,7 @@ export async function writeComment(
     brief,
     style,
     horse.profile_id,
+    post.postId,
   );
   return { ...core, brief, style, briefWasStored: Boolean(stored) };
 }

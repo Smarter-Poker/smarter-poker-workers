@@ -130,7 +130,9 @@ const SPORT_CONCEPTS: Record<string, string[]> = {
   save: ['save', 'saves', 'point blank'],
   knockout: ['knockout', 'ko', 'finish', 'submission'],
   comeback: ['comeback', 'came back', 'rally', 'rallied'],
-  rookie: ['rookie', 'debut'],
+  // "Debut" also describes a poker player's first EPT win. Treating it as
+  // an NBA/NFL rookie signal produced a sports comment under a poker article.
+  rookie: ['rookie', 'first-year player'],
   record: ['record', 'franchise record', 'career high', 'career-high'],
   playoffs: ['playoff', 'playoffs', 'finals', 'game 7', 'game seven'],
   injury: ['injury', 'injured', 'hurt'],
