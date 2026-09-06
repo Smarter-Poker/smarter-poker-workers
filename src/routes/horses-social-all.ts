@@ -21,6 +21,7 @@ import {
   reactToComments,
 } from '../lib/content-engine/HorseSocialEngine.js';
 import { processDirectMessages } from '../lib/content-engine/HorseMessengerEngine.js';
+import { engineEnabled } from '../lib/content-engine/Fleet.js';
 
 async function withDeadline<T>(
   fn: () => Promise<T>,
@@ -55,6 +56,14 @@ async function withDeadline<T>(
 
 export async function horsesSocialAll(c: Context) {
   try {
+    if (!(await engineEnabled())) {
+      return c.json({
+        success: true,
+        skipped: 'engine_disabled',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const deadline = Date.now() + 540_000;
     const results: {
       liked: number;
