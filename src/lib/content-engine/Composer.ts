@@ -276,6 +276,60 @@ const TONE_TAKES: Record<string, string[]> = {
  * 2026-09-05: without these, a clip titled "Angel holding her own in the
  * paint" produced "came across this and it stuck with me".
  */
+/**
+ * A title that is already a SENTENCE cannot be used as a noun.
+ *
+ * The Phase 4 scraper feeds real YouTube titles in, and real titles are often
+ * whole clauses: "Daniel Negreanu is literally trying to give his money away".
+ * Dropped into "{topic} is a spot worth sitting with" that produced
+ *
+ *   "Daniel Negreanu is literally trying to give his money is a spot worth
+ *    sitting with."
+ *
+ * Two verbs, one subject, no meaning. The frames below are written for a
+ * NOUN PHRASE - "the $26K bluff", "a four way all in" - which is what a clip
+ * title used to be when they were hand-written.
+ *
+ * So a clause-shaped title gets frames that quote it rather than embed it:
+ * it is stated, then commented on, which reads the way a person actually
+ * shares a video.
+ */
+const CLAUSE_MARKERS =
+  /\b(is|are|was|were|has|have|had|does|did|will|wont|can|cant|gets|got|goes|went|makes|made|takes|took|wins|won|loses|lost|calls|folds|shoves|says|said|thinks|tried|trying)\b/i;
+
+export function titleIsAClause(title: string): boolean {
+  const t = title.trim();
+  if (!t) return false;
+  // A question is a clause too, and reads badly embedded either way.
+  if (t.endsWith('?') || t.endsWith('!')) return true;
+  return CLAUSE_MARKERS.test(t);
+}
+
+/**
+ * Frames for a title that is already a sentence: state it, then react.
+ * `{topic}` sits at the start followed by a full stop, never mid-clause.
+ */
+const CLAUSE_FRAMES: Record<string, string[]> = {
+  poker: [
+    '{topic}. that is a spot worth sitting with',
+    '{topic}. still thinking about that one',
+    '{topic}. the discipline there is the part worth copying',
+    '{topic}. the interesting part is what happens one street earlier',
+    '{topic}. and the sizing is the whole tell',
+    '{topic}. that is the clearest example of it I have seen',
+  ],
+  sports: [
+    '{topic}. that is the whole clip',
+    '{topic}. still thinking about it',
+    '{topic}. nobody in the building blinked',
+    '{topic}. it looked routine at full speed',
+  ],
+  general: [
+    '{topic}. worth the two minutes',
+    '{topic}. still thinking about it',
+  ],
+};
+
 const TOPIC_FRAMES: Record<string, string[]> = {
   sports: [
     '{topic} is the whole clip',
@@ -486,7 +540,11 @@ function chooseOpening(
   }
 
   if (b.topic) {
-    const frames = TOPIC_FRAMES[b.domain] ?? TOPIC_FRAMES.general!;
+    // A title that is already a sentence is stated and reacted to; only a
+    // noun-phrase title can be dropped into the middle of one. See
+    // titleIsAClause() for the sentence this stopped producing.
+    const table = titleIsAClause(b.topic) ? CLAUSE_FRAMES : TOPIC_FRAMES;
+    const frames = table[b.domain] ?? table.general!;
     for (const tpl of frames) {
       candidates.push({ text: tpl.replace(/\{topic\}/g, b.topic), grounding: [`topic:${b.topic}`] });
     }
