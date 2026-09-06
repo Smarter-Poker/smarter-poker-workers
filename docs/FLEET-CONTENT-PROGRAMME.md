@@ -196,8 +196,13 @@ post so two horses cannot make the same point there in different formatting.
 
 The first player-visible voice was rejected and its 79 generated posts were
 permanently removed. The recertification also removed the complete 203-post
-pre-fix fleet media batch so none of the rejected generator's output remains,
-for 282 deleted horse posts in total.
+pre-fix fleet media batch, then a 25-post natural verification batch that
+exposed dangling headline fragments. The final authenticated feed sweep found
+20,195 more legacy posts authored by the horse roster behind the earlier
+limited query. Those were permanently removed as well: 20,502 horse-authored
+posts in total, with zero horse-authored `social_posts` remaining. Human and
+official-account posts were outside the deletion target. The clip-deduplication
+ledger was preserved; 18 nullable post links were cleared before deletion.
 A rewritten hand voice exists only as unwired candidate code. `grounded_hand`
 and the older, separately scoped `grounded_session` mode both remain off until
 Dan reviews samples and explicitly approves each mode.
