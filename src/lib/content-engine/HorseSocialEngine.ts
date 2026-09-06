@@ -38,6 +38,7 @@ import { getSupabase } from '../supabase.js';
 import { getHorseActivityRate } from './HorseScheduler.js';
 import { isOnlineNow } from './FleetScheduler.js';
 import { writeComment, writeReply, recordBrief, recordThreadTurn } from './VoiceWriter.js';
+import { tagCandidateFor } from './FriendGraph.js';
 import { normalizePhrase, recordPhrase } from './ContentLedger.js';
 import { decideReply, composerReason, type ThreadComment } from './ReplyEngine.js';
 
@@ -508,14 +509,25 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
                 content: comment
             });
 
-        // Phase 28: @Mention — 15% chance to tag a horse friend
+        // Phase 2 (2026-09-06): a mention goes to a FRIEND, by alias.
+        //
+        // This used to pick a uniformly random horse out of the whole fleet
+        // and address it by profiles.username, which produced
+        // "@sophie andersson 2 ..." in production - a display name with
+        // spaces, from a horse this one has never interacted with. Dan:
+        // "HORSES NEED TO BE ADDING AND TAGGING OTHER HORSES IN POSTS THAT
+        // THEY ARE FRIENDS WITH. BUT NOT EVERY HORSE SHOULD BE FRIENDS WITH
+        // EVERY OTHER HORSE, THAT WOULD BE WEIRD AND SUSPICIOUS."
         if (!error && Math.random() < 0.15) {
-            const otherHorses = allHorses.filter(h => h.profile_id !== horse.profile_id);
-            if (otherHorses.length > 0) {
-                const friend = otherHorses[Math.floor(Math.random() * otherHorses.length)];
-                const { data: friendProfile } = await getSupabase()
-                    .from('profiles').select('username').eq('id', friend.profile_id).maybeSingle();
-                if (friendProfile?.username) {
+            const cand = tagCandidateFor(
+                horse,
+                allHorses,
+                { domain: written.brief.domain, concepts: written.brief.concepts, sport: written.brief.sport },
+                `${horse.profile_id}:${post.id}`,
+            );
+            const friend = cand?.friend;
+            if (friend?.alias) {
+                const friendProfile = { username: friend.alias };
                     const mentionComment = `@${friendProfile.username} ${comment}`;
                     // BUG-WR03 FIX: match by author+post+timestamp window instead of content string
                     // (content-match was fragile: two horses posting same text to same post → wrong row updated)
@@ -540,7 +552,6 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
 
                     // Trigger push notification to mentioned user
                     await sendSocialPush(friend.profile_id, horseIds, 'New Mention', `${horse.name} mentioned you in a comment.`, `/hub/social-media?post_id=${post.id}`);
-                }
             }
         }
 
