@@ -175,6 +175,28 @@ describe('a post never states a number the ledger does not carry', () => {
     }
   });
 
+  it('card notation keeps its case in every style', () => {
+    // Production, 2026-09-06 02:10: the lower-case style published
+    // "well asqd7std on ts 6s 5s kh 4c" and the emphatic one "Nah
+    // tc6h4dAhAd". Case is meaning in card notation, not decoration.
+    //
+    // A frame need not mention the cards at all (the big-fold line talks
+    // about the board only), so this asserts the SHAPE: whatever card token
+    // the text contains must be the canonical one, never a flattened copy.
+    for (const f of HANDS) {
+      const canonical = [f.holeNotation, ...f.boardNotation.split(' ')].filter(Boolean);
+      for (const id of ids) {
+        const t = composeHandPost(f, styleSheetFor(id)).text;
+        for (const card of canonical) {
+          // Word boundaries matter: a naive search for "Ts" finds the "ts"
+          // inside "gets me" and reports a bug that is not there.
+          const re = new RegExp(`\\b${card}\\b`, 'gi');
+          for (const m of t.match(re) ?? []) expect(m).toBe(card);
+        }
+      }
+    }
+  });
+
   it('a hand that never saw a flop is never given a board', () => {
     const f = HANDS[4]!;
     for (const id of ids) {
