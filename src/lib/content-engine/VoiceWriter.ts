@@ -210,7 +210,9 @@ export async function loadBrief(postId: string | undefined): Promise<PostBrief |
       tone: (row.tone as PostBrief['tone']) ?? 'neutral',
       isQuestion: Boolean(row.is_question),
       confidence: Number(row.confidence ?? 0),
-      builtFrom: [...(((row.built_from as string[]) ?? [])), 'post_briefs'],
+      // De-duplicated: this row is read and written back on every comment,
+      // so a plain append grows the array in the database forever.
+      builtFrom: [...new Set([...(((row.built_from as string[]) ?? [])), 'post_briefs'])],
     };
   } catch (e) {
     console.warn('[voice] brief read failed:', e instanceof Error ? e.message : e);
@@ -282,7 +284,7 @@ export async function recordBrief(postId: string, brief: PostBrief): Promise<voi
         is_question: brief.isQuestion,
         confidence: brief.confidence,
         summary: summarise(brief),
-        built_from: brief.builtFrom,
+        built_from: [...new Set(brief.builtFrom)],
       },
       { onConflict: 'post_id' },
     );
