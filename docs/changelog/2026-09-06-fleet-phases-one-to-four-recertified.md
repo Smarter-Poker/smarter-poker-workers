@@ -26,8 +26,9 @@ status as completion.
 - Supply watchdog healthy; latest revalidation 40/40; no reel queued over six
   hours.
 - 79 rejected grounded posts, the complete 203-post pre-fix fleet media batch,
-  a failed 25-post natural verification batch and 20,195 legacy horse posts were
-  permanently deleted. Production now has zero `social_posts` authored by any
+  a failed 25-post natural verification batch, 20,195 legacy horse posts and a
+  failed 22-post 17:10 UTC verification batch were permanently deleted, 20,524
+  posts in total. Production now has zero `social_posts` authored by any
   profile in the 1,000-row horse roster. Human and official-account posts were
   not targeted. The clip-deduplication ledger remains intact.
 
@@ -35,3 +36,7 @@ Phase 3 remains rejected and disabled. Its hand rewrite is unwired and both
 grounded mode switches remain off pending Dan's explicit approval. Seven-day
 fleet coverage and the next natural scraper/reels executions remain operational
 observation gates; they are not papered over as complete.
+
+The 17:10 run proved the media modes still fail human quality review even when
+their counters are green. The master fleet switch is therefore disabled; no
+horse posting or engagement should resume until a reviewed sample batch passes.
