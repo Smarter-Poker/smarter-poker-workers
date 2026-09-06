@@ -626,7 +626,20 @@ export function briefForPost(src: BriefSource): PostBrief {
         : undefined;
 
   if (ct === 'link' || ct === 'video') {
-    const title = src.linkTitle ?? src.mediaTitle ?? firstLine(src.content);
+    // NEVER fall back to the post's own text here.
+    //
+    // Measured 2026-09-05 23:30: a horse's video post has no link_title, so
+    // this fell through to the post's content - which is the AUTHOR'S OWN
+    // COMPOSED CAPTION, not a description of the video. The commenter then
+    // treated that caption as the subject and quoted it back: "Still thinking
+    // about Not many people on earth can do what he", "The part that gets me
+    // is Come on now, the crowd reaction said everything that". A caption is
+    // commentary; it is not what the post is about.
+    //
+    // The real subject of a horse's post is recorded in post_briefs when it
+    // is published, and VoiceWriter.loadBrief() reads that first. This path
+    // is the fallback, and it says "I do not know" rather than guessing.
+    const title = src.linkTitle ?? src.mediaTitle ?? '';
     const brief = briefForAsset({
       kind: ct === 'link' ? 'link' : 'video',
       title,
