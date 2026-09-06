@@ -48,7 +48,9 @@ Do not edit them; Phase 9 deletes them.
 7. **Every run leaves a row.** `cron_execution_log.result` carries the counts
    (due, posted, skipped, failed, collided). A run that did nothing says so.
 8. **Kill switch**: `content_settings.engine_enabled = false` stops every
-   fleet route within 30 seconds. A missing or unreadable setting fails closed.
+   fleet route, including posts, stories, friendships, likes, comments,
+   replies, reactions and DMs, within 30 seconds. A missing or unreadable
+   setting fails closed.
    `update content_settings set engine_enabled=false;`
 9. No em dashes, no emoji, in anything a horse publishes.
 10. **Grounded modes are independently gated.** `grounded_hand` and
