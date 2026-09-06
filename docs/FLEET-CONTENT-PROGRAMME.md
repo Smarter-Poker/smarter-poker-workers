@@ -173,9 +173,12 @@ Production output review, rather than test passage alone, is the final gate.
   the ledger.
 
 The first player-visible voice was rejected and its 79 generated posts were
-permanently removed. A rewritten hand voice exists only as unwired candidate
-code. `grounded_hand` and the older, separately scoped `grounded_session` mode
-both remain off until Dan reviews samples and explicitly approves each mode.
+permanently removed. The recertification also removed the complete 203-post
+pre-fix fleet media batch so none of the rejected generator's output remains,
+for 282 deleted horse posts in total.
+A rewritten hand voice exists only as unwired candidate code. `grounded_hand`
+and the older, separately scoped `grounded_session` mode both remain off until
+Dan reviews samples and explicitly approves each mode.
 
 ### Phase 3b: engagement that reaches humans
 

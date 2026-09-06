@@ -25,7 +25,9 @@ status as completion.
 - 1,716 active poker clips and 95 active poker sources including RSS.
 - Supply watchdog healthy; latest revalidation 40/40; no reel queued over six
   hours.
-- 79 rejected grounded posts permanently deleted; zero grounded posts remain.
+- 79 rejected grounded posts and the complete 203-post pre-fix fleet media batch
+  were permanently deleted, all from verified horse authors. Zero grounded posts
+  and zero pre-fix fleet posts remain.
 
 Phase 3 remains rejected and disabled. Its hand rewrite is unwired and both
 grounded mode switches remain off pending Dan's explicit approval. Seven-day
