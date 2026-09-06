@@ -72,6 +72,7 @@ SERVER_ID=$(security find-generic-password -a smarter-poker -s workers-server-id
 # No GH_PAT, no registry pull. The VM builds HEAD's exact tree and tags it as
 # the compose image name, so `docker compose up` uses the local image.
 if [ "$BUILD_ON_SERVER" = "1" ]; then
+  FULL_SHA=$(git rev-parse HEAD)
   SHA=$(git rev-parse --short=11 HEAD)
   log "Build-on-server: shipping tree $SHA to $SERVER_IP..."
   TARBALL=$(mktemp /tmp/workers-archive-XXXXXX.tar)
@@ -81,16 +82,17 @@ if [ "$BUILD_ON_SERVER" = "1" ]; then
   rm -f "$TARBALL"
   log "Building on VM (this takes ~1-2 min)..."
   ssh -i "$SSH_KEY" "root@$SERVER_IP" \
-    "cd /opt/workers-build && docker build --label org.opencontainers.image.revision=$SHA -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -30 /tmp/workers-build.log; exit 2; }" \
+    "cd /opt/workers-build && docker build --build-arg GIT_SHA=$FULL_SHA --label org.opencontainers.image.revision=$SHA -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -30 /tmp/workers-build.log; exit 2; }" \
     || die "on-server docker build failed (see /tmp/workers-build.log on the VM)" 2
   ssh -i "$SSH_KEY" "root@$SERVER_IP" \
     "cd /opt/workers && sudo -u workers docker compose up -d --no-build && sleep 5 && docker inspect --format 'rev={{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE_NAME | head -1)"
   log "Probing /health..."
   for i in 1 2 3 4 5 6; do
     HEALTH=$(ssh -i "$SSH_KEY" "root@$SERVER_IP" 'curl -fsS -m 3 http://127.0.0.1:8081/health 2>/dev/null || echo ""')
-    if echo "$HEALTH" | grep -q '"status":"ok"'; then
+    if echo "$HEALTH" | grep -q '"status":"ok"' \
+      && echo "$HEALTH" | grep -q "\"version\":\"$FULL_SHA\""; then
       log "health OK"
-      log "✓ Build-on-server deploy complete (rev $SHA)."
+      log "✓ Build-on-server deploy complete (rev $FULL_SHA)."
       exit 0
     fi
     log "[$i/6] /health not ready, sleeping 5s..."
