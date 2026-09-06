@@ -75,6 +75,8 @@ export interface WrittenText {
    * ends up describing nothing.
    */
   briefWasStored?: boolean;
+  /** Which separately-approved grounded mode produced this draft. */
+  groundedKind?: 'hand' | 'session';
 }
 
 const MAX_DRAFTS = 6;
@@ -114,17 +116,17 @@ async function writeGated(
     };
   }
 
-  // Nothing cleared both gates. Publish the most relevant draft anyway and
-  // say so in the result: a silent horse is the failure Phase 1 was about,
-  // and the counters are what tell us the pools need widening.
+  // Nothing cleared both gates. Do not publish filler, below-floor text, or
+  // a repeated sentence. A missed slot is recoverable; low-quality content
+  // in a player's feed is not.
   const fallback = best ?? { text: '', relevance: 0, grounding: [] };
   return {
-    text: fallback.text,
+    text: '',
     relevance: fallback.relevance,
     grounding: fallback.grounding,
     attempts,
     belowFloor: fallback.relevance < RELEVANCE_FLOOR,
-    stale: !sawFresh,
+    stale: !sawFresh && fallback.relevance >= RELEVANCE_FLOOR,
   };
 }
 
@@ -210,10 +212,13 @@ export async function writeStory(
  * twice - and `factsMatch` refuses any draft that states a number the ledger
  * does not carry.
  */
-export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | null> {
+export async function writeGrounded(
+  horse: AuthorHorse,
+  allowed: { hand: boolean; session: boolean } = { hand: true, session: false },
+): Promise<WrittenText | null> {
   const style = styleSheetFor(horse.profile_id);
 
-  const hand = await pickHandStory(horse.profile_id);
+  const hand = allowed.hand ? await pickHandStory(horse.profile_id) : null;
   if (hand) {
     const brief = briefForHand(hand);
     // What the rest of the fleet has just said, in this hand's own category.
@@ -241,11 +246,12 @@ export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | n
         belowFloor: false,
         stale: false,
         frameKey: draft.frameKey,
+        groundedKind: 'hand',
       };
     }
   }
 
-  const session = await pickSessionStory(horse.profile_id);
+  const session = allowed.session ? await pickSessionStory(horse.profile_id) : null;
   if (session) {
     const brief = briefForSession(session);
     const group = session.netBb > 5 ? 'up' : session.netBb < -5 ? 'down' : 'flat';
@@ -265,6 +271,7 @@ export async function writeGrounded(horse: AuthorHorse): Promise<WrittenText | n
         belowFloor: false,
         stale: false,
         frameKey: draft.frameKey,
+        groundedKind: 'session',
       };
     }
   }

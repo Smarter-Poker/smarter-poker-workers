@@ -52,9 +52,15 @@ export async function engineEnabled(): Promise<boolean> {
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle();
-  // A missing row or a failed read means ON: the switch exists to stop the
-  // fleet on purpose, never to stop it by accident.
-  const value = error || !data ? true : (data as { engine_enabled: boolean | null }).engine_enabled !== false;
+  // Fail closed. A kill switch that turns itself ON when its control table
+  // cannot be read is not a kill switch. A missed run is recoverable; an
+  // uncontrolled fleet is not.
+  if (error || !data) {
+    console.warn('[fleet] engine switch unreadable; treating the fleet as OFF');
+    cachedSwitch = { value: false, at: now };
+    return false;
+  }
+  const value = (data as { engine_enabled: boolean | null }).engine_enabled === true;
   cachedSwitch = { value, at: now };
   return value;
 }

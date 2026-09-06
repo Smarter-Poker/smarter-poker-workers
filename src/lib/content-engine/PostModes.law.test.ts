@@ -28,11 +28,20 @@ describe('a way of posting is off until it is approved', () => {
   it('the grounded path asks postModeEnabled before it writes anything', () => {
     const fn = publisher.slice(publisher.indexOf('async function postGrounded'));
     const body = fn.slice(0, fn.indexOf('\n}\n'));
-    const gate = body.indexOf("postModeEnabled('grounded_hand')");
+    const handGate = body.indexOf("postModeEnabled('grounded_hand')");
+    const sessionGate = body.indexOf("postModeEnabled('grounded_session')");
     const insert = body.indexOf('.insert(');
-    expect(gate).toBeGreaterThan(-1);
+    expect(handGate).toBeGreaterThan(-1);
+    expect(sessionGate).toBeGreaterThan(-1);
     // The gate must come BEFORE any write, not after the post is composed.
-    expect(insert === -1 || gate < insert).toBe(true);
+    expect(insert === -1 || Math.max(handGate, sessionGate) < insert).toBe(true);
+  });
+
+  it('approving hand posts cannot silently approve the old session writer', () => {
+    const fn = publisher.slice(publisher.indexOf('async function postGrounded'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toMatch(/writeGrounded\([\s\S]*\{ hand: handEnabled, session: sessionEnabled \}/);
+    expect(body).toMatch(/grounded_type: groundedType/);
   });
 
   it('an unreadable mode table means OFF, not ON', () => {

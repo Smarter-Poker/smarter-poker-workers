@@ -311,70 +311,59 @@ export function titleIsAClause(title: string): boolean {
  */
 const CLAUSE_FRAMES: Record<string, string[]> = {
   poker: [
-    '{topic}. that is a spot worth sitting with',
-    '{topic}. still thinking about that one',
-    '{topic}. the discipline there is the part worth copying',
-    '{topic}. the interesting part is what happens one street earlier',
-    '{topic}. and the sizing is the whole tell',
-    '{topic}. that is the clearest example of it I have seen',
+    'worth a closer look: {topic}',
+    'this one made me stop and think: {topic}',
+    'a poker clip worth discussing: {topic}',
+    'on my study list today: {topic}',
+    'the hand I am looking at today: {topic}',
+    'one for the hand review: {topic}',
+    'I want another look at this one: {topic}',
+    'there is a lot to unpack here: {topic}',
   ],
   sports: [
-    '{topic}. that is the whole clip',
-    '{topic}. still thinking about it',
-    '{topic}. nobody in the building blinked',
-    '{topic}. it looked routine at full speed',
+    'worth seeing: {topic}',
+    'this one caught my attention: {topic}',
+    'the clip on my watch list today: {topic}',
+    'one I wanted to share: {topic}',
+    'I went back for another look at this: {topic}',
+    'there is more here than the first watch shows: {topic}',
+    'this is the moment people will be talking about: {topic}',
+    'take a look at this one: {topic}',
   ],
   general: [
-    '{topic}. worth the two minutes',
-    '{topic}. still thinking about it',
+    'worth a look: {topic}',
+    'this caught my attention: {topic}',
+    'one I wanted to share: {topic}',
+    'take a look at this: {topic}',
   ],
 };
 
 const TOPIC_FRAMES: Record<string, string[]> = {
   sports: [
-    '{topic} is the whole clip',
-    'still thinking about {topic}',
-    '{topic} and nobody in the building blinked',
-    'the part that gets me is {topic}',
-    '{topic} deserves more attention than it is going to get',
-    'watching {topic} again with the sound off',
-    '{topic}, and it looked routine at full speed',
+    'worth seeing: {topic}',
+    'this one caught my attention: {topic}',
+    'the clip on my watch list today: {topic}',
+    'one I wanted to share: {topic}',
+    'I went back for another look at this: {topic}',
+    'there is more here than the first watch shows: {topic}',
+    'this is the moment people will be talking about: {topic}',
+    'take a look at this one: {topic}',
   ],
   poker: [
-    '{topic} is a spot worth sitting with',
-    'still thinking about {topic}',
-    'the discipline in {topic} is the part worth copying',
-    '{topic} is the clearest example of this I have seen',
-    'the interesting part of {topic} is what happens one street earlier',
-    '{topic}, and the sizing is the whole tell',
+    'worth a closer look: {topic}',
+    'this one made me stop and think: {topic}',
+    'a poker clip worth discussing: {topic}',
+    'on my study list today: {topic}',
+    'the hand I am looking at today: {topic}',
+    'one for the hand review: {topic}',
+    'I want another look at this one: {topic}',
+    'there is a lot to unpack here: {topic}',
   ],
   general: [
-    '{topic} is worth the two minutes',
-    'still thinking about {topic}',
-    'the detail in {topic} is what makes it',
-  ],
-};
-
-/** Second-sentence angles, so a long style is not just a longer first line. */
-const FOLLOW_ANGLES: Record<string, string[]> = {
-  poker: [
-    'the version of this that happens at low stakes never gets filmed',
-    'the same spot comes up in a 1/3 game every night',
-    'people will argue about the sizing and miss the read',
-    'I have been on the wrong end of that exact hand',
-    'the discipline part is what separates the winners',
-  ],
-  sports: [
-    'the crowd reaction is half the clip',
-    'that is going to be on every timeline by morning',
-    'the box score will not show any of that',
-    'I would like to see the angle from the other side',
-    'moments like that are why people stay up for these',
-  ],
-  general: [
-    'still thinking about the timing of it',
-    'the details are what make it',
-    'worth the two minutes',
+    'worth a look: {topic}',
+    'this caught my attention: {topic}',
+    'one I wanted to share: {topic}',
+    'take a look at this: {topic}',
   ],
 };
 
@@ -581,26 +570,20 @@ export function composeCaption(
   grounding.push(...chosen.grounding);
 
   // Extra sentences for the longer styles.
-  if (sentences >= 2) {
-    const angles = FOLLOW_ANGLES[b.domain] ?? FOLLOW_ANGLES.general!;
-    lines.push(pickDistinct(angles, lines[0]!, seed, 'angle1'));
-  }
-  if (sentences >= 3) {
-    const extra = takePool(b).filter((t) => !t.includes('{'));
-    if (extra.length) lines.push(pickDistinct(extra, lines.join(' '), seed, 'angle2'));
+  if (sentences >= 2 && b.concepts.length) {
+    const groundedAngles = takePool(b).filter((t) => !t.includes('{'));
+    if (groundedAngles.length) lines.push(pickDistinct(groundedAngles, lines[0]!, seed, 'angle1'));
   }
 
   // The question habit, when the style has one.
-  const wantsQuestion = style.questionRate > 0 && (fleetHash(seed, 'q') % 100) / 100 < style.questionRate;
+  const wantsQuestion = !b.isQuestion && style.closer !== 'tag_question' && style.questionRate > 0
+    && (fleetHash(seed, 'q') % 100) / 100 < style.questionRate;
   if (wantsQuestion) {
-    // Only a named agent can be watched DOING something. A title fragment in
-    // that slot reads as nonsense; see agentOf().
-    const agent = agentOf(b);
-    lines.push(agent ? `anyone else watch ${agent} do this` : 'am I the only one still thinking about this');
+    lines.push(b.domain === 'poker' ? 'what is your read' : 'what stood out to you');
   }
 
   const text = render(lines, style, seed) + (wantsQuestion ? '?' : '');
-  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.\?$/, '?');
+  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
   return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
 }
 
@@ -617,21 +600,11 @@ const PUSHBACK_LEADS = [
   'respectfully, the sizing tells a different story',
   'I think that is closer than you are making it',
 ];
-const CURIOUS_LEADS = [
-  'what did the rest of the action look like',
-  'genuinely curious what happens if that card bricks',
-  'do you think that changes at a different stake',
-];
 /** Grounded versions, used whenever the brief gives us something to name. */
 const CURIOUS_ANCHORED = [
   'what does {anchor} do there if the card bricks',
   'curious how {anchor} plays that at a different stake',
   'did anyone catch what {anchor} did right before this',
-];
-const CURIOUS_CONCEPT = [
-  'what does the {concept} look like a street earlier',
-  'does the {concept} read change if the sizing is smaller',
-  'how often is the {concept} actually the right call there',
 ];
 const PUSH_ANCHORED = [
   'I read {anchor} differently there',
@@ -778,7 +751,7 @@ function composeHandComment(
   const capped = lines.slice(0, 2);
   const asking = roll >= 20 && roll < 45;
   const text = render(capped, style, seed) + (asking ? '?' : '');
-  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.\?$/, '?');
+  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
   // Grounded by construction: it names the hand's own category, board or
   // holding, so it does not go through the clip relevance scorer.
   return { text: cleaned, relevance: 1, grounding };
@@ -798,7 +771,28 @@ export function composeComment(
     const handed = composeHandComment(b, style, seed);
     if (handed) return handed;
   }
-  const anchor = anchorOf(b);
+  // Comment grammar may only treat a person or team as an actor. A keyPhrase
+  // is useful for relevance scoring and captions, but it is usually a title
+  // fragment ("Proxy Sports Betting", "the study", "the three"). Letting
+  // those fragments into actor-shaped frames caused visibly robotic live
+  // comments on 2026-09-06.
+  const anchor = agentOf(b);
+  const specificTakes = takePool(b).filter((line) => {
+    if (line.includes('{anchor}') && !anchor) return false;
+    if (line.includes('{amount}') && !b.amounts.length) return false;
+    return b.concepts.some((concept) => {
+      const primary = b.domain === 'poker' ? POKER_TAKES : SPORT_TAKES;
+      const secondary = b.domain === 'poker' ? SPORT_TAKES : POKER_TAKES;
+      return Boolean(primary[concept]?.includes(line) || secondary[concept]?.includes(line));
+    });
+  });
+
+  // No named subject and no domain sentence we can support means no comment.
+  // The caller already treats an empty draft as a clean skip. Repeating or
+  // truncating the article title is not a useful fallback.
+  if (!anchor && !specificTakes.length) {
+    return { text: '', relevance: 0, grounding: [] };
+  }
   const grounding: string[] = [];
   const lines: string[] = [];
   const { sentences } = targetWords(style);
@@ -816,55 +810,56 @@ export function composeComment(
           ? 'curious'
           : 'take';
 
+  let asking = false;
   if (stance === 'take') {
-    const opening = chooseOpening(b, seed, anchor);
-    lines.push(opening.text);
-    grounding.push(...opening.grounding);
-  } else if (stance === 'agree') {
-    lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
-    if (anchor) {
+    if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'commentTake'), b, anchor));
+      grounding.push(`concept:${b.concepts[0]}`);
+    } else if (anchor) {
       lines.push(`${anchor} made that look simple`);
       grounding.push(`anchor:${anchor}`);
-    } else if (b.concepts.length) {
-      lines.push(`the ${b.concepts[0]!.replace(/_/g, ' ')} is the whole story there`);
+    }
+  } else if (stance === 'agree') {
+    if (anchor) {
+      lines.push(`${anchor} made that look simple`);
+      if (sentences >= 2) lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
+      grounding.push(`anchor:${anchor}`);
+    } else if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'agreeTake'), b, anchor));
+      if (sentences >= 2) lines.push(pickFrom(AGREE_LEADS, seed, 'agree'));
       grounding.push(`concept:${b.concepts[0]}`);
     }
   } else if (stance === 'push') {
-    if (b.concepts.length) {
-      lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
-      lines.push(`the ${b.concepts[0]!.replace(/_/g, ' ')} part is doing more work than you are giving it`);
-      grounding.push(`concept:${b.concepts[0]}`);
-    } else if (anchor) {
+    if (anchor) {
       lines.push(pickFrom(PUSH_ANCHORED, seed, 'pushA').replace(/\{anchor\}/g, anchor));
       grounding.push(`anchor:${anchor}`);
-    } else {
-      lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
+    } else if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'pushTake'), b, anchor));
+      if (sentences >= 2) lines.push(pickFrom(PUSHBACK_LEADS, seed, 'push'));
+      grounding.push(`concept:${b.concepts[0]}`);
     }
   } else {
-    // Prefer a question that names the subject; the generic pool is the last
-    // resort, because "what did the rest of the action look like" under a
-    // basketball clip is the old category-guessing bug in a new costume.
+    // A question needs an actual grammatical subject. Concepts use a factual
+    // domain take instead of pretending "study", "pot" or "three" is a
+    // person who can make a decision.
     if (anchor) {
       lines.push(pickFrom(CURIOUS_ANCHORED, seed, 'curiousA').replace(/\{anchor\}/g, anchor));
       grounding.push(`anchor:${anchor}`);
-    } else if (b.concepts.length) {
-      lines.push(pickFrom(CURIOUS_CONCEPT, seed, 'curiousC').replace(/\{concept\}/g, b.concepts[0]!.replace(/_/g, ' ')));
+      asking = true;
+    } else if (specificTakes.length) {
+      lines.push(fill(pickFrom(specificTakes, seed, 'curiousTake'), b, anchor));
       grounding.push(`concept:${b.concepts[0]}`);
-    } else {
-      lines.push(pickFrom(CURIOUS_LEADS, seed, 'curious'));
     }
   }
 
-  if (!lines.length) {
-    lines.push(pickFrom(TONE_TAKES[b.tone] ?? TONE_TAKES.neutral!, seed, 'fallback'));
-  }
+  if (!lines.length) return { text: '', relevance: 0, grounding: [] };
   if (b.concepts.length && !grounding.length) grounding.push(`concept:${b.concepts[0]}`);
 
   // Comments run shorter than captions: at most two sentences whatever the
   // style says, because a paragraph under somebody's clip reads like a bot.
   const capped = lines.slice(0, Math.min(2, Math.max(1, sentences)));
-  const text = render(capped, style, seed) + (stance === 'curious' ? '?' : '');
-  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.\?$/, '?');
+  const text = render(capped, style, seed) + (asking ? '?' : '');
+  const cleaned = text.replace(/\?+\.?$/, '?').replace(/\.+\?$/, '?');
   return { text: cleaned, relevance: relevanceOf(cleaned, b), grounding };
 }
 

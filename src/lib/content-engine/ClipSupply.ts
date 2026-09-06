@@ -108,18 +108,18 @@ export function sliceForHorse<T>(all: readonly T[], profileId: string, n = SOURC
  * stop posting basketball are both people; a thousand horses each posting
  * exactly 25% sports are a script.
  *
- * Deterministic per horse, weighted so the FLEET still averages near a
- * quarter: most horses sit between 10% and 35%, a few are almost pure poker,
- * a few are the ones who mostly watch the game.
+ * Deterministic per horse, weighted so the poker platform stays poker-first:
+ * the fleet averages about 12% sports, most horses sit between 2% and 14%,
+ * and a small sports-fan tail runs higher without ever becoming pure sport.
  */
 export function sportsShareFor(profileId: string): number {
   const r = fleetHash(profileId, 'sports-share') % 1000;
-  if (r < 120) return 0.02;
-  if (r < 300) return 0.12;
-  if (r < 620) return 0.22;
-  if (r < 850) return 0.33;
-  if (r < 960) return 0.48;
-  return 0.65;
+  if (r < 200) return 0.02;
+  if (r < 550) return 0.08;
+  if (r < 800) return 0.14;
+  if (r < 930) return 0.22;
+  if (r < 990) return 0.35;
+  return 0.50;
 }
 
 /** Active sources for a domain. */

@@ -37,7 +37,6 @@ import {
   recordValidity,
   sliceForHorse,
   sportsShareFor,
-  type SupplyClip,
 } from './ClipSupply.js';
 import {
   assetKeyFor,
@@ -463,6 +462,7 @@ async function postVideoClip(
     },
     fleet,
   );
+  if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
   const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
 
   const embedUrl = convertToEmbedUrl(clip.source_url);
@@ -551,6 +551,7 @@ async function postNewsLink(
       { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
       fleet,
     );
+    if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
     const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
     const content = `${picked.text}\n\n${article.link}`;
 
@@ -603,16 +604,19 @@ async function postNewsLink(
  * of that: it is the most specific thing the fleet can publish.
  */
 async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
-  // Dan approves a way of posting before it reaches players (CLAUDE.md 10.11).
-  // grounded_hand is OFF: it shipped reading as raw card notation -
-  // "Qh8c7d6sAd5c on 5s 4s Td 3c 6d. won 184bb" - and 59 of those were hidden
-  // from the feed on 2026-09-06. It stays off until he has seen the rewrite.
-  if (!(await postModeEnabled('grounded_hand'))) {
+  // Hand and session posts are separate ways of posting and therefore need
+  // separate approval. The old implementation checked grounded_hand once,
+  // then silently fell through to the unrevised session writer when no hand
+  // existed. Approving hands must never approve sessions by accident.
+  const handEnabled = await postModeEnabled('grounded_hand');
+  const sessionEnabled = await postModeEnabled('grounded_session');
+  if (!handEnabled && !sessionEnabled) {
     return { horse: horse.name, profile_id: horse.profile_id, success: false, error: 'grounded posts await approval' };
   }
   const base = { horse: horse.name, profile_id: horse.profile_id };
-  const written = await writeGrounded(horse as AuthorHorse);
-  if (!written || !written.text) return { ...base, success: false, error: 'No hand worth telling' };
+  const written = await writeGrounded(horse as AuthorHorse, { hand: handEnabled, session: sessionEnabled });
+  if (!written || !written.text) return { ...base, success: false, error: 'No approved grounded story worth telling' };
+  const groundedType = written.groundedKind ?? 'hand';
 
   const { data: post, error } = await getSupabase()
     .from('social_posts')
@@ -621,7 +625,13 @@ async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
       content: written.text,
       content_type: 'text',
       visibility: 'public',
-      metadata: { clip_type: 'poker', scheduler: 'fleet', grounded: true, grounding: written.grounding },
+      metadata: {
+        clip_type: 'poker',
+        scheduler: 'fleet',
+        grounded: true,
+        grounded_type: groundedType,
+        grounding: written.grounding,
+      },
     })
     .select('id')
     .maybeSingle();
@@ -638,7 +648,7 @@ async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
     ...base,
     success: true,
     postId: postId ?? undefined,
-    type: 'grounded_hand',
+    type: `grounded_${groundedType}`,
     caption: written.text.slice(0, 60),
     relevance: written.relevance,
     grounding: written.grounding,
@@ -674,12 +684,12 @@ export async function publishForHorse(
       .select('metadata')
       .eq('author_id', horse.profile_id)
       .order('created_at', { ascending: false })
-      .limit(3);
+      .limit(6);
     const types = ((lastPosts ?? []) as { metadata: Record<string, unknown> | null }[])
       .map((p) => (p.metadata?.clip_type ?? p.metadata?.news_type) as string | undefined)
       .filter((t): t is 'poker' | 'sports' => t === 'poker' || t === 'sports');
-    if (types.length >= 3 && types.every((t) => t === 'poker')) isPoker = false;
-    else if (types.length >= 3 && types.every((t) => t === 'sports')) isPoker = true;
+    if (types.length >= 6 && types.every((t) => t === 'poker')) isPoker = false;
+    else if (types.length >= 3 && types.slice(0, 3).every((t) => t === 'sports')) isPoker = true;
   } catch {
     /* streak check is best effort */
   }
