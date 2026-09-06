@@ -86,14 +86,15 @@ describe('quality controls fail closed', () => {
     expect(fn).not.toMatch(/error \|\| !data \? true/);
   });
 
-  it('the master switch stops both social orchestration routes before any mutation', () => {
+  it('the master switch stops every horse social route before any mutation', () => {
     const routes = [
-      ['horses-social-all.ts', 'likePosts'],
-      ['horses-social-friends.ts', 'sendFriendRequests'],
+      ['horses-social-all.ts', 'export async function horsesSocialAll', 'likePosts'],
+      ['horses-social-friends.ts', 'export async function horsesSocialFriends', 'sendFriendRequests'],
+      ['video-library-reels.ts', 'export async function videoLibraryReels', 'getSupabase'],
     ] as const;
-    for (const [name, firstMutation] of routes) {
+    for (const [name, handlerMarker, firstMutation] of routes) {
       const route = routeSource(name);
-      const handler = route.slice(route.indexOf('export async function'));
+      const handler = route.slice(route.indexOf(handlerMarker));
       const gate = handler.indexOf('if (!(await engineEnabled()))');
       expect(gate, `${name} is missing the master gate`).toBeGreaterThan(-1);
       expect(
@@ -101,6 +102,12 @@ describe('quality controls fail closed', () => {
         `${name} mutates before the master gate`,
       ).toBeGreaterThan(gate);
     }
+  });
+
+  it('official PokerNews reels cannot fall back to an arbitrary horse author', () => {
+    const route = routeSource('pokernews-videos.ts');
+    expect(route).not.toMatch(/data: fallback/);
+    expect(route).toMatch(/refusing arbitrary attribution/);
   });
 
   it('same-post semantic duplicates are checked and recorded', () => {

@@ -7,6 +7,11 @@ let reelRows: Array<{ id: string; video_url: string | null; caption: string | nu
 let videoRows: Array<{ youtube_video_id: string | null; title: string | null }> = [];
 const updates: Array<{ id: string; caption: string }> = [];
 const inserts: Array<Record<string, unknown>> = [];
+let engineOn = true;
+
+vi.mock('../lib/content-engine/Fleet.js', () => ({
+  engineEnabled: () => Promise.resolve(engineOn),
+}));
 
 vi.mock('../lib/supabase.js', () => ({
   getSupabase: () => ({
@@ -57,6 +62,7 @@ const makeCtx = (query: Record<string, string> = {}) => {
 };
 
 const reset = () => {
+  engineOn = true;
   reelRows = [];
   videoRows = [];
   updates.length = 0;
@@ -84,6 +90,20 @@ describe('extractYouTubeId', () => {
 });
 
 describe('videoLibraryReels', () => {
+  it('does nothing when the fleet master switch is off', async () => {
+    reset();
+    engineOn = false;
+    reelRows = [{ id: 'r1', video_url: 'https://youtube.com/watch?v=AAAAAAAAAAA', caption: 'old' }];
+    videoRows = [{ youtube_video_id: 'AAAAAAAAAAA', title: 'new title' }];
+
+    const ctx = makeCtx();
+    await videoLibraryReels(ctx);
+
+    expect(updates).toEqual([]);
+    expect(inserts).toEqual([]);
+    expect(ctx.captured.body).toMatchObject({ success: true, skipped: 'engine_disabled' });
+  });
+
   it('updates a caption when the title has drifted', async () => {
     reset();
     reelRows = [{ id: 'r1', video_url: 'https://youtube.com/watch?v=AAAAAAAAAAA', caption: 'old' }];
