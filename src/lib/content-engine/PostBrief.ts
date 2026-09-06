@@ -522,7 +522,7 @@ export interface BriefSource {
  * before the post exists.
  */
 export function briefForAsset(input: {
-  kind: 'video' | 'link';
+  kind: 'video' | 'link' | 'text';
   title?: string | null;
   source?: string | null;
   domainHint?: BriefDomain;
