@@ -25,11 +25,17 @@ git status --porcelain # must be empty of tracked files
 git log --oneline origin/main..HEAD # must be empty
 git branch -r --contains HEAD # must name your branch
 gh pr list --head <your-branch> # must show a PR, or explain why not
+
 # `gh` is NOT installed on the Mac. There, ask the API directly:
+
 # curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-#   "https://api.github.com/repos/Smarter-Poker/<repo>/pulls?head=Smarter-Poker:<branch>&state=all"
+
+# "https://api.github.com/repos/Smarter-Poker/<repo>/pulls?head=Smarter-Poker:<branch>&state=all"
+
 # MERGED IS NOT LANDED. The tick is not the evidence; the files are:
+
 # git fetch origin main && git cat-file -e origin/main:<path> && echo on-main
+
 If any of those is wrong, you are not finished. Fix it before continuing.
 
 PART B — DID YOU FOLLOW THE RULES?
@@ -489,35 +495,38 @@ Check first:
 git rev-list --left-right --count origin/main...HEAD   # behind <tab> ahead
 ```
 
-### Reading CI status: `gh pr checks` 403s, and that is not a blocker
-
-The local fine-grained PAT has no **Checks: Read**, so these fail:
-
-```
-gh pr checks <n>                                   # GraphQL statusCheckRollup
-gh api repos/OWNER/REPO/commits/<sha>/check-runs   # Checks API
-```
-
-Both answer `Resource not accessible by personal access token`. That limit is
-real. It is **not** a reason to stop, because every check in this estate is a
-GitHub Actions job, and the Actions API is fully readable with the same token:
+### Reading CI status: one command, and two APIs that will lie to you
 
 ```bash
-# 1. Can it merge? This is usually the only question you have.
-gh pr view <n> --repo Smarter-Poker/<repo> --json state,mergeStateStatus
-#    BLOCKED = a required check has not passed YET   CLEAN = it will merge
-#    DIRTY   = a real conflict, resolve hunk by hunk  MERGED = done
-
-# 2. Which workflows ran on the branch, and how did they end?
-gh run list --repo Smarter-Poker/<repo> --branch <branch> --limit 5   --json name,status,conclusion
-
-# 3. Which JOB failed, and at which step?
-gh api repos/Smarter-Poker/<repo>/actions/runs/<run-id>/jobs   --jq '.jobs[] | "\(.name) \(.status)/\(.conclusion)"'
-gh run view <run-id> --repo Smarter-Poker/<repo> --log-failed
+export GITHUB_TOKEN=$(grep -m1 '^GITHUB_TOKEN=' ~/Documents/club-arena/.env | cut -d= -f2-)
+node scripts/ci/pr-status.mjs            # the PR for your current branch
+node scripts/ci/pr-status.mjs 3163       # by number      --all for every open PR
 ```
 
-Every guard in this repo — `report-stuck-prs.sh`, `publish-watchdog.sh`,
-`estate-integrity.sh` — reads CI exactly this way, for exactly this reason.
+It names the failing **job** and **step**, says whether that check actually
+blocks the merge, and exits `0` green / `1` red / `2` running / `3` unknown /
+`4` conflicting. **Branch on the exit code; do not parse the prose.**
+
+**Do not reach past it for `gh` or for curl.** Three routes exist and two of
+them answer confidently and wrongly:
+
+| route                             | what it does                                                                                                                                                                                                          |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gh` anything                     | **`gh` is not installed on this Mac.** `command not found`                                                                                                                                                            |
+| `GET /commits/:sha/check-runs`    | **403** — the estate PAT has no `checks:read`. Read `.check_runs` off that body and you get `undefined`, which looks like "no checks failed"                                                                          |
+| `GET /commits/:sha/status`        | **200 `{"state":"pending","total_count":0}` — for green, red, and never-built commits alike.** Legacy commit statuses; every check here is an Actions check-run, so it has nothing to report and calls that `pending` |
+| `GET /actions/runs?head_sha=:sha` | the truth, readable with the same token. What `pr-status.mjs` uses                                                                                                                                                    |
+
+That third row is not hypothetical. On 2026-09-06 an agent reported "checks
+pending" on a branch that had been **red for three pushes** — it had walked
+exactly that ladder: four `command not found`, then the 403, then a well-formed
+200 saying `pending`. Every step reasonable, the conclusion a false all-clear.
+PR #3163's `CI - Build & Type Safety` had been `completed failure` for fifteen
+hours while `/status` called it pending.
+
+**A fallback that cannot answer must say so.** If you write your own probe,
+"I could not tell" is a distinct outcome and must never render as pending,
+green, or silence.
 
 Inside a workflow the question does not arise: the App (id 4680372) has Checks
 permission, so anything running in Actions can read them. Only the local PAT
@@ -565,12 +574,23 @@ Worth knowing, because it has caused a false alarm:
   its own origin at `ca-static.smarter.poker`. It has not published through the
   World Hub repo since 2026-09-02.
 
-If you want to know the true state of anything, ask the API:
+If you want to know the true state of anything, ask the API. On the Mac take
+the second column — `gh` is not installed there (8b), and a bare `gh` here is
+what sends an agent hunting for a fallback that lies:
 
 ```bash
-gh pr list --state all --head <branch>      # has this branch ever been proposed
-gh run list --branch <branch> --limit 5      # what actually ran
-gh api repos/Smarter-Poker/<repo>/compare/main...<branch> --jq '.ahead_by,.status'
+# what actually ran, and why it is red
+gh run list --branch <branch> --limit 5     # or: node scripts/ci/pr-status.mjs --branch <branch>
+
+# has this branch ever been proposed
+gh pr list --state all --head <branch>      # or:
+curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "https://api.github.com/repos/Smarter-Poker/<repo>/pulls?state=all&head=Smarter-Poker:<branch>"
+
+# how far ahead/behind is it
+gh api repos/Smarter-Poker/<repo>/compare/main...<branch> --jq '.ahead_by,.status'   # or:
+curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "https://api.github.com/repos/Smarter-Poker/<repo>/compare/main...<branch>"
 ```
 
 ---
