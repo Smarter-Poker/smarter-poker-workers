@@ -173,6 +173,14 @@ are now dropped rather than cut, function-word endings fail closed, and a
 supported poker/sports concept gets a domain take before any headline wrapper.
 Those exact production titles are regression laws.
 
+The 16:30 UTC engagement run then validated the new skip behavior (107 skipped,
+10 published, zero below-floor) and exposed two narrower defects in manual
+review: `debut` was interpreted as the sports concept `rookie` under a poker
+article, and different style openers hid the same core sentence from the text
+ledger. Domain takes no longer cross between poker and sports; `debut` is not
+a rookie synonym; and the unstyled semantic sentence is now ledgered per target
+post so two horses cannot make the same point there in different formatting.
+
 ### Phase 3: grounded content (BUILT, REJECTED, DISABLED)
 
 - `HandStoryService.ts`: pick the week's hand from `horse_hand_reviews`

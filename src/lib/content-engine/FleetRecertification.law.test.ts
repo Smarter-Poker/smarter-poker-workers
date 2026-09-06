@@ -81,6 +81,14 @@ describe('quality controls fail closed', () => {
     expect(fn).not.toMatch(/error \|\| !data \? true/);
   });
 
+  it('same-post semantic duplicates are checked and recorded', () => {
+    const writer = source('VoiceWriter.ts');
+    const social = source('HorseSocialEngine.ts');
+    expect(writer).toMatch(/phraseUsedOnPost\(draft\.semanticKey, postId\)/);
+    expect(writer).toMatch(/composeComment\(brief, style, variant\)[\s\S]*post\.postId/);
+    expect(social).toMatch(/recordPhrase\(written\.semanticKey, horse\.profile_id, post\.id\)/);
+  });
+
   it('below-floor or repeated drafts are never inserted as empty-quality posts', () => {
     const writer = source('VoiceWriter.ts');
     const fallback = writer.slice(writer.indexOf('// Nothing cleared both gates'));

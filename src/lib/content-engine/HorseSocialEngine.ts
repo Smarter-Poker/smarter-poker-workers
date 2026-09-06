@@ -569,6 +569,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
             // nothing recorded them, so one line could reappear across the feed
             // all day and no counter would show it.
             await recordPhrase(normalizePhrase(comment), horse.profile_id, post.id);
+            if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, post.id);
             commented++;
             
             // Sync denormalized comment_count on social_posts (fire-and-forget)
