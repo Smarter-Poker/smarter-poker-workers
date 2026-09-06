@@ -536,3 +536,54 @@ describe('a horse never names a human player', () => {
     }
   });
 });
+
+describe('live comment failures cannot recur', () => {
+  const ids = fleetIds(120);
+
+  it('never treats a concept as a person making a decision', () => {
+    const briefs = [
+      briefForAsset({ kind: 'video', title: 'A three from the logo', source: 'NBA' }),
+      briefForAsset({ kind: 'link', title: 'Why study changes your poker results', source: 'PokerNews' }),
+      briefForAsset({ kind: 'video', title: 'The biggest pot of the night', source: 'PokerGO' }),
+    ];
+    for (const brief of briefs) {
+      for (const id of ids) {
+        const t = composeComment(brief, styleSheetFor(id)).text;
+        expect(t).not.toMatch(/how often is the (study|pot|three) actually/i);
+        expect(t).not.toMatch(/the (study|pot|three) is the whole story/i);
+        expect(t).not.toMatch(/the (study|pot|three) part is doing more work/i);
+      }
+    }
+  });
+
+  it('skips unsupported headlines instead of repeating or truncating them', () => {
+    const briefs = [
+      briefForAsset({
+        kind: 'link',
+        title: 'FanDuel Reports Bill Simmons Proxy Sports Betting To Massachusetts',
+        source: 'Sports Business Journal',
+      }),
+      briefForAsset({
+        kind: 'link',
+        title: 'College Football Wide Receiver Sues NCAA Over $12 Sports',
+        source: 'Legal Sports Report',
+      }),
+    ];
+    for (const brief of briefs) {
+      for (const id of ids) {
+        const t = composeComment(brief, styleSheetFor(id)).text;
+        expect(t).toBe('');
+        expect(t).not.toMatch(/one for the hand review|made me stop and think/i);
+      }
+    }
+  });
+
+  it('capitalizes every sentence start unless lowercase is the chosen style', () => {
+    for (const id of ids) {
+      const style = styleSheetFor(id);
+      if (style.casing === 'lower') continue;
+      const t = render(['exactly this', 'the second sentence is readable'], style, id);
+      expect(t).not.toMatch(/[.!?]\s+[a-z]/);
+    }
+  });
+});
