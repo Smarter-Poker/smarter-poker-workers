@@ -25,7 +25,7 @@
  * none. When a key exists, `ModelWriter` slots in at the marked point and
  * everything here stays as its fallback.
  */
-import { briefForAsset, briefForPost, summarise, type PostBrief, type BriefSource } from './PostBrief.js';
+import { briefForAsset, briefForPost, summarise, isUninformativeTitle, type PostBrief, type BriefSource } from './PostBrief.js';
 import { styleSheetFor, styleId, describeStyle, type StyleSheet } from './StyleSheet.js';
 import {
   composeCaption,
@@ -195,6 +195,14 @@ export async function loadBrief(postId: string | undefined): Promise<PostBrief |
       .maybeSingle();
     if (error || !data) return null;
     const row = data as Record<string, unknown>;
+    const storedTitle = (row.title as string) ?? '';
+    const storedSource = (row.source as string) ?? undefined;
+    // Rows written before a title rule tightened still carry what that rule
+    // now rejects: post_briefs from 2026-09-05 hold "Bleacher Report NBA NBA
+    // Clip" as a topic and "Keyboard" as a person. A cache must never make
+    // the engine dumber than deriving fresh would, so the same test is
+    // applied on the way out.
+    const junk = isUninformativeTitle(storedTitle, storedSource);
     return {
       postId,
       kind: (row.kind as PostBrief['kind']) ?? 'text',
@@ -202,15 +210,17 @@ export async function loadBrief(postId: string | undefined): Promise<PostBrief |
       sport: (row.sport as PostBrief['sport']) ?? undefined,
       title: (row.title as string) ?? '',
       source: (row.source as string) ?? undefined,
-      people: (row.people as string[]) ?? [],
+      people: junk ? [] : ((row.people as string[]) ?? []),
       teams: (row.teams as string[]) ?? [],
       concepts: (row.concepts as string[]) ?? [],
       amounts: (row.amounts as string[]) ?? [],
-      topic: (row.topic as string) ?? undefined,
+      topic: junk ? undefined : ((row.topic as string) ?? undefined),
       tone: (row.tone as PostBrief['tone']) ?? 'neutral',
       isQuestion: Boolean(row.is_question),
-      confidence: Number(row.confidence ?? 0),
-      builtFrom: [...(((row.built_from as string[]) ?? [])), 'post_briefs'],
+      confidence: junk ? Math.min(Number(row.confidence ?? 0), 0.35) : Number(row.confidence ?? 0),
+      // De-duplicated: this row is read and written back on every comment,
+      // so a plain append grows the array in the database forever.
+      builtFrom: [...new Set([...(((row.built_from as string[]) ?? [])), 'post_briefs'])],
     };
   } catch (e) {
     console.warn('[voice] brief read failed:', e instanceof Error ? e.message : e);
@@ -282,7 +292,7 @@ export async function recordBrief(postId: string, brief: PostBrief): Promise<voi
         is_question: brief.isQuestion,
         confidence: brief.confidence,
         summary: summarise(brief),
-        built_from: brief.builtFrom,
+        built_from: [...new Set(brief.builtFrom)],
       },
       { onConflict: 'post_id' },
     );

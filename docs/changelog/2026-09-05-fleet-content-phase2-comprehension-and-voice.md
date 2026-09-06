@@ -91,6 +91,30 @@ The scraper storing the help menu as a title is a real defect and it is
 Phase 5's to fix at source; the brief's job is to be robust to it, which it
 now is.
 
+## Verification pass before phase 3 (Dan: "verify everything is 100% built, wired, tested, pushed")
+
+Reading production the hour after the phase shipped found five defects that
+the test suite could not have caught, because every one of them was about
+what the engine was fed rather than what it computed.
+
+| Found in production | Fix |
+| --- | --- |
+| `horses-stories` was the last route still on the old pools: video captions from the category pools, text stories from 15 fixed sentences, 48 fires a day | Wired to VoiceWriter; `writeStory()` seeds the subject and composes in the horse's own style. With that, `COMMENT_TEMPLATES`, `getRandomComment`, `PERSONALITY_MODIFIERS` and `applyWritingStyle` had no callers left and were removed rather than left looking live |
+| Comments quoted the caption they were under: "Still thinking about Not many people on earth can do what he". A horse's video post has no `link_title`, so `briefForPost` fell through to the post's own text, which is the author's commentary, not the subject | `loadBrief()` reads the brief written at publish time, which is what `post_briefs` is for; the fallback refuses to guess from content |
+| Replies named junk lifted from prose: "with hard i think it holds up" | A reply may name only a person or a team |
+| `@sophie andersson 2 ...`: the legacy 15% mention picked a uniformly random horse from the whole fleet and used its display name | Routed through the friend graph, addressed by alias |
+| `post_briefs` rows written before the placeholder rules still held "Bleacher Report NBA NBA Clip" as a topic; `loadBrief` served them faithfully, so the cache made the engine dumber than deriving fresh | The same title test runs on read; the 13 stored junk rows were cleared in place |
+
+Two wiring gaps closed alongside: `horses-social-all` was discarding the
+Phase 2 counters the engine had returned since the phase shipped, and
+`built_from` grew by one entry every time a brief was re-read.
+
+A-E, against `origin/main`: worktrees clean and nothing unpushed; every
+commit authored `Smarter-Poker`; no TODO, stub or empty catch in any Phase 2
+file and every export has a caller; `tsc` clean, eslint 0 errors, **195
+tests green**, build ok; four Phase 2 tables live with real writers,
+`fn_horses_not_social_ready()` = 0, kill switch armed.
+
 ## Still open
 
 - **PR #85 is open and unmerged.** It carries the three fixes above. CI never
@@ -101,6 +125,8 @@ now is.
   is merged and live; only the follow-up fixes wait.
 - Half the sports library still has no usable title until the self-repair has
   worked through it, one row per publish.
-- Tagging fired 0 times in the first hour: the tag rate is per-horse and the
-  first due horses drew 0. Expected to appear over a day.
+- Tagging fired for the first time at 00:10 (1 post). The rate is per-horse,
+  so it appears gradually.
+- Style sheets sync 60 horses per fire, so the fleet converges over about a
+  day rather than at once. 180 of 1,000 carried theirs at the time of writing.
 - The model layer is absent by choice, not by omission.

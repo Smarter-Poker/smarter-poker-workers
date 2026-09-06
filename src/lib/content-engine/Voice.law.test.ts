@@ -428,6 +428,34 @@ describe('a reply only ever names a real subject', () => {
   });
 });
 
+describe('a mention is a friend, addressed by alias', () => {
+  // Production, 2026-09-06 00:52: "@sophie andersson 2 And again, watching
+  // nGL, ..." - the legacy 15% mention picked a uniformly random horse from
+  // the whole fleet and addressed it by profiles.username, a display name
+  // with spaces. Dan: horses tag horses they are FRIENDS with, and not
+  // everyone is friends with everyone.
+  const fleet = fleetCandidates(400);
+
+  it('only ever proposes a horse this one is actually friends with', () => {
+    let checked = 0;
+    for (const me of fleet.slice(0, 120)) {
+      const cand = tagCandidateFor(me, fleet, { domain: 'sports', concepts: [] }, `seed:${me.profile_id}`);
+      if (!cand) continue;
+      checked++;
+      expect(areFriends(me, cand.friend)).toBe(true);
+      expect(cand.friend.profile_id).not.toBe(me.profile_id);
+    }
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  it('an alias is a handle: no spaces, usable after an @', () => {
+    for (const me of fleet.slice(0, 60)) {
+      const cand = tagCandidateFor(me, fleet, { domain: 'poker', concepts: ['cash_game'] }, 'seed');
+      if (cand?.friend.alias) expect(cand.friend.alias).not.toMatch(/\s/);
+    }
+  });
+});
+
 describe('the friend graph is sparse, symmetric and clustered', () => {
   const fleet = fleetCandidates();
 
