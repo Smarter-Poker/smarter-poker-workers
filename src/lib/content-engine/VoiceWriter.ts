@@ -150,6 +150,31 @@ export async function writeCaption(
   return out;
 }
 
+/**
+ * A story: the horse's own short thought, seeded by a topic.
+ *
+ * Stories were the last route on the old engine (measured 2026-09-06): video
+ * stories drew from the caption pools and text stories were 15 fixed
+ * sentences, 48 fires a day. The seed still supplies the subject, but the
+ * sentence is composed and styled like everything else, so the 974 style
+ * sheets and the phrase ledger apply here too.
+ */
+export async function writeStory(
+  horse: AuthorHorse,
+  seedTopic: string,
+  domainHint: 'poker' | 'sports' = 'poker',
+): Promise<WrittenText> {
+  const brief = briefForAsset({ kind: 'text', title: seedTopic, source: null, domainHint });
+  const style = styleSheetFor(horse.profile_id);
+  const core = await writeGated(
+    (variant) => composeCaption(brief, style, variant),
+    brief,
+    style,
+    horse.profile_id,
+  );
+  return { ...core, brief, style };
+}
+
 /** A comment on somebody else's post, written after reading it. */
 export async function writeComment(
   horse: AuthorHorse,

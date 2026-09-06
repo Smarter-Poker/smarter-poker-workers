@@ -6,6 +6,11 @@
  * Horses post stories TikTok/Instagram-style. 70% video clip stories
  * from ClipLibrary, 30% text-only stories with topical poker thoughts.
  *
+ * Phase 2 (2026-09-06): captions and text stories are written by VoiceWriter
+ * from a brief, in the horse's own style, and checked against the phrase
+ * ledger. This was the last route still drawing from the old category-keyed
+ * pools and the 15 fixed TEXT_STORY_TOPICS sentences, at 48 fires a day.
+ *
  * Per-horse scheduling (2026-09-05, whole fleet):
  *   isOnlineNow (awake window in the horse's own timezone, on an online day)
  *   getHorseActivityRate('post') gates final selection
@@ -18,29 +23,12 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
-import { generateComment, generatePostCaption } from '../lib/content-engine/HumanVoiceEngine.js';
+import { writeCaption, writeStory } from '../lib/content-engine/VoiceWriter.js';
 import { getHorseActivityRate } from '../lib/content-engine/HorseScheduler.js';
 import { isOnlineNow } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
 import { getRandomClip } from '../lib/content-engine/ClipLibrary.js';
 
-// Map ClipLibrary category values → HumanVoiceEngine POST_CAPTIONS pool keys
-// ClipLibrary uses snake_case categories (massive_pot, bluff, bad_beat, etc.)
-// HumanVoiceEngine uses the same keys — direct passthrough is safe for poker clips.
-// Unknown categories fall back to 'massive_pot' (all ClipLibrary clips are poker content).
-const CLIP_CATEGORY_TO_POOL: Record<string, string> = {
-  massive_pot: 'massive_pot',
-  bluff: 'bluff',
-  bad_beat: 'bad_beat',
-  soul_read: 'soul_read',
-  table_drama: 'table_drama',
-  celebrity: 'celebrity',
-  funny: 'funny',
-  educational: 'educational',
-  vlog: 'vlog',
-  tournament: 'tournament',
-  high_stakes: 'high_stakes',
-};
 
 const CONFIG = {
   HORSES_PER_TRIGGER: 2,
@@ -112,12 +100,20 @@ async function postVideoStory(horse: Horse): Promise<{ type: string; story_id?: 
     }
     if (!validClip) return null;
 
-    // BUG-07/08 FIX 2026-04-28: getRandomCaption() (ClipLibrary) used the old toxic
-    // CAPTION_TEMPLATES pool ("This pot is INSANE", "Stack going in the middle").
-    // Now uses HumanVoiceEngine.generatePostCaption() for the same quality guarantees
-    // as horse post captions: dedup, archetype voice, proper capitalization/punctuation.
-    const poolKey = CLIP_CATEGORY_TO_POOL[validClip.category] ?? 'massive_pot';
-    const caption = generatePostCaption(poolKey, horse.profile_id, validClip.title || '');
+    // Phase 2 (2026-09-06): the story caption is written from a brief of THIS
+    // clip in this horse's own style, like every other surface. It used to
+    // draw from the same category-keyed pools the feed used, which is how one
+    // sentence reached 26 horses in a month.
+    const written = await writeCaption(horse as never, {
+      kind: 'video',
+      title: validClip.title || '',
+      source: validClip.source ?? null,
+      domainHint: 'poker',
+    });
+    const caption = written.text;
+    if (!caption || caption.trim().length < 3) return null;
+
+
 
     const thumbnailUrl = `https://img.youtube.com/vi/${validClip.video_id}/hqdefault.jpg`;
 
@@ -143,18 +139,16 @@ async function postVideoStory(horse: Horse): Promise<{ type: string; story_id?: 
 
 async function postTextStory(horse: Horse): Promise<{ type: string; story_id?: unknown } | null> {
   try {
-    const topic = TEXT_STORY_TOPICS[Math.floor(Math.random() * TEXT_STORY_TOPICS.length)] ?? '';
+    // Phase 2 (2026-09-06): the seed still supplies the subject, but the
+    // sentence is composed and styled per horse and checked against the
+    // phrase ledger, so 15 seeds stop being 15 sentences across the fleet.
+    // Stories were the last route on the old pools: 48 fires a day.
+    const seed = TEXT_STORY_TOPICS[Math.floor(Math.random() * TEXT_STORY_TOPICS.length)] ?? '';
     const gradient = STORY_GRADIENTS[Math.floor(Math.random() * STORY_GRADIENTS.length)];
-    // BUG-03 FIX 2026-04-28: generateComment('general') returns short social comment phrases
-    // ("facts", "100%", "real talk") which are too terse for story text content.
-    // Stories need substantive sentences — use TEXT_STORY_TOPICS as primary, generateComment
-    // as secondary (only if topic somehow fails).
-    const rawContent = topic || generateComment('general', horse.profile_id) || '';
-    // RULE 1: First letter always capitalized (belt-and-suspenders — entries are pre-capitalized
-    // but generateComment fallback may return lowercase).
-    const content = rawContent.length > 0
-      ? rawContent.charAt(0).toUpperCase() + rawContent.slice(1)
-      : rawContent;
+    const written = await writeStory(horse as never, seed, 'poker');
+    const raw = written.text || seed;
+    const content = raw.length > 0 ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
+    if (!content.trim()) return null;
 
 
     const { data: storyId, error } = await getSupabase().rpc('fn_create_story', {
