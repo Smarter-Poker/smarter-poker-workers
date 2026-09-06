@@ -452,7 +452,15 @@ export function topicOf(title: string): string | undefined {
   if (CLAUSE_MARKERS_TOPIC.test(t)) {
     if (words.length > CLAUSE_CAP) return undefined;
   } else if (words.length > 9) {
-    t = words.slice(0, 9).join(' ');
+    // A noun phrase is not safe to cut at an arbitrary word either. Live
+    // output proved the old assumption wrong: headlines became "...and the",
+    // "...fall short of" and "...Game of All-Time with". Drop the topic and
+    // let the relevance gate choose another asset instead of publishing half
+    // a headline.
+    return undefined;
+  }
+  if (/\b(the|a|an|and|or|but|of|with|to|for|from|in|on|at|by|as|his|her|its)$/i.test(t)) {
+    return undefined;
   }
   if (t.split(/\s+/).length < 2) return undefined;
   // Lower-case the leading word unless it is a name or acronym, so the phrase

@@ -165,6 +165,14 @@ domain-specific take, or fail closed as an empty draft. The exact live failures
 are regression laws. That revision is running in production; ongoing natural-run
 sampling remains part of operations, not a reason to call unreviewed output done.
 
+The 16:10 UTC natural post run proved why that last sentence matters. Its
+counters were green (25/25 posted, relevance 0.86, zero below-floor), while
+manual review found arbitrary nine-word headline cuts ending in `and the`,
+`fall short of`, `do you` and `with`. All 25 posts were removed. Long topics
+are now dropped rather than cut, function-word endings fail closed, and a
+supported poker/sports concept gets a domain take before any headline wrapper.
+Those exact production titles are regression laws.
+
 ### Phase 3: grounded content (BUILT, REJECTED, DISABLED)
 
 - `HandStoryService.ts`: pick the week's hand from `horse_hand_reviews`

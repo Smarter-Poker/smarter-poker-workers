@@ -598,3 +598,41 @@ describe('live comment failures cannot recur', () => {
     expect(t).not.toContain('useful there');
   });
 });
+
+describe('live caption failures cannot recur', () => {
+  const brokenHeadlines = [
+    'Tiffany Michelle on her debut EPT win and the healing power of poker',
+    'Three Barrels. Second Pair. One Giant Pot. Do you Call?',
+    'ACR Team Pros Moorman and Kornuth fall short of Venom glory',
+    'The Biggest HIGH STAKES POKER Game of All-Time with Alan Keating',
+    'The WPO Heads to Aix-les-Bains for a Week of Poker',
+  ];
+
+  it('never returns an arbitrary prefix of a long headline as its topic', () => {
+    for (const title of brokenHeadlines) expect(topicOf(title)).toBeUndefined();
+  });
+
+  it('never publishes the observed dangling headline fragments', () => {
+    const ids = fleetIds(120);
+    for (const title of brokenHeadlines) {
+      const brief = briefForAsset({ kind: 'link', title, source: 'PokerNews' });
+      for (const id of ids) {
+        const text = composeCaption(brief, styleSheetFor(id)).text;
+        expect(text).not.toMatch(/\b(and the|fall short of|all-time with|do you)\s*[.!?…]*$/i);
+      }
+    }
+  });
+
+  it('uses a poker take instead of a generic wrapper when a concept is known', () => {
+    const brief = briefForAsset({
+      kind: 'video',
+      title: '$300 ALL IN with QUEENS',
+      source: 'PokerGO',
+    });
+    for (const id of fleetIds(80)) {
+      const text = composeCaption(brief, styleSheetFor(id)).text;
+      expect(text).not.toMatch(/made me stop and think|worth discussing|study list today|hand I am looking at/i);
+      expect(relevanceOf(text, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+    }
+  });
+});
