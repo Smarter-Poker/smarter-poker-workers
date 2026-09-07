@@ -55,6 +55,7 @@ import { scrapeSportsClips } from './routes/scrape-sports-clips.js';
 import { scrapePokerClips } from './routes/scrape-poker-clips.js';
 import { revalidatePokerClips } from './routes/revalidate-poker-clips.js';
 import { contentSupplyWatchdog } from './routes/content-supply-watchdog.js';
+import { phase6Content } from './routes/phase6-content.js';
 import { memoryMatrixDailyChallenge } from './routes/memory-matrix-daily-challenge.js';
 import { pokerNews } from './routes/poker-news.js';
 import { venueTournaments } from './routes/venue-tournaments.js';
@@ -262,6 +263,10 @@ app.get('/cron/revalidate-poker-clips', revalidatePokerClips);
 app.post('/cron/revalidate-poker-clips', revalidatePokerClips);
 app.get('/cron/content-supply-watchdog', contentSupplyWatchdog);
 app.post('/cron/content-supply-watchdog', contentSupplyWatchdog);
+// Fleet Content Programme Phase 6. Every publish mode is independently
+// approval-gated; preview=1 composes samples without writing.
+app.get('/cron/phase6-content', phase6Content);
+app.post('/cron/phase6-content', phase6Content);
 app.get('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.post('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.get('/cron/poker-news', pokerNews);
