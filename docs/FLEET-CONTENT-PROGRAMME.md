@@ -344,7 +344,7 @@ FIVE MORE DEFECTS, all found by reading output or running the code live:
 - Next: saved hand presets, a labelled flop/turn/river flow and one-tap import
   from Club Arena hand history.
 
-### Phase 6: data-native and local content
+### Phase 6: data-native and local content (BUILT; ALL MODES OFF PENDING VISIBLE APPROVAL 2026-09-07)
 
 - Official club accounts post daily and weekly stats (biggest pot, luckiest
   river, hands dealt, jackpot progress, club leaderboards), tournament results,
@@ -352,6 +352,30 @@ FIVE MORE DEFECTS, all found by reading output or running the code live:
 - Local events from the venue, series and charity scrapers, posted by horses
   whose home city matches.
 - Seasonality (WSOP, football season, holidays) and the horse's city team.
+
+Implementation: `GET/POST /cron/phase6-content` reads the official club-page
+mapping, completed daily club aggregates, member results, active bad-beat
+jackpots, completed club tournaments, the unified event calendar and exact
+horse city/state. It publishes at most one horse post per real event and one
+seasonal post per city/team/month. Stable `publication_key` values make every
+category idempotent, the normal 20-hour horse guard still applies, and horse
+copy is recorded in the phrase ledger. Official club posts are written to the
+page and mirrored to the global feed; a failed mirror rolls the page write
+back.
+
+Safety and review state: the master switch is checked before any live
+composition, each of `club_data_digest`, `local_event` and `seasonal_local` is
+independently gated in `horse_post_modes`, and all three rows ship disabled.
+`?preview=1` is the only disabled-mode composition path and always reports
+`writes: 0`. The production-data preview on 2026-09-07 produced 2 club, 54
+unique local-event and 7 unique seasonal-city candidates with zero writes.
+There were no active jackpots or completed club tournaments at preview time,
+so those facts were correctly omitted rather than fabricated. A trustworthy
+"luckiest river" source does not currently exist: the available aggregates do
+not prove that a win arrived on the river, so that label remains intentionally
+silent until a durable river-outcome fact is stored. Existing grounded social
+engagement supplies horse reactions after the master engine and approved
+posting mode are enabled.
 
 ### Phase 7: interactive content
 
