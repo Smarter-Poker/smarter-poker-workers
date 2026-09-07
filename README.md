@@ -112,6 +112,83 @@ so the only route that exists is `/health` and the reserved `/cron/_scaffold-pin
 - stdout → Docker json-file (10 MB × 7 rotation)
 - `/health` endpoint for readiness + liveness + monitors
 - PostHog for optional event emissions (reusing World Hub's project)
+- `cron_execution_log` — one row per `/cron/*` request (middleware in `src/index.ts`)
+- `cron_health_log` — current-state row per watchdog, keyed on `cron_name`
+
+### Auth-health monitor — `/cron/auth-health-monitor`
+
+The one check in this fleet that watches **production auth at runtime**.
+
+Background: the World Hub JWT verifier stayed hardcoded to HS256 after the
+Supabase project moved to ES256 signing keys. Local verification failed on
+every authenticated request; each one fell through to a live GoTrue
+`/auth/v1/user` call (~20M edge requests/24h) until it saturated the
+project-wide auth rate limit and caused a site-wide logout loop. It ran
+undetected for months. The regression guards that came out of it
+(World-Hub #1196/#1198/#1210/#1220, commander #77/#78) are all build-time and
+cannot see a key rotation, an env change, or a stale cached bundle.
+
+| check | needs a credential? | alerts when |
+| --- | --- | --- |
+| `jwks_algorithm_drift` | no | JWKS stops serving ES256, goes empty, or is unreachable |
+| `jwks_import_canary` | no | live key material fails `crypto.subtle.importKey` as ECDSA P-256 |
+| `gotrue_fallback_ratio` | yes | **successful** `/user` volume > 8,000/h (critical), > 4,000/h or > 65% of auth traffic (warn) |
+| `signature_algorithm_errors` | yes | signature errors exceed 2% of successful `/user` calls **while** fallback volume is itself elevated |
+| `signature_error_sources` | yes | *informational only* — reports external HS256 replay volume and the top offending IPs. Never pages. |
+| `refresh_token_failures` | yes | refresh not-found + bad-length > 100/h |
+| `credential_stuffing` | yes | `Possible abuse attempt` > 200/h (top offending IPs included) |
+
+#### Which number actually means something
+
+Read this before tuning anything. The one signal worth paging on is
+**successful GoTrue `/user` calls per hour**, because it is purely our own
+traffic — an attacker's forged token does not produce a 200. When the ES256
+fix reached production on 2026-09-01 it collapsed from 20,752/h to 91/h
+inside a few hours, and it is the number that would climb straight back if the
+fast path broke again.
+
+The raw count of `signing method HS256 is invalid` is **not** an app-health
+metric, and treating it as one was a bug in the first draft of this monitor.
+With the fix confirmed working, that counter still ran at 826–4,325/h: external
+bots replaying forged or stale HS256 tokens at `/user` from rotating Azure
+address space, carrying no `user_id`, at ~259 hits per IP across 38 IPs. It was
+always there; it only became visible as a *proportion* once our own fallback
+noise disappeared, and it will never reach zero because we do not control who
+sends us tokens. Alerting on it would page on every bot wave, forever — which
+is exactly the alert fatigue that let the original outage hide behind a green
+test for months.
+
+So `signature_algorithm_errors` is gated: it can only fire when app-origin
+fallback volume is *also* elevated. The bot traffic is reported separately by
+`signature_error_sources` at informational `security` severity, which carries
+the offending IPs for a WAF blocklist and can never change the health verdict.
+Full derivation, with the hourly numbers, is in the header block of
+`src/lib/authHealth.ts`.
+
+The five credentialed checks read Supabase `auth_logs`, which is a log stream
+rather than a table and therefore **not** reachable through the service-role
+PostgREST client in `src/lib/supabase.ts`. They go through the Management API
+analytics endpoint and are gated on `SUPABASE_MANAGEMENT_API_TOKEN`. Without
+it they report `skipped`; the job still runs and still catches key drift.
+
+Thresholds are env-tunable — see `.env.example` and the reasoning comments in
+`src/lib/authHealth.ts`.
+
+Results land in `cron_health_log` (`cron_name='auth-health-monitor'`), a
+`[auth-health-monitor] AUTH-ALERT` line on stderr, and an SMS through
+`src/lib/scraperAlerts.ts` on `critical`. Security notices use a **separate**
+`[auth-health-monitor] AUTH-SECURITY` prefix — keep the two distinct in any
+log-drain rule, since paging on the second one defeats the point.
+
+```bash
+# locally
+npm run dev
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  http://127.0.0.1:8081/cron/auth-health-monitor | jq
+
+# just the thresholds
+npx vitest run src/lib/authHealth.test.ts
+```
 
 ## What's intentionally NOT here
 
