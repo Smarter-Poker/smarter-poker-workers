@@ -112,6 +112,7 @@ so the only route that exists is `/health` and the reserved `/cron/_scaffold-pin
 - stdout → Docker json-file (10 MB × 7 rotation)
 - `/health` endpoint for readiness + liveness + monitors
 - PostHog for optional event emissions (reusing World Hub's project)
+- Daily Training cache lineage and source drift audit at `/cron/training-cache-drift-audit`
 
 ## What's intentionally NOT here
 
