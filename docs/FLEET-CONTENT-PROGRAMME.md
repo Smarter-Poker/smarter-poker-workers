@@ -48,7 +48,9 @@ Do not edit them; Phase 9 deletes them.
 7. **Every run leaves a row.** `cron_execution_log.result` carries the counts
    (due, posted, skipped, failed, collided). A run that did nothing says so.
 8. **Kill switch**: `content_settings.engine_enabled = false` stops every
-   fleet route within 30 seconds. A missing or unreadable setting fails closed.
+   fleet route, including posts, stories, friendships, likes, comments,
+   replies, reactions, DMs and the horse-authored video-library reel bridge,
+   within 30 seconds. A missing or unreadable setting fails closed.
    `update content_settings set engine_enabled=false;`
 9. No em dashes, no emoji, in anything a horse publishes.
 10. **Grounded modes are independently gated.** `grounded_hand` and
@@ -272,11 +274,12 @@ DONE:
   because a queue that stops draining and a pool that stops growing both look
   exactly like a quiet week.
 
-Live pool: **1,716 active poker clips**, 95 active poker sources including four
-news feeds, and zero reels stuck in the queue. The latest revalidation passed
-40/40 and the supply watchdog was healthy. The newly deployed scraper and reels
-routes are registered; their next natural scheduled executions remain the final
-operational observation gate.
+Live pool at the 2026-09-06 final sweep: **1,882 active poker clips**, 89 active
+poker sources, and zero reels stuck in the queue. The 17:20 UTC natural scraper
+saved 166 clips and retired six dormant sources; the latest revalidation passed
+40/40 and the 22:50 UTC supply watchdog was healthy. The video-library reel
+route is registered, but is intentionally a no-op while the fleet master switch
+is off.
 
 CLOSED OUT THE SAME DAY (Dan: finish it, do not carry it):
 
@@ -293,7 +296,12 @@ CLOSED OUT THE SAME DAY (Dan: finish it, do not carry it):
   the only host that fires, so the library gained 1,573 videos and the reels
   feed gained none. The workers route does both halves now, and spreads its
   output: the April run put 200 reels on ONE horse in a day; the first live
-  run of this one made 40 across 39 horses, all watchable.
+  run of this one made 40 across 39 horses, all watchable. The final shutdown
+  sweep subsequently removed every horse-authored reel and put the bridge
+  behind `engine_enabled`; it cannot repopulate while the fleet is off.
+- The separate PokerNews importer had no official PokerNews author and silently
+  attributed feed videos to the first horse. That arbitrary fallback is gone;
+  missing official attribution now fails closed and visibly.
 - **Reddit: declined, not deferred.** `robots.txt` is `Disallow: /` and their
   public content policy restricts automated use. Buildable; should not be
   built.

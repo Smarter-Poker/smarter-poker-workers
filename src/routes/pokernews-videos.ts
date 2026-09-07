@@ -51,27 +51,18 @@ async function ingestLatestVideos(): Promise<Results> {
 
   results.found = feed.items.length;
 
-  // Find PokerNews author (or fallback to first author with profile_id)
-  let { data: author } = await supabase
+  // This feed is official PokerNews content. Never make an arbitrary horse
+  // appear to have published it when the official author is not configured.
+  const { data: author } = await supabase
     .from('content_authors')
     .select('id, profile_id')
     .ilike('name', '%PokerNews%')
     .not('profile_id', 'is', null)
     .maybeSingle();
 
-  if (!author) {
-    const { data: fallback } = await supabase
-      .from('content_authors')
-      .select('id, profile_id')
-      .not('profile_id', 'is', null)
-      .limit(1)
-      .maybeSingle();
-    author = fallback;
-  }
-
   const authorTyped = author as { id: string; profile_id: string | null } | null;
   if (!authorTyped?.profile_id) {
-    throw new Error('No valid content_author found for video attribution');
+    throw new Error('PokerNews content_author is not configured; refusing arbitrary attribution');
   }
   const profileId = authorTyped.profile_id;
 

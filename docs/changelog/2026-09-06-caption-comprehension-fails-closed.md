@@ -18,10 +18,22 @@ master fleet switch was disabled.
   first instead of repeating it.
 - Ellipsis styles render one intentional ellipsis character, not three dots
   that resemble a truncated source title.
+- The fleet master switch is now checked at the start of both social
+  orchestration routes. Turning the fleet off stops friendships, likes,
+  comments, replies, reactions and DMs before any mutation, as well as posts
+  and stories.
+- The video-library reel bridge now obeys the same master switch, so its next
+  scheduled run cannot repopulate horse-authored video posts while the fleet
+  is disabled.
+- The PokerNews reel importer no longer attributes official feed items to the
+  first horse when no PokerNews author exists. Missing official attribution is
+  now a visible failure instead of a fabricated author.
 
 ## Verification
 
-- All 289 worker tests pass.
+- All 292 worker tests pass, including a 12-law Phase 1-to-4 recertification
+  suite that pins every social-route master gate ahead of its first mutation
+  and forbids arbitrary PokerNews attribution.
 - TypeScript, build and ESLint pass with zero errors.
 - A current-catalogue sweep rendered 300 poker and 300 sports clips through 40
   styles: 24,000 drafts, 4,160 accepted, 19,840 safely rejected, and zero
