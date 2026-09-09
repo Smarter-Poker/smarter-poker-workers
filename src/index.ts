@@ -11,6 +11,7 @@ import { serve } from '@hono/node-server';
 import * as Sentry from '@sentry/node';
 import { requireCronSecret, ipAllowlist } from './middleware/auth.js';
 import { health } from './routes/health.js';
+import { tournamentReminderWorker } from './lib/tournamentReminderWorker.js';
 import { videoLibraryViews } from './routes/video-library-views.js';
 import { videoLibraryBackfill } from './routes/video-library-backfill.js';
 import { videoLibraryReels } from './routes/video-library-reels.js';
@@ -346,12 +347,14 @@ serve({ fetch: app.fetch, port, hostname: '0.0.0.0' }, (info) => {
   console.log(`[workers] listening on :${info.port}`);
   // Reap cron_execution_log rows orphaned as 'running' by container restarts.
   startCronLogSweeper();
+  tournamentReminderWorker.start();
 });
 
 // Graceful shutdown for Docker.
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {
     console.log(`[workers] received ${sig}, flushing Sentry and exiting`);
+    tournamentReminderWorker.stop();
     Sentry.close(2000).then(() => process.exit(0));
   });
 }
