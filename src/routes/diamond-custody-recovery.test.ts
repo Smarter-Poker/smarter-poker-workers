@@ -19,7 +19,7 @@ describe('Diamond custody recovery', () => {
     const r = await run();
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ ok: true, recovered: 2, pending: 0, discrepancies: 0 });
-    expect(mocks.rpc.mock.calls).toEqual([['fn_poker_diamond_recover_releases'], ['fn_poker_diamond_custody_discrepancies']]);
+    expect(mocks.rpc.mock.calls).toEqual([['fn_poker_diamond_recover_releases'], ['fn_poker_diamond_reconcile']]);
     expect(mocks.eq).toHaveBeenCalledWith('state', 'pending');
   });
   it('retains the committed count when diagnostics fail', async () => {

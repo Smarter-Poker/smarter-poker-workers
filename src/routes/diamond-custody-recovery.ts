@@ -15,7 +15,7 @@ export async function diamondCustodyRecovery(c: Context) {
       throw new Error('Invalid Diamond Recovery Receipt');
     recovered = result.data;
 
-    const reconciliation = await db.rpc('fn_poker_diamond_custody_discrepancies');
+    const reconciliation = await db.rpc('fn_poker_diamond_reconcile');
     if (reconciliation.error) throw new Error(reconciliation.error.message);
     if (!Array.isArray(reconciliation.data))
       throw new Error('Invalid Diamond Reconciliation Response');
