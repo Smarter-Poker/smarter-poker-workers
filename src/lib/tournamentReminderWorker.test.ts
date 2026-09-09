@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TournamentReminderWorker } from './tournamentReminderWorker.js';
+import { TournamentReminderWorker, dispatchTournamentReminders } from './tournamentReminderWorker.js';
 
 describe('built-in tournament reminder owner', () => {
   const owners: TournamentReminderWorker[] = [];
@@ -59,5 +59,30 @@ describe('built-in tournament reminder owner', () => {
     const f=fixture();f.prepare.mockResolvedValue({busy:true});f.worker.start();await vi.advanceTimersByTimeAsync(0);
     expect(f.dispatch).not.toHaveBeenCalled();expect(f.report).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);expect(f.prepare).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('reminder service transport', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+  it('uses existing database service authority instead of the unrelated local cron credential', async () => {
+    vi.stubEnv('CRON_SECRET', 'worker-local-cron-fixture');
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'database-service-fixture');
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, reminderProtocol: 1 }) });
+    vi.stubGlobal('fetch', fetcher);
+    await dispatchTournamentReminders(new AbortController().signal);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][1].headers.Authorization).toBe('Bearer database-service-fixture');
+    expect(fetcher.mock.calls[0][1].method).toBe('POST');
+  });
+  it('missing service authority cannot fall back to the local cron credential', async () => {
+    vi.stubEnv('CRON_SECRET', 'worker-local-cron-fixture'); vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', '');
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    await expect(dispatchTournamentReminders(new AbortController().signal)).rejects.toThrow('authority');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('a rejected service request remains a failure', async () => {
+    vi.stubEnv('CRON_SECRET', 'worker-local-cron-fixture'); vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'database-service-fixture');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+    await expect(dispatchTournamentReminders(new AbortController().signal)).rejects.toThrow('HTTP 401');
   });
 });
