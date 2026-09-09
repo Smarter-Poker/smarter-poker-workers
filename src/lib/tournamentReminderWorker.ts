@@ -98,6 +98,17 @@ export class TournamentReminderWorker {
   }
 }
 
+export async function dispatchTournamentReminders(signal: AbortSignal): Promise<Dispatched> {
+    const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!secret) throw new Error('Reminder service authority is not configured');
+    const response = await fetch('https://smarter.poker/api/internal/tournament-reminders', {
+      method: 'POST', headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(80_000)]),
+    });
+    if (!response.ok) throw new Error(`Reminder sender HTTP ${response.status}`);
+    return await response.json() as Dispatched;
+}
+
 export const tournamentReminderWorker = new TournamentReminderWorker({
   async prepare(signal) {
     const { data, error } = await getSupabase().rpc('prepare_tournament_reminders', { p_limit: 300 })
@@ -105,16 +116,7 @@ export const tournamentReminderWorker = new TournamentReminderWorker({
     if (error) throw new Error(`Reminder preparation failed: ${error.code || 'unknown'}`);
     return data as Prepared;
   },
-  async dispatch(signal) {
-    const secret = process.env.CRON_SECRET;
-    if (!secret) throw new Error('Reminder service authentication is not configured');
-    const response = await fetch('https://smarter.poker/api/internal/tournament-reminders', {
-      method: 'POST', headers: { Authorization: `Bearer ${secret}` },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(80_000)]),
-    });
-    if (!response.ok) throw new Error(`Reminder sender HTTP ${response.status}`);
-    return await response.json() as Dispatched;
-  },
+  dispatch: dispatchTournamentReminders,
   report(error) {
     console.error('[tournament-reminders]', error instanceof Error ? error.message : 'Execution failed');
     Sentry.captureException(error);
