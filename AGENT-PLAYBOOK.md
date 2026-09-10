@@ -197,7 +197,7 @@ git checkout -b rescue refs/wip/<...>          # recover any of it
 | `.github/workflows/agent-autopilot.yml`  | Enables squash auto-merge on every PR; sweeps every 10 minutes                                                                                                                        |
 | `.github/scripts/queue-pr.sh`            | Squash only, never `--admin`                                                                                                                                                          |
 | `.github/scripts/report-stuck-prs.sh`    | Names every PR that cannot merge **and every branch pushed but never proposed**, in one self-closing issue per repo. Opens a PR automatically for an `agent/*` branch under a day old |
-| `.github/workflows/publish-watchdog.yml` | Asks **production** what it is serving and compares it to `main`. Self-heals once per sha (Club Arena), diagnoses via the Vercel API (World Hub)                                      |
+| `.github/workflows/publish-watchdog.yml` | Asks **production** what it is serving and compares it to `main`. Self-heals up to three times per sha (Club Arena), diagnoses via the Vercel API (World Hub)                         |
 | `.github/workflows/estate-integrity.yml` | Checks hourly that all seven repos still have their rulesets, no unexpected bypass actors, byte-identical guards, and a live Autopilot                                                |
 
 ### Your work cannot regress silently
