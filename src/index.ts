@@ -8,6 +8,7 @@
  */
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import { WorkerDrain, installWorkerShutdown } from './lib/workerDrain.js';
 import * as Sentry from '@sentry/node';
 import { requireCronSecret, ipAllowlist } from './middleware/auth.js';
 import { health } from './routes/health.js';
@@ -97,6 +98,7 @@ if (process.env.SENTRY_DSN) {
 
 // ─── App ────────────────────────────────────────────────────────────────────
 const app = new Hono();
+const workerDrain = new WorkerDrain();
 
 // Public healthcheck — no auth, no IP allowlist. Needed by Open Claw + monitors.
 app.get('/health', health);
@@ -157,7 +159,7 @@ app.use('/cron/*', async (c, next) => {
       // completed_at, and error all permanently null. The original intent was
       // fire-and-forget so we don't block the cron return; .then().catch()
       // does the actual send while still detaching from the request lifecycle.
-      supa
+      const completion = supa
         .from('cron_execution_log')
         .update({
           status: resStatus,
@@ -169,7 +171,12 @@ app.use('/cron/*', async (c, next) => {
         .eq('id', logRowId)
         .then(({ error }) => {
           if (error) console.warn('[cron-log] update failed:', error.message);
+        }, (error: unknown) => {
+          console.warn('[cron-log] update rejected:', error);
         });
+      // Keep normal HTTP latency unchanged, but do not exit with this PATCH
+      // in flight. The fetch itself is tracked until this promise is registered.
+      workerDrain.track(Promise.resolve(completion));
     }
   }
 });
@@ -343,18 +350,16 @@ app.onError((err, c) => {
 
 // ─── Server start ───────────────────────────────────────────────────────────
 const port = Number.parseInt(process.env.PORT ?? '8081', 10);
-serve({ fetch: app.fetch, port, hostname: '0.0.0.0' }, (info) => {
+const server = serve({
+  fetch: (request, env) => workerDrain.fetch(() => app.fetch(request, env)),
+  port, hostname: '0.0.0.0',
+}, (info) => {
   console.log(`[workers] listening on :${info.port}`);
   // Reap cron_execution_log rows orphaned as 'running' by container restarts.
   startCronLogSweeper();
   tournamentReminderWorker.start();
 });
 
-// Graceful shutdown for Docker.
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    console.log(`[workers] received ${sig}, flushing Sentry and exiting`);
-    tournamentReminderWorker.stop();
-    Sentry.close(2000).then(() => process.exit(0));
-  });
-}
+installWorkerShutdown(server, workerDrain,
+  () => tournamentReminderWorker.stop(),
+  () => Sentry.close(2000));

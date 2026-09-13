@@ -17,6 +17,7 @@ services:
     image: ghcr.io/smarter-poker/smarter-poker-workers:latest
     container_name: smarter-poker-workers
     restart: unless-stopped
+    stop_grace_period: 10m
     ports:
       # Bind to localhost only — external traffic must come through Caddy / nginx
       # reverse proxy with proper TLS, IP allowlist at the edge, and rate limiting.
