@@ -1,19 +1,5 @@
-/**
- * Scraper Alert System
- * ═══════════════════════════════════════════════════════════
- * Ported from World Hub src/lib/scraperAlerts.js (249 LOC).
- * Sends SMS alerts to the owner when automated scrapers encounter
- * errors, zero results, or critical failures.
- *
- * Alert recipient: +1-708-677-5221 (owner)
- * SMS provider: Twilio (uses existing TWILIO_* env vars)
- *
- * In the workers repo, the in-memory throttle Map persists across
- * invocations (improved behaviour vs. Vercel cold-start resets).
- */
-
-// OWNER ALERT NUMBER — receives all scraper failure notifications
-const OWNER_PHONE = '+17086775221';
+/** Scraper incidents are persisted for Codex; no owner SMS is sent. */
+import { operationalEventKey, recordOperationalAlert } from './operationalAlerts.js';
 
 // Alert throttle: don't send same alert type more than once per 6 hours
 const alertThrottle = new Map<string, number>();
@@ -41,47 +27,24 @@ export interface ScraperStats {
   [k: string]: unknown;
 }
 
-// ─── Twilio REST (no twilio npm — uses fetch) ────────────────────────────────
-async function sendSmsAlert(message: string): Promise<{ sent: boolean; reason?: string; sid?: string }> {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromPhone = process.env.TWILIO_PHONE_NUMBER;
-
-  if (!accountSid || !authToken || !fromPhone) {
-    console.warn('[ALERT] Twilio not configured — SMS alert not sent');
-    console.warn('[ALERT] Message was:', message);
-    return { sent: false, reason: 'Twilio credentials not configured' };
-  }
-
-  try {
-    const credentials = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-    const body = new URLSearchParams({ From: fromPhone, To: OWNER_PHONE, Body: message });
-
-    const response = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${credentials}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: body.toString(),
-      },
-    );
-
-    const result = (await response.json()) as { sid?: string; message?: string };
-
-    if (result.sid) {
-      console.debug(`[ALERT] SMS sent to ${OWNER_PHONE} — SID: ${result.sid}`);
-      return { sent: true, sid: result.sid };
-    }
-    console.warn('[ALERT] SMS send failed:', result.message);
-    return { sent: false, reason: result.message };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[ALERT] SMS error:', msg);
-    return { sent: false, reason: msg };
-  }
+async function recordScraperAlert(
+  level: 'critical' | 'warning' | 'info', scraperName: string, reason: string, stats: ScraperStats,
+): Promise<{ sent: boolean; reason?: string }> {
+  // Use the producing run when supplied. For callers without a run identity,
+  // a time window deduplicates concurrent/replayed notifications across boots.
+  const windowMs = level === 'info' ? 12 * 60 * 60 * 1000 : THROTTLE_MS;
+  const occurrence = typeof stats.startedAt === 'string'
+    ? stats.startedAt : Math.floor(Date.now() / windowMs);
+  await recordOperationalAlert({
+    source: 'workers.scraper',
+    eventKey: operationalEventKey(scraperName, level, reason, occurrence),
+    alertname: `Scraper${level === 'critical' ? 'Critical' : level === 'warning' ? 'Warning' : 'Info'}`,
+    status: 'firing',
+    severity: level,
+    payload: { scraper: scraperName, summary: reason, message: formatAlert(level.toUpperCase() as 'CRITICAL' | 'WARNING' | 'INFO', scraperName, reason, stats), stats },
+  });
+  // Preserve the existing response shape: "sent" acknowledges inbox delivery.
+  return { sent: true, reason: 'recorded_in_operational_inbox' };
 }
 
 // ─── Format ──────────────────────────────────────────────────────────────────
@@ -113,7 +76,7 @@ function formatAlert(level: 'CRITICAL' | 'WARNING' | 'INFO', scraperName: string
     msg += `\nErrors: ${errSummary}${stats.errors.length > 2 ? '...' : ''}`;
   }
 
-  return msg.substring(0, 320); // keep under 2 SMS segments
+  return msg; // The incident inbox preserves the complete diagnostic message.
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -123,13 +86,12 @@ export async function alertScraperCritical(
   reason: string,
   stats: ScraperStats = {},
 ): Promise<{ sent: boolean; reason?: string }> {
-  const key = `critical:${scraperName}`;
+  const key = operationalEventKey('critical', scraperName, reason);
   if (isThrottled(key)) {
     console.debug(`[ALERT] Critical alert throttled for ${scraperName}`);
     return { sent: false, reason: 'throttled' };
   }
-  const message = formatAlert('CRITICAL', scraperName, reason, stats);
-  const result = await sendSmsAlert(message);
+  const result = await recordScraperAlert('critical', scraperName, reason, stats);
   if (result.sent) markSent(key);
   return result;
 }
@@ -139,13 +101,12 @@ export async function alertScraperWarning(
   reason: string,
   stats: ScraperStats = {},
 ): Promise<{ sent: boolean; reason?: string }> {
-  const key = `warning:${scraperName}`;
+  const key = operationalEventKey('warning', scraperName, reason);
   if (isThrottled(key)) {
     console.debug(`[ALERT] Warning alert throttled for ${scraperName}`);
     return { sent: false, reason: 'throttled' };
   }
-  const message = formatAlert('WARNING', scraperName, reason, stats);
-  const result = await sendSmsAlert(message);
+  const result = await recordScraperAlert('warning', scraperName, reason, stats);
   if (result.sent) markSent(key);
   return result;
 }
@@ -155,14 +116,13 @@ export async function alertScraperInfo(
   reason: string,
   stats: ScraperStats = {},
 ): Promise<{ sent: boolean; reason?: string }> {
-  const key = `info:${scraperName}`;
+  const key = operationalEventKey('info', scraperName, reason);
   const last = alertThrottle.get(key);
   const infoThrottle = 12 * 60 * 60 * 1000;
   if (last && Date.now() - last < infoThrottle) {
     return { sent: false, reason: 'throttled' };
   }
-  const message = formatAlert('INFO', scraperName, reason, stats);
-  const result = await sendSmsAlert(message);
+  const result = await recordScraperAlert('info', scraperName, reason, stats);
   if (result.sent) markSent(key);
   return result;
 }

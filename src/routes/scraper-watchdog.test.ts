@@ -33,12 +33,6 @@ vi.mock('../lib/supabase.js', () => ({
   }),
 }));
 
-// Twilio not configured — exercises the short-circuit path
-vi.mock('../lib/twilio.js', () => ({
-  isTwilioConfigured: () => false,
-  sendSMS: vi.fn(),
-}));
-
 beforeEach(() => {
   globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 }) as unknown as typeof fetch;
 });

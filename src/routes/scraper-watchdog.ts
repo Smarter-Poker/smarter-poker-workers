@@ -5,12 +5,12 @@
  *
  * Every 2 hours (dispatcher schedule): check venue_live_tables freshness
  * for each source. Tiered alerting:
- *   Tier 2 STALE (>=45 min)  — SMS to admin, 1h cooldown
- *   Tier 3 DEAD  (>=60 min)  — SMS + OneSignal push, 30min cooldown
+ *   Tier 2 STALE (>=45 min)  — Codex inbox, 1h cooldown
+ *   Tier 3 DEAD  (>=60 min)  — Codex inbox, 30min cooldown
  *
  * Sources: pokeratlas only. Bravo removed permanently (2026-05-23).
  *   Tier 4 ANOMALY (count < 10 || > 5000 || 75%+ drop vs baseline) — same as DEAD
- *   HEALTHY — if previously alerting, send ALL CLEAR recovery SMS
+ *   HEALTHY — if previously alerting, record an ALL CLEAR recovery
  *
  * Volumetric baselines are learned per-hour via EWMA (10% new, 90% old).
  *
@@ -23,9 +23,8 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
-import { sendSMS, isTwilioConfigured } from '../lib/twilio.js';
+import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
-const ADMIN_PHONE = '+17086775221';
 const STALE_THRESHOLD_MIN = 45;
 const DEAD_THRESHOLD_MIN = 60;
 const TIER2_COOLDOWN_MS = 60 * 60 * 1000;
@@ -60,11 +59,12 @@ async function getAlertState(supabase: SupabaseClient, source: string): Promise<
       .select('value')
       .eq('key', key)
       .maybeSingle();
-    if (!error && data && (data as { value: string }).value) {
+    if (error) throw new Error(error.message);
+    if (data && (data as { value: string }).value) {
       return JSON.parse((data as { value: string }).value) as AlertState;
     }
   } catch (e) {
-    console.warn('[scraper-watchdog] getAlertState failed:', e instanceof Error ? e.message : e);
+    throw new OperationalAlertDeliveryError(`cannot read retry state: ${e instanceof Error ? e.message : e}`);
   }
   return { last_alert_ms: 0, was_alerting: false };
 }
@@ -72,12 +72,13 @@ async function getAlertState(supabase: SupabaseClient, source: string): Promise<
 async function setAlertState(supabase: SupabaseClient, source: string, state: AlertState): Promise<void> {
   const key = `${source}_last_alert`;
   try {
-    await supabase.from('scraper_watchdog_state').upsert(
+    const { error } = await supabase.from('scraper_watchdog_state').upsert(
       { key, value: JSON.stringify(state), updated_at: new Date().toISOString() },
       { onConflict: 'key' },
     );
+    if (error) throw new Error(error.message);
   } catch (e) {
-    console.warn('[scraper-watchdog] setAlertState failed:', e instanceof Error ? e.message : e);
+    throw new OperationalAlertDeliveryError(`cannot save retry state: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -115,30 +116,6 @@ async function appendAlertHistory(
   }
 }
 
-async function sendOneSignalAlert(title: string, message: string): Promise<void> {
-  const appId = process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID ?? process.env.ONESIGNAL_APP_ID;
-  const apiKey = process.env.ONESIGNAL_REST_API_KEY;
-  if (!appId || !apiKey) return;
-  try {
-    await fetch('https://onesignal.com/api/v1/notifications', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Basic ${apiKey}`,
-      },
-      body: JSON.stringify({
-        app_id: appId,
-        include_aliases: { external_id: ['admin@smarter.poker'] },
-        headings: { en: title },
-        contents: { en: message },
-        priority: 10,
-      }),
-    });
-  } catch (err) {
-    console.warn('[scraper-watchdog] OneSignal send failed:', err instanceof Error ? err.message : err);
-  }
-}
-
 async function sendSmartAlert(
   supabase: SupabaseClient,
   source: string,
@@ -151,7 +128,7 @@ async function sendSmartAlert(
   const alertState = await getAlertState(supabase, source);
   const cooldown = severity === 'dead' ? TIER3_COOLDOWN_MS : TIER2_COOLDOWN_MS;
 
-  if (nowMs - (alertState.last_alert_ms || 0) < cooldown) {
+  if (alertState.was_alerting && nowMs - (alertState.last_alert_ms || 0) < cooldown) {
     const nextIn = Math.round((cooldown - (nowMs - alertState.last_alert_ms)) / 60000);
     results.alerts_sent.push({ source, message, skipped: `cooldown (${nextIn}min remaining)` });
     return;
@@ -159,19 +136,15 @@ async function sendSmartAlert(
 
   const fullMessage = `SCRAPER ALERT\n${source.toUpperCase()}: ${message}\nCheck: smarter.poker/api/poker/scraper-health`;
 
-  if (isTwilioConfigured()) {
-    try {
-      await sendSMS(ADMIN_PHONE, fullMessage);
-      results.alerts_sent.push({ source, type: 'sms', severity, sent: true });
-    } catch (err) {
-      results.alerts_sent.push({ source, type: 'sms', error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  if (severity === 'dead') {
-    await sendOneSignalAlert(`Scraper Alert: ${source.toUpperCase()}`, message);
-    results.alerts_sent.push({ source, type: 'push', sent: true });
-  }
+  const receipt = await recordOperationalAlert({
+    source: 'workers.scraper-watchdog',
+    eventKey: operationalEventKey(source, 'firing', severity, alertState.last_alert_ms || 0),
+    alertname: severity === 'dead' ? 'ScraperDead' : 'ScraperStale',
+    status: 'firing',
+    severity: severity === 'dead' ? 'critical' : 'warning',
+    payload: { source, summary: message, message: fullMessage, checkedAt: now.toISOString() },
+  });
+  results.alerts_sent.push({ source, type: 'operational_inbox', severity, sent: true, receipt });
 
   await setAlertState(supabase, source, {
     last_alert_ms: nowMs,
@@ -189,16 +162,20 @@ async function sendRecoveryAlert(
   results: Results,
 ): Promise<void> {
   const message = `ALL CLEAR\n${source.toUpperCase()} scraper recovered! Data is now ${minutesAgo} min fresh.`;
-  if (isTwilioConfigured()) {
-    try {
-      await sendSMS(ADMIN_PHONE, message);
-      results.resolved.push({ source, type: 'sms', sent: true });
-    } catch (err) {
-      results.resolved.push({ source, type: 'sms', error: err instanceof Error ? err.message : String(err) });
-    }
-  }
+  const alertState = await getAlertState(supabase, source);
+  const receipt = await recordOperationalAlert({
+    source: 'workers.scraper-watchdog',
+    eventKey: operationalEventKey(source, 'resolved', alertState.last_alert_ms || 0),
+    alertname: alertState.last_severity === 'dead' ? 'ScraperDead' : 'ScraperStale',
+    status: 'resolved',
+    severity: 'info',
+    payload: { source, summary: message },
+  });
+  results.resolved.push({ source, type: 'operational_inbox', sent: true, receipt });
   await setAlertState(supabase, source, {
-    last_alert_ms: 0,
+    // Retain the previous occurrence identity so a new incident does not
+    // collide with the first firing after every recovery.
+    last_alert_ms: alertState.last_alert_ms,
     was_alerting: false,
     last_severity: null,
     last_message: null,
@@ -216,6 +193,7 @@ export async function scraperWatchdog(c: Context) {
     resolved: [],
   };
 
+  let deliveryFailed = false;
   for (const source of ['pokeratlas']) {
     try {
       const { data, count, error } = await supabase
@@ -292,6 +270,7 @@ export async function scraperWatchdog(c: Context) {
         }
       }
     } catch (err) {
+      if (err instanceof OperationalAlertDeliveryError) deliveryFailed = true;
       results.sources[source] = {
         status: 'ERROR',
         error: err instanceof Error ? err.message : String(err),
@@ -300,5 +279,5 @@ export async function scraperWatchdog(c: Context) {
     }
   }
 
-  return c.json(results);
+  return c.json(results, deliveryFailed ? 503 : 200);
 }
