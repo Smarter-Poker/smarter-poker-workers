@@ -21,8 +21,12 @@ export async function recordDeploymentMonitorHealth(
       .order('last_received_at', { ascending: false })
       .limit(1);
     if (error) throw new Error(error.message);
-    const previous = data?.[0] as { event_key: string; status: string } | undefined;
-    if (previous && (!previous.event_key || !['firing', 'resolved'].includes(previous.status))) {
+    if (!Array.isArray(data) || data.length > 1) {
+      throw new Error('invalid deployment monitor health state');
+    }
+    const previous = data[0] as { event_key: string; status: string } | undefined;
+    if (data.length && (!previous || typeof previous.event_key !== 'string'
+      || !previous.event_key || !['firing', 'resolved'].includes(previous.status))) {
       throw new Error('invalid deployment monitor health state');
     }
     if (status === 'resolved' && previous?.status !== 'firing') return;

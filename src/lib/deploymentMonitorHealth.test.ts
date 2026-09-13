@@ -6,13 +6,14 @@ import { OperationalAlertDeliveryError } from './operationalAlerts.js';
 const state = vi.hoisted(() => ({
   latest: undefined as undefined | { event_key: string; status: string },
   readError: null as null | { message: string },
+  invalidReadData: undefined as unknown,
   rpc: vi.fn(),
 }));
 vi.mock('./supabase.js', () => ({ getSupabase: () => ({
   rpc: state.rpc,
   from: () => {
     const query = { select: () => query, eq: () => query, order: () => query,
-      limit: async () => ({ data: state.latest ? [state.latest] : [], error: state.readError }) };
+      limit: async () => ({ data: state.invalidReadData === undefined ? (state.latest ? [state.latest] : []) : state.invalidReadData, error: state.readError }) };
     return query;
   },
 }) }));
@@ -25,6 +26,7 @@ beforeEach(() => {
   vi.stubEnv('VERCEL_TOKEN', '   configured-token   ');
   state.latest = undefined;
   state.readError = null;
+  state.invalidReadData = undefined;
   state.rpc.mockReset().mockImplementation(async (_name: string, p: Record<string, string>) => {
     state.latest = { event_key: p.p_event_key, status: p.p_status };
     return { data: 1, error: null };
@@ -97,5 +99,15 @@ describe('deployment credential health', () => {
     state.readError = { message: 'read unavailable' };
     await expect(recordDeploymentMonitorHealth('resolved', {})).rejects.toBeInstanceOf(OperationalAlertDeliveryError);
     expect(state.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([null, {}, [null], [{ event_key: 3, status: 'firing' }], [
+    { event_key: 'one', status: 'firing' }, { event_key: 'two', status: 'resolved' },
+  ]].map((data) => ({ data })))('retains the outage when the durable state response is malformed: $data', async ({ data }) => {
+    state.latest = { event_key: 'original-outage', status: 'firing' };
+    state.invalidReadData = data;
+    await expect(recordDeploymentMonitorHealth('resolved', {})).rejects.toBeInstanceOf(OperationalAlertDeliveryError);
+    expect(state.rpc).not.toHaveBeenCalled();
+    expect(state.latest.status).toBe('firing');
   });
 });
