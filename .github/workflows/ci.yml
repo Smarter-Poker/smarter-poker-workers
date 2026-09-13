@@ -40,6 +40,9 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Integrity scan memory and equivalence regression
+        run: npm run test:integrity-memory
+
       - name: Build
         run: npm run build
 

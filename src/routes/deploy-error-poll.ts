@@ -25,6 +25,7 @@
  */
 import type { Context } from 'hono';
 import { randomUUID } from 'node:crypto';
+import { recordDeploymentMonitorHealth } from '../lib/deploymentMonitorHealth.js';
 import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
 const TEAM_ID = 'team_SVD8r7AOPH065G3usBxVvrBc';
@@ -217,11 +218,21 @@ interface VercelDeployment {
 }
 
 export async function deployErrorPoll(c: Context) {
-  const vercelToken = process.env.VERCEL_TOKEN;
+  const vercelToken = process.env.VERCEL_TOKEN?.trim();
   const internalSecret = process.env.DEPLOY_INTERNAL_SECRET;
   const ghPat = process.env.GH_PAT;
 
   if (!vercelToken) {
+    if (process.env.NODE_ENV === 'production') {
+      try {
+        await recordDeploymentMonitorHealth('firing', {
+          summary: 'Deployment monitoring has no Vercel credential', projectId: PROJECT_ID, teamId: TEAM_ID,
+        });
+      } catch (error) {
+        return c.json({ error: error instanceof Error ? error.message : String(error) }, 503);
+      }
+      return c.json({ error: 'VERCEL_TOKEN is missing; deployment monitoring is unavailable' }, 503);
+    }
     return c.json({ action: 'skipped', message: 'VERCEL_TOKEN not configured — deploy-error-poll disabled on this host' });
   }
 
@@ -241,19 +252,21 @@ export async function deployErrorPoll(c: Context) {
         `https://api.vercel.com/v6/deployments?projectId=${PROJECT_ID}&teamId=${TEAM_ID}&limit=25`,
         { headers: { Authorization: `Bearer ${vercelToken}` }, signal: step1Abort.signal },
       );
+    } catch (error) {
+      await recordDeploymentMonitorHealth('firing', {
+        summary: 'Deployment monitoring cannot reach Vercel',
+        failureClass: error instanceof Error ? error.name : 'unknown', projectId: PROJECT_ID, teamId: TEAM_ID,
+      });
+      throw error;
     } finally {
       clearTimeout(step1Timeout);
     }
 
     if (!deploymentsRes.ok) {
       const errText = await deploymentsRes.text();
-      await recordOperationalAlert({
-        source: 'workers.deploy-error-poll',
-        eventKey: operationalEventKey('vercel-api', deploymentsRes.status, Math.floor(Date.now() / 3_600_000)),
-        alertname: 'DeploymentMonitorUnavailable',
-        status: 'firing',
-        severity: 'critical',
-        payload: { summary: `Deployment monitoring cannot read Vercel (HTTP ${deploymentsRes.status})`, details: errText.substring(0, 200), projectId: PROJECT_ID },
+      await recordDeploymentMonitorHealth('firing', {
+        summary: `Deployment monitoring cannot read Vercel (HTTP ${deploymentsRes.status})`,
+        details: errText.substring(0, 200), projectId: PROJECT_ID, teamId: TEAM_ID,
       });
       return c.json(
         { error: `Vercel API error: ${deploymentsRes.status}`, details: errText.substring(0, 200) },
@@ -261,8 +274,19 @@ export async function deployErrorPoll(c: Context) {
       );
     }
 
-    const data = (await deploymentsRes.json()) as { deployments?: VercelDeployment[] };
-    const allDeployments = data.deployments ?? [];
+    const data = (await deploymentsRes.json().catch(() => null)) as { deployments?: VercelDeployment[] } | null;
+    if (!data || !Array.isArray(data.deployments)) {
+      await recordDeploymentMonitorHealth('firing', {
+        summary: 'Vercel deployment monitoring returned an invalid response',
+        projectId: PROJECT_ID, teamId: TEAM_ID,
+      });
+      return c.json({ error: 'Vercel response did not contain a deployments array' }, 502);
+    }
+    await recordDeploymentMonitorHealth('resolved', {
+      summary: 'Deployment monitoring can read Vercel again',
+      projectId: PROJECT_ID, teamId: TEAM_ID, deploymentsRead: data.deployments.length,
+    });
+    const allDeployments = data.deployments;
     const nowMs = Date.now();
 
     // Step 1b: cancel stale / hung / redundant builds
