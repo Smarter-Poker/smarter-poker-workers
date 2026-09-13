@@ -21,6 +21,7 @@ import {
   type PdfEvent,
 } from '../lib/tourPdfExtractor.js';
 import { fetchAndExtract, fetchHtml, type HtmlEvent } from '../lib/tourHtmlExtractor.js';
+import { OperationalAlertDeliveryError } from '../lib/operationalAlerts.js';
 import { evaluateAndAlert, alertScraperCritical, type ScraperStats } from '../lib/scraperAlerts.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -430,13 +431,20 @@ export async function tourScheduleScraperHandler(c: Context): Promise<Response> 
     });
     if (auditError) console.warn('[TOUR SCRAPER] scraper_runs insert failed:', auditError.message);
 
-    await evaluateAndAlert(scraperName, stats).catch(() => { /* non-fatal */ });
+    await evaluateAndAlert(scraperName, stats);
 
     console.warn(`[TOUR SCRAPER] COMPLETE — ${Math.round((stats.duration_ms ?? 0) / 1000)}s, ${stats.tours_updated}/${stats.tours_scraped} updated, ${stats.total_events} events, ${stats.pdf_events_found} PDF events`);
     return c.json(stats);
   } catch (err) {
     console.warn('[Tour Schedule Scraper FATAL]', err);
-    await alertScraperCritical(scraperName, `Unhandled crash: ${err instanceof Error ? err.message : String(err)}`, {}).catch(() => { /* ignore */ });
+    if (err instanceof OperationalAlertDeliveryError) {
+      return c.json({ success: false, error: err.message }, 503);
+    }
+    try {
+      await alertScraperCritical(scraperName, `Unhandled crash: ${err instanceof Error ? err.message : String(err)}`, {});
+    } catch (deliveryError) {
+      return c.json({ success: false, error: deliveryError instanceof Error ? deliveryError.message : String(deliveryError) }, 503);
+    }
     return c.json({ success: false, error: err instanceof Error ? err.message : 'Internal server error' }, 500);
   }
 }

@@ -5,6 +5,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { OperationalAlertDeliveryError } from '../lib/operationalAlerts.js';
+import { evaluateAndAlert, alertScraperCritical } from '../lib/scraperAlerts.js';
 import { tourScheduleScraperHandler } from '../routes/tour-schedule-scraper.js';
 
 // Supabase mock
@@ -32,8 +34,8 @@ vi.mock('../lib/tourHtmlExtractor.js', () => ({
 }));
 
 vi.mock('../lib/scraperAlerts.js', () => ({
-  evaluateAndAlert: async () => ({ sent: false, reason: 'mock' }),
-  alertScraperCritical: async () => ({ sent: false, reason: 'mock' }),
+  evaluateAndAlert: vi.fn(async () => ({ sent: false, reason: 'mock' })),
+  alertScraperCritical: vi.fn(async () => ({ sent: false, reason: 'mock' })),
 }));
 
 function buildApp(secret?: string) {
@@ -68,6 +70,14 @@ describe('tour-schedule-scraper', () => {
     const app = buildApp(undefined);
     const res = await app.request('/cron/tour-schedule-scraper');
     expect([200, 500]).toContain(res.status);
+  });
+
+  it('returns 503 when an otherwise completed scrape cannot persist its alert', async () => {
+    vi.mocked(evaluateAndAlert).mockRejectedValueOnce(new OperationalAlertDeliveryError('queue unavailable'));
+    const res = await buildApp().request('/cron/tour-schedule-scraper');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ success: false, error: expect.stringContaining('queue unavailable') });
+    expect(alertScraperCritical).not.toHaveBeenCalled();
   });
 
   it('handler exports a function', () => {

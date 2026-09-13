@@ -34,8 +34,9 @@
  * p90 gap between its successful runs over 30 days, and flags it stale once
  * silence exceeds twice that, floored at 45 minutes (so one skipped fire of a
  * minutely job is not an alert) and capped at 10 days (so a weekly job that
- * dies is still caught). Nothing has to be kept in step with the dispatcher by
- * hand, so nothing can drift out of step with it.
+ * dies is still caught). Explicit schedule retirements are recorded in
+ * ca_retired_cron_jobs, which the view excludes. A missing baseline alone is
+ * not evidence of recovery: it can mean an active job has been dead for 30 days.
  *
  * KNOWN LIMIT, STATED RATHER THAN HIDDEN
  * A job firing less often than roughly weekly never reaches the view's
@@ -86,6 +87,29 @@ export interface StalenessRow {
   is_stale: boolean | null;
 }
 
+export interface RetiredCronJob {
+  job_name: string;
+  reason: string;
+  replaced_by: string | null;
+}
+
+export function resolutionFor(fp: string, retiredJobs: Map<string, RetiredCronJob>) {
+  const jobName = fp.slice(ALERT_NAME.length + 1);
+  const retired = retiredJobs.get(jobName);
+  if (retired) {
+    return {
+      summary: jobName + ' was explicitly retired from the dispatcher',
+      description: retired.reason + (retired.replaced_by ? ' Replacement: ' + retired.replaced_by : ''),
+      labels: { source: 'cron-staleness-watchdog', job_name: jobName, resolution: 'retired' },
+    };
+  }
+  return {
+    summary: jobName + ' is succeeding again',
+    description: 'The job has produced a successful run inside its own expected interval.',
+    labels: { source: 'cron-staleness-watchdog', job_name: jobName, resolution: 'recovered' },
+  };
+}
+
 /**
  * Decide what to write, given the view rows and the currently-open alerts.
  * Pure so the decision is testable without a database.
@@ -93,20 +117,23 @@ export interface StalenessRow {
 export function planTransitions(
   rows: StalenessRow[],
   firingFingerprints: Set<string>,
+  retiredJobNames: Set<string> = new Set(),
 ): { toFire: StalenessRow[]; toResolve: string[] } {
-  const staleFps = new Set<string>();
+  const recoveredFps = new Set<string>();
   const toFire: StalenessRow[] = [];
 
   for (const r of rows) {
-    if (!r.is_stale) continue;
     const fp = fingerprintFor(r.job_name);
-    staleFps.add(fp);
+    if (retiredJobNames.has(r.job_name)) continue;
+    if (r.is_stale === false) recoveredFps.add(fp);
+    if (r.is_stale !== true) continue;
     if (!firingFingerprints.has(fp)) toFire.push(r);
   }
 
   const toResolve: string[] = [];
   for (const fp of firingFingerprints) {
-    if (!staleFps.has(fp)) toResolve.push(fp);
+    const jobName = fp.slice(ALERT_NAME.length + 1);
+    if (retiredJobNames.has(jobName) || recoveredFps.has(fp)) toResolve.push(fp);
   }
 
   return { toFire, toResolve };
@@ -118,6 +145,20 @@ export async function cronStalenessWatchdog(c: Context) {
   const errors: string[] = [];
 
   try {
+    // Read explicit retirement authority separately: the view intentionally
+    // excludes retired jobs, but absence also happens when a dead active job
+    // ages out of its baseline. Only the former is a resolution.
+    const { data: retiredData, error: retiredErr } = await supabase
+      .from('ca_retired_cron_jobs')
+      .select('job_name, reason, replaced_by')
+      .limit(1000);
+    if (retiredErr || !retiredData || retiredData.length >= 1000) {
+      return c.json({ error: retiredErr?.message ?? 'Retired job registry read incomplete' }, 500);
+    }
+    const retiredJobs = new Map(
+      (retiredData as RetiredCronJob[]).map((job) => [job.job_name, job]),
+    );
+
     const { data: viewData, error: viewErr } = await supabase
       .from('v_openclaw_job_staleness')
       .select(
@@ -154,7 +195,7 @@ export async function cronStalenessWatchdog(c: Context) {
       if (status === 'firing') firing.add(fp);
     }
 
-    const { toFire, toResolve } = planTransitions(rows, firing);
+    const { toFire, toResolve } = planTransitions(rows, firing, new Set(retiredJobs.keys()));
     const now = new Date().toISOString();
 
     if (toFire.length > 0) {
@@ -181,9 +222,9 @@ export async function cronStalenessWatchdog(c: Context) {
             Number(r.p90_gap_minutes ?? 0).toFixed(1) +
             ' min over ' +
             Number(r.successes_30d ?? 0) +
-            ' successful runs in 30 days. The job is silent rather than failing, ' +
-            'so no error row exists to read: check the Open Claw dispatcher journal ' +
-            'and the workers container for this path.',
+            ' successful runs in 30 days. Check recent cron_execution_log errors, ' +
+            'the Open Claw dispatcher journal and the workers container for this path. ' +
+            'Missing successes can mean failed runs or missing dispatches.',
           labels: {
             job_name: r.job_name,
             silent_minutes: silent,
@@ -209,9 +250,7 @@ export async function cronStalenessWatchdog(c: Context) {
         severity: 'info',
         component: COMPONENT,
         status: 'resolved',
-        summary: fp.slice(ALERT_NAME.length + 1) + ' is succeeding again',
-        description: 'The job has produced a successful run inside its own expected interval.',
-        labels: { source: 'cron-staleness-watchdog' },
+        ...resolutionFor(fp, retiredJobs),
         ends_at: now,
         received_at: now,
         notified_via: [],

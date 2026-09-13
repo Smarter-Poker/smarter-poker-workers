@@ -25,7 +25,7 @@
  */
 import type { Context } from 'hono';
 import { randomUUID } from 'node:crypto';
-import { sendSMS } from '../lib/twilio.js';
+import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
 const TEAM_ID = 'team_SVD8r7AOPH065G3usBxVvrBc';
 const PROJECT_ID = 'prj_op66GkZyZcygXQKm76iyycfVFAQx';
@@ -132,15 +132,15 @@ async function updateAttemptStatus(id: string | null, status: string): Promise<v
 }
 
 // ── Notifications ──────────────────────────────────────────────────────────
-async function sendErrorSMS(title: string, message: string): Promise<void> {
-  const adminPhone = process.env.MY_PHONE_NUMBER ?? process.env.ADMIN_PHONE;
-  if (!adminPhone) return;
-  const body = `🚨 SMARTER.POKER ALERT 🚨\n\n${title}\n${message}`;
-  try {
-    await sendSMS(adminPhone, body);
-  } catch (e) {
-    console.warn('[deploy-error-poll] SMS failed:', e instanceof Error ? e.message : e);
-  }
+async function recordDeployAlert(deployId: string, title: string, message: string): Promise<void> {
+  await recordOperationalAlert({
+    source: 'workers.deploy-error-poll',
+    eventKey: operationalEventKey(deployId, title),
+    alertname: title.replace(/[^A-Za-z0-9]+/g, ''),
+    status: 'firing',
+    severity: 'critical',
+    payload: { deploymentId: deployId, summary: title, message, repository: `${GITHUB_OWNER}/${GITHUB_REPO}` },
+  });
 }
 
 interface NotifyField {
@@ -247,6 +247,14 @@ export async function deployErrorPoll(c: Context) {
 
     if (!deploymentsRes.ok) {
       const errText = await deploymentsRes.text();
+      await recordOperationalAlert({
+        source: 'workers.deploy-error-poll',
+        eventKey: operationalEventKey('vercel-api', deploymentsRes.status, Math.floor(Date.now() / 3_600_000)),
+        alertname: 'DeploymentMonitorUnavailable',
+        status: 'firing',
+        severity: 'critical',
+        payload: { summary: `Deployment monitoring cannot read Vercel (HTTP ${deploymentsRes.status})`, details: errText.substring(0, 200), projectId: PROJECT_ID },
+      });
       return c.json(
         { error: `Vercel API error: ${deploymentsRes.status}`, details: errText.substring(0, 200) },
         500,
@@ -339,13 +347,17 @@ export async function deployErrorPoll(c: Context) {
     const commitSha = latestError.meta?.githubCommitSha ?? '';
     const commitMsg = latestError.meta?.githubCommitMessage ?? '';
 
+    // Record the failure before any dedup/circuit breaker or autofix side effect.
+    // Retries share the deployment identity, including after a process restart.
+    await recordDeployAlert(deployId, 'Vercel Deployment Failed',
+      `Deployment ${deployId} failed for commit ${commitSha}. ${commitMsg}`);
+
     if (fixedDeployments.has(deployId)) {
       return c.json({ action: 'skipped', deployId, reason: 'already fixed (in-memory)' });
     }
 
     // Skip [autofix] commits — prevent loops
     if (commitMsg.includes('[autofix]')) {
-      fixedDeployments.add(deployId);
       sendNotification({
         title: '⚠️ Autofix Rebuild Failed',
         message: `The autofix commit \`${commitSha.substring(0, 9)}\` itself failed to build. Manual intervention may be needed.`,
@@ -355,10 +367,11 @@ export async function deployErrorPoll(c: Context) {
           { title: 'SHA', value: commitSha.substring(0, 9), short: true },
         ],
       }).catch(() => undefined);
-      sendErrorSMS(
+      await recordDeployAlert(deployId,
         'Autofix Rebuild Failed',
         `The autofix commit ${commitSha.substring(0, 9)} itself failed to build. Manual intervention may be needed.`,
-      ).catch(() => undefined);
+      );
+      fixedDeployments.add(deployId);
       return c.json({ action: 'skipped', deployId, reason: 'is an [autofix] commit — skipping to prevent loops' });
     }
 
@@ -393,7 +406,6 @@ export async function deployErrorPoll(c: Context) {
             (x) => x.commit?.message?.includes('[autofix]') && x.commit?.message?.includes(commitSha.substring(0, 9)),
           ).length;
           if (autofixCount >= MAX_FIX_ATTEMPTS) {
-            fixedDeployments.add(deployId);
             recordAttempt({
               deployId,
               commitSha,
@@ -408,10 +420,11 @@ export async function deployErrorPoll(c: Context) {
               color: 'danger',
               fields: [{ title: 'Attempts', value: String(autofixCount), short: true }],
             }).catch(() => undefined);
-            sendErrorSMS(
+            await recordDeployAlert(deployId,
               'Autofix Circuit Breaker',
               `Reached ${MAX_FIX_ATTEMPTS} fix attempts for ${commitSha.substring(0, 9)}. Stopping. Manual fix required.`,
-            ).catch(() => undefined);
+            );
+            fixedDeployments.add(deployId);
             return c.json({
               action: 'circuit_breaker',
               deployId,
@@ -422,6 +435,7 @@ export async function deployErrorPoll(c: Context) {
           attemptTracker[commitSha] = autofixCount + 1;
         }
       } catch (e) {
+        if (e instanceof OperationalAlertDeliveryError) throw e;
         console.warn(`[deploy-error-poll] Git history check failed: ${e instanceof Error ? e.message : e}`);
       }
     }
@@ -473,7 +487,6 @@ export async function deployErrorPoll(c: Context) {
           );
           if (isSigkill) {
             console.warn(`[deploy-error-poll] SIGKILL/SIGABRT/OOM detected for ${deployId}`);
-            fixedDeployments.add(deployId);
             recordAttempt({
               deployId,
               commitSha,
@@ -488,10 +501,11 @@ export async function deployErrorPoll(c: Context) {
               color: 'danger',
               fields: [{ title: 'SHA', value: commitSha.substring(0, 9), short: true }],
             }).catch(() => undefined);
-            sendErrorSMS(
+            await recordDeployAlert(deployId,
               'Build OOM/SIGABRT',
               `Deploy ${commitSha.substring(0, 9)} killed by OOM. Infrastructure issue — NOT fixable by bumping heap. cpus:1 is the fix.`,
-            ).catch(() => undefined);
+            );
+            fixedDeployments.add(deployId);
             return c.json({
               action: 'skipped',
               deployId,
@@ -526,6 +540,7 @@ export async function deployErrorPoll(c: Context) {
         }
       }
     } catch (e) {
+      if (e instanceof OperationalAlertDeliveryError) throw e;
       console.warn(`[deploy-error-poll] Log fetch failed for ${deployId}: ${e instanceof Error ? e.message : e}`);
       attemptTracker[logFailKey] = (attemptTracker[logFailKey] ?? 0) + 1;
       if ((attemptTracker[logFailKey] ?? 0) >= 3) {
@@ -631,10 +646,10 @@ export async function deployErrorPoll(c: Context) {
             { title: 'Attempt', value: `${attempt}/${MAX_FIX_ATTEMPTS}`, short: true },
           ],
         }).catch(() => undefined);
-        sendErrorSMS(
+        await recordDeployAlert(deployId,
           'Autofix PR Opened',
           `Fix for ${autofixResult.filePath ?? 'unknown'} staged in PR #${autofixResult.prNumber}. Review and merge to unblock deploy.`,
-        ).catch(() => undefined);
+        );
       } else if (autofixResult.action === 'skipped') {
         const skipKey = `skip:${deployId}`;
         attemptTracker[skipKey] = (attemptTracker[skipKey] ?? 0) + 1;
@@ -657,6 +672,7 @@ export async function deployErrorPoll(c: Context) {
         autofixResult,
       });
     } catch (e) {
+      if (e instanceof OperationalAlertDeliveryError) throw e;
       if (e instanceof Error && e.name === 'AbortError') {
         console.warn(`[deploy-error-poll] Autofix call timed out after 55s for ${deployId}`);
         return c.json({ action: 'autofix_timeout', deployId, error: 'deploy-autofix fetch timed out' });
@@ -668,6 +684,6 @@ export async function deployErrorPoll(c: Context) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`[deploy-error-poll] Fatal error: ${msg}`);
-    return c.json({ error: msg }, 500);
+    return c.json({ error: msg }, e instanceof OperationalAlertDeliveryError ? 503 : 500);
   }
 }
