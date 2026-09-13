@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/**/*.ts",
     "test": "vitest run",
+    "test:integrity-memory": "node scripts/ci/check-integrity-scan-memory.mjs",
     "test:watch": "vitest",
     "prepare": "git config core.hooksPath .husky 2>/dev/null || true"
   },

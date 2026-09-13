@@ -35,7 +35,8 @@
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 import { resolveScanWindow, ScanWindowError, dedupeSinceFor } from '../lib/scanWindow.js';
-import { pagedSelect } from '../lib/pagedSelect.js';
+import { scanPages } from '../lib/scanPages.js';
+import { ChipDumpAccumulator, type ChipDumpHand } from '../lib/integrityScanAccumulators.js';
 
 const WINDOW_HOURS = 24;
 const FLAG_DEDUPE_HOURS = 24;
@@ -49,27 +50,6 @@ interface ScanResult {
   flags_written: number;
   flags_skipped_existing: number;
   errors: string[];
-}
-
-interface PlayerSeat {
-  user_id?: string;
-  userId?: string;
-  id?: string;
-  chips_invested?: number;
-  chips_won?: number;
-}
-
-interface HandRow {
-  id: string;
-  players: PlayerSeat[] | null;
-  winners: PlayerSeat[] | null;
-  pot_size: number | string | null;
-  created_at: string;
-}
-
-function uidOf(p: PlayerSeat | undefined | null): string | null {
-  if (!p) return null;
-  return (p.user_id ?? p.userId ?? p.id ?? null) as string | null;
 }
 
 export async function antiCheatChipDump(c: Context) {
@@ -94,10 +74,12 @@ export async function antiCheatChipDump(c: Context) {
     errors: [],
   };
 
-  let hands: HandRow[];
+  const accumulator = new ChipDumpAccumulator();
+  const { pairs, userTotals } = accumulator;
+  let handsScanned = 0;
   let handsTruncated = false;
   try {
-    const paged = await pagedSelect<HandRow>(
+    const paged = await scanPages<ChipDumpHand>(
       () =>
         supabase
           .from('hand_history')
@@ -105,10 +87,12 @@ export async function antiCheatChipDump(c: Context) {
           .gte('created_at', since)
           .lt('created_at', until)
           .not('ended_at', 'is', null)
-          .order('created_at', { ascending: false }),
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false }),
       MAX_SCAN_HANDS,
+      (page) => { for (const hand of page) accumulator.addHand(hand); },
     );
-    hands = paged.rows;
+    handsScanned = paged.count;
     handsTruncated = paged.truncated;
   } catch (readErr) {
     result.errors.push(
@@ -117,74 +101,7 @@ export async function antiCheatChipDump(c: Context) {
     return c.json({ ok: false, started_at: startedAt, ...result }, 500);
   }
 
-  // Build pair-level aggregates
-  type PairAcc = {
-    giver: string;
-    receiver: string;
-    hands_together: number;
-    giver_losses_to_receiver: number;
-    net_transfer: number; // chips that flowed giver → receiver
-  };
-  const pairs = new Map<string, PairAcc>();
-  // Per-user aggregate "everyone else" win rate
-  const userTotals = new Map<string, { hands: number; wins: number }>();
-  // Round 69 fix: track per-(user, counterparty) wins/hands so we can subtract
-  // them from the user's total when computing "win rate vs everyone else" —
-  // otherwise the contaminated pair drags the giver's overall rate down,
-  // hiding the critical-tier signal where the giver IS a winning player
-  // outside this one pair.
-  const userVsUserStats = new Map<string, { hands: number; wins: number }>();
-
-  for (const hand of hands) {
-    const players = hand.players ?? [];
-    const winners = (hand.winners ?? []) as PlayerSeat[];
-    const winnerIds = new Set(winners.map(uidOf).filter(Boolean) as string[]);
-
-    for (const p of players) {
-      const uid = uidOf(p);
-      if (!uid) continue;
-      const t = userTotals.get(uid) ?? { hands: 0, wins: 0 };
-      t.hands += 1;
-      if (winnerIds.has(uid)) t.wins += 1;
-      userTotals.set(uid, t);
-    }
-
-    // Pair only when exactly one winner so attribution is clean
-    if (winnerIds.size !== 1) continue;
-    const winnerId = Array.from(winnerIds)[0]!;
-
-    for (const p of players) {
-      const giverId = uidOf(p);
-      if (!giverId || giverId === winnerId) continue;
-      const giverInvested = Number(p.chips_invested ?? 0) || 0;
-      if (giverInvested <= 0) continue;
-
-      const key = `${giverId}|${winnerId}`;
-      const acc = pairs.get(key) ?? {
-        giver: giverId,
-        receiver: winnerId,
-        hands_together: 0,
-        giver_losses_to_receiver: 0,
-        net_transfer: 0,
-      };
-      acc.hands_together += 1;
-      acc.giver_losses_to_receiver += 1;
-      // Approximate net transfer as giver's investment in this pot (rough but
-      // serviceable — the chip-dump signal lives in the pattern, not the precise amount)
-      acc.net_transfer += giverInvested;
-      pairs.set(key, acc);
-
-      // Round 69 fix: also track giver's hands+wins specifically against this
-      // receiver, so we can subtract them when computing the cleaner "vs
-      // everyone else" win rate below.
-      const vsKey = `${giverId}|${winnerId}`;
-      const vs = userVsUserStats.get(vsKey) ?? { hands: 0, wins: 0 };
-      vs.hands += 1;
-      // wins stays 0 — by construction giver lost this hand to winnerId
-      userVsUserStats.set(vsKey, vs);
-    }
-  }
-
+  // Reads completed before the first flag write. No raw hand JSON remains.
   result.pairs_scanned = pairs.size;
 
   // Evaluate each pair against thresholds
@@ -199,8 +116,10 @@ export async function antiCheatChipDump(c: Context) {
     // looks like a "bad player" overall and never crosses the critical tier
     // (giverWinRateOverall >= 0.5).
     const giverTotals = userTotals.get(acc.giver);
-    const vsKey = `${acc.giver}|${acc.receiver}`;
-    const vsPair = userVsUserStats.get(vsKey) ?? { hands: 0, wins: 0 };
+    // The former second pair map incremented once beside hands_together and
+    // always recorded zero wins: this pair exists only when the giver loses.
+    // Reuse those identical counters instead of retaining a duplicate map.
+    const vsPair = { hands: acc.hands_together, wins: 0 };
     const handsExcludingPair = (giverTotals?.hands ?? 0) - vsPair.hands;
     const winsExcludingPair = (giverTotals?.wins ?? 0) - vsPair.wins;
     const giverWinRateExcludingPair =
@@ -277,7 +196,7 @@ export async function antiCheatChipDump(c: Context) {
     window_hours: WINDOW_HOURS,
     window: { start: since, end: until },
     window_overridden: scanWindow.overridden,
-    hands_scanned: hands.length,
+    hands_scanned: handsScanned,
     hands_truncated: handsTruncated,
     dry_run: scanWindow.dryRun,
     ...result,
