@@ -15,7 +15,7 @@ vi.mock('../lib/supabase.js', () => ({
         select: () => chain,
         eq: (_field: string, value: string) => { key = value; return chain; },
         order: () => chain,
-        limit: async () => ({ data: [{ scrape_timestamp: new Date(Date.now() - (state.fresh ? 0 : 90 * 60_000)).toISOString() }], count: 500, error: null }),
+        limit: async () => table === 'operational_alert_events' ? { data: [], error: null } : ({ data: [{ scrape_timestamp: new Date(Date.now() - (state.fresh ? 0 : 90 * 60_000)).toISOString() }], count: 500, error: null }),
         maybeSingle: async () => ({ data: key === 'pokeratlas_last_alert' && state.alertState ? { value: JSON.stringify(state.alertState) } : null, error: null }),
         upsert: async (row: { key: string; value: string }) => {
           state.upsert(table, row);
