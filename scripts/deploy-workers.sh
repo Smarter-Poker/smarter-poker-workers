@@ -85,7 +85,7 @@ if [ "$BUILD_ON_SERVER" = "1" ]; then
     "cd /opt/workers-build && docker build --build-arg GIT_SHA=$FULL_SHA --label org.opencontainers.image.revision=$SHA -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -30 /tmp/workers-build.log; exit 2; }" \
     || die "on-server docker build failed (see /tmp/workers-build.log on the VM)" 2
   ssh -i "$SSH_KEY" "root@$SERVER_IP" \
-    "cd /opt/workers && sudo -u workers docker compose up -d --no-build && sleep 5 && docker inspect --format 'rev={{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE_NAME | head -1)"
+    "cd /opt/workers && sudo -u workers docker compose up -d --no-build --timeout 600 && sleep 5 && docker inspect --format 'rev={{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE_NAME | head -1)"
   log "Probing /health..."
   for i in 1 2 3 4 5 6; do
     HEALTH=$(ssh -i "$SSH_KEY" "root@$SERVER_IP" 'curl -fsS -m 3 http://127.0.0.1:8081/health 2>/dev/null || echo ""')
@@ -180,7 +180,7 @@ echo "[remote] docker compose pull"
 sudo -u workers docker compose pull
 
 echo "[remote] docker compose up -d"
-sudo -u workers docker compose up -d
+sudo -u workers docker compose up -d --timeout 600
 
 sleep 5
 

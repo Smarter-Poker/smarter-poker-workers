@@ -84,7 +84,9 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Cut over"
-          $SSH "cd /opt/workers && sudo -u workers docker compose up -d --no-build"
+          # The live compose file predates the source stop_grace_period. Supply
+          # the grace explicitly at cutover too, without replacing host config.
+          $SSH "cd /opt/workers && sudo -u workers docker compose up -d --no-build --timeout 600"
           echo "::endgroup::"
 
           echo "::group::Verify"
