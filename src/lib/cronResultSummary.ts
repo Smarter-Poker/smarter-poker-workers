@@ -17,8 +17,8 @@
 export const RESULT_MAX_BYTES = 8_000;
 
 /** Reading the local scraper's status does not execute its daily job. */
-export function isCronExecutionRequest(method: string, pathname: string): boolean {
-  return !(pathname === '/cron/video-library-scraper' && method === 'GET');
+export function isCronExecutionRequest(method: string, pathname: string, videoScope?: unknown): boolean {
+  return pathname !== '/cron/video-library-scraper' || (method === 'POST' && videoScope === 'full');
 }
 export async function readResultSummary(res: Response | undefined): Promise<Record<string, unknown>> {
   try {
