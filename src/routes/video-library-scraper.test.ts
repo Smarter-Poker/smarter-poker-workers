@@ -41,7 +41,7 @@ vi.mock('../lib/supabase.js', () => ({ getSupabase: () => ({
 }) }));
 
 const runId = '52680c63-8e37-41f8-9c8c-b2aa043017ee';
-const report = () => ({ run_id: runId, ran_at: new Date(Date.now() - 10_000).toISOString(),
+const report = () => ({ run_id: runId, scope: 'full', ran_at: new Date(Date.now() - 10_000).toISOString(),
   completed_at: new Date().toISOString(), elapsed_s: 10,
   processed: 43, failed: 0, total_found: 1398, total_new: 18,
   insert_failed: 0, metadata_failed: 0, errors: [] as string[],
@@ -54,7 +54,8 @@ beforeEach(() => {
   executed = 0;
   app = new Hono();
   app.use('/cron/*', async (c, next) => {
-    if (isCronExecutionRequest(c.req.method, c.req.path)) executed++;
+    const body = c.req.method === 'POST' ? await c.req.json().catch(() => null) : null;
+    if (isCronExecutionRequest(c.req.method, c.req.path, body?.scope)) executed++;
     await next();
   });
   app.all('/cron/video-library-scraper', videoLibraryScraper);
@@ -73,6 +74,10 @@ describe('video scrape result authority', () => {
     db.readError = { message: 'database read unavailable' };
     expect((await app.request('/cron/video-library-scraper')).status).toBe(503);
   });
+  it('records a single-source report without freshening the full daily job', async () => {
+    const res = await post({ ...report(), scope: 'source', source_id: 'HCL' });
+    expect(res.status).toBe(200); expect(db.rows.size).toBe(1); expect(executed).toBe(0);
+  });
   it.each(['{', 'null', '[]', '{}'])('refuses malformed reports %s', async (body) => {
     expect((await post(body)).status).toBe(400); expect(db.rows.size).toBe(0);
   });
@@ -80,7 +85,7 @@ describe('video scrape result authority', () => {
     expect((await post('x'.repeat(32_001))).status).toBe(400);
   });
   it.each([
-    { failed: -1 }, { metadata_failed: true }, { insert_failed: 0.5 },
+    { failed: -1 }, { metadata_failed: true }, { insert_failed: 0.5 }, { scope: 'unknown' },
     { run_id: 'not-a-run' }, { elapsed_s: -1 }, { errors: [null] },
     { completed_at: '2020-01-01T00:00:00Z' }, { completed_at: '2999-01-01T00:00:00Z' },
   ])('rejects invalid or historical reports %j', async (change) => {

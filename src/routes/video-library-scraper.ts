@@ -41,6 +41,7 @@ export async function videoLibraryScraper(c: Context) {
       const started = typeof body.ran_at === 'string' ? Date.parse(body.ran_at) : NaN;
       const finished = typeof body.completed_at === 'string' ? Date.parse(body.completed_at) : NaN;
       if (typeof body.run_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.run_id)
+        || !['full', 'source'].includes(String(body.scope))
         || counters.some((key) => !Number.isSafeInteger(body[key]) || Number(body[key]) < 0)
         || !Number.isFinite(started) || !Number.isFinite(finished) || started > finished
         || finished > Date.now() + 30_000 || Date.now() - finished > 300_000

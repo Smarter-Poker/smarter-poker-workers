@@ -121,7 +121,14 @@ import { isCronExecutionRequest, readResultSummary } from './lib/cronResultSumma
 
 app.use('/cron/*', async (c, next) => {
   const jobName = new URL(c.req.url).pathname;
-  if (!isCronExecutionRequest(c.req.method, jobName)) {
+  let videoScope: unknown;
+  if (jobName === '/cron/video-library-scraper' && c.req.method === 'POST') {
+    const body: unknown = await c.req.json().catch(() => null);
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      videoScope = (body as Record<string, unknown>).scope;
+    }
+  }
+  if (!isCronExecutionRequest(c.req.method, jobName, videoScope)) {
     await next();
     return;
   }
