@@ -117,10 +117,14 @@ app.use('/cron/*', requireCronSecret);
 // path as job_name, fire-and-forget on errors so logging never blocks
 // the underlying job.
 import { getSupabase as _getSupabaseForLog } from './lib/supabase.js';
-import { readResultSummary } from './lib/cronResultSummary.js';
+import { isCronExecutionRequest, readResultSummary } from './lib/cronResultSummary.js';
 
 app.use('/cron/*', async (c, next) => {
   const jobName = new URL(c.req.url).pathname;
+  if (!isCronExecutionRequest(c.req.method, jobName)) {
+    await next();
+    return;
+  }
   const startedAt = new Date().toISOString();
   const supa = _getSupabaseForLog();
   let logRowId: string | null = null;
