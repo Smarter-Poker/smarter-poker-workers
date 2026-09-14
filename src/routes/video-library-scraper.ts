@@ -86,9 +86,8 @@ export async function videoLibraryScraper(c: Context) {
     }
 
     // MODE 2: status check
-    const [countResult, bySourceResult, lastAuditResult] = await Promise.all([
-      supabase.from('video_library_videos').select('id', { count: 'exact', head: true }),
-      supabase.from('video_library_videos').select('source_id'),
+    const [inventoryResult, lastAuditResult] = await Promise.all([
+      supabase.rpc('fn_video_library_scrape_inventory'),
       supabase
         .from('data_audit_log')
         .select('scrape_proof, created_at')
@@ -98,14 +97,21 @@ export async function videoLibraryScraper(c: Context) {
         .limit(1),
     ]);
 
-    const readError = countResult.error || bySourceResult.error || lastAuditResult.error;
+    const readError = inventoryResult.error || lastAuditResult.error;
     if (readError) return c.json({ success: false, error: readError.message }, 503);
 
-    const totalVideos = countResult.count ?? 0;
-
-    const bySource: Record<string, number> = {};
-    for (const row of (bySourceResult.data ?? []) as Array<{ source_id: string | null }>) {
-      if (row.source_id) bySource[row.source_id] = (bySource[row.source_id] ?? 0) + 1;
+    const inventory = inventoryResult.data as {
+      total_videos: number; unassigned_videos: number; creators: number;
+      by_source: Record<string, number>;
+    } | null;
+    const validCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+    if (!inventory || !validCount(inventory.total_videos) || !validCount(inventory.unassigned_videos)
+      || !validCount(inventory.creators) || !inventory.by_source || typeof inventory.by_source !== 'object'
+      || Array.isArray(inventory.by_source)
+      || Object.entries(inventory.by_source).some(([source, count]) => !source || !validCount(count))
+      || Object.keys(inventory.by_source).length !== inventory.creators
+      || Object.values(inventory.by_source).reduce((sum, count) => sum + count, inventory.unassigned_videos) !== inventory.total_videos) {
+      return c.json({ success: false, error: 'Video inventory counts are incomplete or inconsistent' }, 503);
     }
 
     const auditRows = (lastAuditResult.data ?? []) as Array<{ scrape_proof: string | Record<string, unknown> | null; created_at: string }>;
@@ -122,6 +128,7 @@ export async function videoLibraryScraper(c: Context) {
       completed_at?: string;
       metadata_failed?: number;
       insert_failed?: number;
+      scope?: 'full' | 'source' | null;
     } | null = null;
     if (lastAudit) {
       try {
@@ -139,6 +146,7 @@ export async function videoLibraryScraper(c: Context) {
           completed_at: proof.completed_at as string | undefined,
           metadata_failed: proof.metadata_failed as number | undefined,
           insert_failed: proof.insert_failed as number | undefined,
+          scope: proof.scope === 'full' || proof.scope === 'source' ? proof.scope : null,
         };
       } catch {
         lastScrape = { ran_at: lastAudit.created_at };
@@ -167,9 +175,10 @@ export async function videoLibraryScraper(c: Context) {
     return c.json({
       success: true,
       timestamp: new Date().toISOString(),
-      total_videos: totalVideos,
-      creators: Object.keys(bySource).length,
-      by_source: bySource,
+      total_videos: inventory.total_videos,
+      unassigned_videos: inventory.unassigned_videos,
+      creators: inventory.creators,
+      by_source: inventory.by_source,
       last_scrape: lastScrape,
       note: 'Real ingestion runs via python3 scripts/video_library_scraper.py (yt-dlp engine). This endpoint reports status only.',
     });
