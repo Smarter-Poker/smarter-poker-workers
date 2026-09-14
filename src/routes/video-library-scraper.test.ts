@@ -9,9 +9,16 @@ const db = vi.hoisted(() => ({
   readError: null as null | { message: string },
   alertError: null as null | { message: string },
   omitReceipt: false, alerts: [] as unknown[],
+  inventory: null as unknown,
+  lastAuditRows: [] as Array<Record<string, unknown>>,
+  inventoryReads: 0,
 }));
 vi.mock('../lib/supabase.js', () => ({ getSupabase: () => ({
-  rpc: async (_name: string, args: unknown) => {
+  rpc: async (name: string, args: unknown) => {
+    if (name === 'fn_video_library_scrape_inventory') {
+      db.inventoryReads++;
+      return { data: db.inventory, error: db.readError };
+    }
     db.alerts.push(args);
     return { data: db.alertError ? null : 123, error: db.alertError };
   },
@@ -24,7 +31,7 @@ vi.mock('../lib/supabase.js', () => ({ getSupabase: () => ({
         ? Promise.resolve({ count: 42, data: null, error: db.readError }) : q,
       eq: (key: string, value: string) => { if (key === 'id') id = value; return q; },
       order: () => q,
-      limit: () => Promise.resolve({ data: [], error: db.readError }),
+      limit: () => Promise.resolve({ data: db.lastAuditRows, error: db.readError }),
       maybeSingle: async () => {
         if (!row) return { data: db.rows.get(id), error: db.readError };
         if (db.auditError) return { data: null, error: db.auditError };
@@ -51,6 +58,8 @@ let app: Hono;
 beforeEach(() => {
   db.rows.clear(); db.alerts.length = 0;
   db.auditError = db.readError = db.alertError = null; db.omitReceipt = false;
+  db.inventory = { total_videos: 42, unassigned_videos: 0, creators: 1, by_source: { HCL: 42 } };
+  db.lastAuditRows = []; db.inventoryReads = 0;
   executed = 0;
   app = new Hono();
   app.use('/cron/*', async (c, next) => {
@@ -73,6 +82,38 @@ describe('video scrape result authority', () => {
   it('refuses status-query errors rather than reporting an empty healthy library', async () => {
     db.readError = { message: 'database read unavailable' };
     expect((await app.request('/cron/video-library-scraper')).status).toBe(503);
+  });
+  it('reports the full inventory and unassigned rows from one aggregate', async () => {
+    db.inventory = JSON.parse('{"total_videos":2509,"unassigned_videos":2,"creators":4,"by_source":{"HCL":1500,"Poker & Café":1005,"__proto__":1,"constructor":1}}');
+    const res = await app.request('/cron/video-library-scraper');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject(db.inventory);
+    expect(db.inventoryReads).toBe(1); expect(executed).toBe(0);
+    expect(db.alerts).toEqual([]); expect(db.rows.size).toBe(0);
+  });
+  it('reports an empty library only when the database confirms all zero counts', async () => {
+    db.inventory = { total_videos: 0, unassigned_videos: 0, creators: 0, by_source: {} };
+    const res = await app.request('/cron/video-library-scraper');
+    expect(res.status).toBe(200); expect(await res.json()).toMatchObject(db.inventory);
+  });
+  it.each([
+    null, {}, { total_videos: 42, creators: 1, unassigned_videos: 0, by_source: { HCL: 41 } },
+    { total_videos: 42, creators: 2, unassigned_videos: 0, by_source: { HCL: 42 } },
+    { total_videos: 42, creators: 1, unassigned_videos: 0, by_source: { HCL: '42' } },
+    { total_videos: 42, creators: 1, unassigned_videos: -1, by_source: { HCL: 43 } },
+    { total_videos: 0, creators: 0, unassigned_videos: 0, by_source: [] },
+  ])('refuses incomplete or inconsistent inventory %j', async (inventory) => {
+    db.inventory = inventory;
+    const res = await app.request('/cron/video-library-scraper');
+    expect(res.status).toBe(503); expect((await res.json()).success).toBe(false);
+    expect(db.rows.size).toBe(0); expect(executed).toBe(0);
+  });
+  it.each(['full', 'source', undefined])('exposes the scope of the last scrape without inventing it: %s', async (scope) => {
+    db.lastAuditRows = [{ scrape_proof: { scope, success: true }, created_at: '2026-09-14T06:00:00Z' }];
+    const res = await app.request('/cron/video-library-scraper');
+    expect(res.status).toBe(200);
+    expect((await res.json()).last_scrape.scope).toBe(scope ?? null);
+    expect(executed).toBe(0);
   });
   it('records a single-source report without freshening the full daily job', async () => {
     const res = await post({ ...report(), scope: 'source', source_id: 'HCL' });
