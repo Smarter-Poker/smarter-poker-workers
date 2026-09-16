@@ -39,14 +39,13 @@ export class WorkerDrain {
   }
 }
 
-// Below Docker's ten-minute grace, leaving time for telemetry to flush.
+// Below Docker's ten-minute grace, leaving time for process termination.
 export const WORKER_DRAIN_DEADLINE_MS = 9 * 60_000;
 
 export function installWorkerShutdown(
   server: ServerType,
   drain: WorkerDrain,
   stopBackground: () => void,
-  flush: () => Promise<unknown>,
   deadlineMs = WORKER_DRAIN_DEADLINE_MS,
 ): void {
   let stopping = false;
@@ -68,7 +67,6 @@ export function installWorkerShutdown(
             server.close((error) => error ? reject(error) : resolve());
           });
           await Promise.all([closed, drain.whenIdle()]);
-          await flush();
           clearTimeout(deadline);
           console.log('[workers] accepted jobs and completion records drained');
           process.exit(0);

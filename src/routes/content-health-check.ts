@@ -5,7 +5,7 @@
  *
  * Daily 6am: check 7 content-source RSS/HTML URLs for liveness.
  * If primary fails, try each fallback URL; on fix, log to system_logs.
- * If no fallback recovers, report to Sentry as a warning.
+ * If no fallback recovers, retain the failure in the response and local logs.
  *
  * Stateless check — no persistent state. Safe to run twice concurrently
  * (both would do the same fetches; only side effect is a system_logs
@@ -14,7 +14,6 @@
  * Auth: /cron/* middleware chain.
  */
 import type { Context } from 'hono';
-import * as Sentry from '@sentry/node';
 import { getSupabase } from '../lib/supabase.js';
 
 interface Source {
@@ -154,13 +153,14 @@ export async function contentHealthCheck(c: Context) {
   }
 
   if (results.needs_attention.length > 0) {
-    Sentry.captureMessage(
-      `Content Health Check: ${results.needs_attention.length} sources need manual attention`,
-      {
-        level: 'warning',
-        extra: { failed_sources: results.needs_attention, full_results: results },
-      },
-    );
+    try {
+      console.warn(
+        `[content-health-check] ${results.needs_attention.length} sources need manual attention`,
+        { failed_sources: results.needs_attention, full_results: results },
+      );
+    } catch {
+      // A failed log sink must not replace the actual source-health result.
+    }
   }
 
   return c.json({ success: results.failed === 0, ...results });

@@ -31,8 +31,7 @@ if (process.env.DRAIN_LEGACY === '1') {
   // Exact predecessor behavior: flush telemetry then exit, with no job drain.
   process.on('SIGTERM', () => { void Promise.resolve().then(() => process.exit(0)); });
 } else installWorkerShutdown(server, drain,
-  () => { process.send?.('stopping'); },
-  async () => {
-    if (process.env.DRAIN_FLUSH_FAIL === '1') throw new Error('native flush failure');
-    await record('flush');
+  () => {
+    if (process.env.DRAIN_STOP_FAIL === '1') throw new Error('background stop failed');
+    process.send?.('stopping');
   }, Number(process.env.DRAIN_DEADLINE || '5000'));
