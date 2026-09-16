@@ -86,7 +86,7 @@ describe('worker deployment drain with real Hono HTTP and OS signals', () => {
     expect(await readFile(probe.record, 'utf8')).toBe('job\n');
     probe.child.send('receipt');
     expect(await probe.exited).toBe(0);
-    expect(await readFile(probe.record, 'utf8')).toBe('job\nreceipt\nflush\n');
+    expect(await readFile(probe.record, 'utf8')).toBe('job\nreceipt\n');
     expect(probe.seen.filter((x) => x === 'stopping')).toHaveLength(1);
   });
 
@@ -103,7 +103,7 @@ describe('worker deployment drain with real Hono HTTP and OS signals', () => {
     await probe.until((x) => x === 'job-finished');
     probe.child.send('receipt');
     expect(await probe.exited).toBe(0);
-    expect(await readFile(probe.record, 'utf8')).toBe('job\nreceipt\nflush\n');
+    expect(await readFile(probe.record, 'utf8')).toBe('job\nreceipt\n');
   });
 
   it('exits unsuccessfully at the deadline for an accepted hung job', async () => {
@@ -117,8 +117,8 @@ describe('worker deployment drain with real Hono HTTP and OS signals', () => {
     expect(probe.output()).toContain('shutdown deadline exceeded');
   });
 
-  it('reports a failed telemetry flush instead of a successful shutdown', async () => {
-    const probe = await start({ DRAIN_FLUSH_FAIL: '1' });
+  it('reports a failed background stop instead of a successful shutdown', async () => {
+    const probe = await start({ DRAIN_STOP_FAIL: '1' });
     probe.child.kill('SIGTERM');
     expect(await probe.exited).toBe(1);
     expect(probe.output()).toContain('shutdown failed');

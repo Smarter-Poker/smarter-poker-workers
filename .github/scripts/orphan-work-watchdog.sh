@@ -56,7 +56,7 @@ CUTOFF=$(( NOW - MIN_AGE_HOURS * 3600 ))
 # TWO STREAMS, AND THE ACTIONABLE ONE IS NOT THE ONE THAT GETS TRUNCATED
 # (2026-09-03). There is one detail cap (MAX_DETAIL, for GitHub's 65536-char
 # issue body) and the branch pass runs first, so on this repo - 428 stranded
-# branches, most of them April `sentry-autofix/*` and August `rescue/*` - the
+# branches, most of them April automated-repair and August `rescue/*` - the
 # branch findings filled all forty slots and anything the pull-request pass
 # found was appended after the cutoff and silently dropped.
 #

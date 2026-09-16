@@ -1,5 +1,4 @@
 import { getSupabase } from './supabase.js';
-import * as Sentry from '@sentry/node';
 
 type Prepared = { busy: boolean; queued?: number; next_due_at?: string | null; oldest_pending_at?: string | null };
 type Dispatched = { ok: boolean; reminderProtocol: number; claimed: number; sent: number; skipped: number; failed: number; uncertain: number };
@@ -119,6 +118,5 @@ export const tournamentReminderWorker = new TournamentReminderWorker({
   dispatch: dispatchTournamentReminders,
   report(error) {
     console.error('[tournament-reminders]', error instanceof Error ? error.message : 'Execution failed');
-    Sentry.captureException(error);
   },
 });

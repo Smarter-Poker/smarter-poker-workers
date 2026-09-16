@@ -235,7 +235,7 @@ if [ "${SKIP_ORPHAN_BRANCHES:-0}" != "1" ]; then
     [ -n "$B" ] || continue
     case "$B" in
       "$DEFAULT_BRANCH"|master|production) continue ;;
-      ci-marker/*|build/*|backup/*|dependabot/*|sentry-autofix/*|revert-*|renovate/*) continue ;;
+      ci-marker/*|build/*|backup/*|dependabot/*|*autofix/*|revert-*|renovate/*) continue ;;
     esac
     # A branch with no PR at all is an orphan. So is one whose PR has finished
     # and which has been pushed to since - decided below, once the tip date is

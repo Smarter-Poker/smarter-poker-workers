@@ -16,11 +16,11 @@
     "test": "vitest run",
     "test:integrity-memory": "node scripts/ci/check-integrity-scan-memory.mjs",
     "test:watch": "vitest",
-    "prepare": "git config core.hooksPath .husky 2>/dev/null || true"
+    "prepare": "git config core.hooksPath .husky 2>/dev/null || true",
+    "pretest": "node --test scripts/ci/retired-error-provider.test.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "@sentry/node": "^8.40.0",
     "@supabase/supabase-js": "^2.103.3",
     "hono": "^4.6.10",
     "posthog-node": "^4.18.0",

@@ -9,7 +9,6 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { WorkerDrain, installWorkerShutdown } from './lib/workerDrain.js';
-import * as Sentry from '@sentry/node';
 import { requireCronSecret, ipAllowlist } from './middleware/auth.js';
 import { health } from './routes/health.js';
 import { tournamentReminderWorker } from './lib/tournamentReminderWorker.js';
@@ -21,7 +20,6 @@ import { venueReviewPrompts } from './routes/venue-review-prompts.js';
 import { venueGameAlerts } from './routes/venue-game-alerts.js';
 import { licenseReminders } from './routes/license-reminders.js';
 import { scraperWatchdog } from './routes/scraper-watchdog.js';
-import { clawbotOrchestrator } from './routes/clawbot-orchestrator.js';
 import { unionRakeback } from './routes/union-rakeback.js';
 import { autoSettlementDistribute } from './routes/auto-settlement-distribute.js';
 import { autoSettlement } from './routes/auto-settlement.js';
@@ -85,16 +83,6 @@ import { rakebackPeriodSettle } from './routes/rakeback-period-settle.js';
 import { antiCheatMultiAccount } from './routes/anti-cheat-multi-account.js';
 import { antiCheatBotTiming } from './routes/anti-cheat-bot-timing.js';
 import { antiCheatChipDump } from './routes/anti-cheat-chip-dump.js';
-
-// ─── Sentry — fire-and-forget error reporting ──────────────────────────────
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV ?? 'production',
-    tracesSampleRate: 0.1,
-    release: process.env.GIT_SHA ?? 'dev',
-  });
-}
 
 // ─── App ────────────────────────────────────────────────────────────────────
 const app = new Hono();
@@ -222,8 +210,6 @@ app.get('/cron/license-reminders', licenseReminders);
 app.post('/cron/license-reminders', licenseReminders);
 app.get('/cron/scraper-watchdog', scraperWatchdog);
 app.post('/cron/scraper-watchdog', scraperWatchdog);
-app.get('/cron/clawbot-orchestrator', clawbotOrchestrator);
-app.post('/cron/clawbot-orchestrator', clawbotOrchestrator);
 app.get('/cron/union-rakeback', unionRakeback);
 app.post('/cron/union-rakeback', unionRakeback);
 app.get('/cron/auto-settlement-distribute', autoSettlementDistribute);
@@ -355,7 +341,6 @@ app.post('/cron/anti-cheat-chip-dump', antiCheatChipDump);
 // ─── Error boundary ─────────────────────────────────────────────────────────
 app.onError((err, c) => {
   console.error('[workers] unhandled error:', err);
-  Sentry.captureException(err);
   return c.json({ error: 'internal' }, 500);
 });
 
@@ -372,5 +357,4 @@ const server = serve({
 });
 
 installWorkerShutdown(server, workerDrain,
-  () => tournamentReminderWorker.stop(),
-  () => Sentry.close(2000));
+  () => tournamentReminderWorker.stop());
