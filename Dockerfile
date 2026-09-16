@@ -5,12 +5,12 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 # --- Install prod dependencies in an isolated layer so rebuilds are fast ---
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund --ignore-scripts --legacy-peer-deps
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts --legacy-peer-deps
 
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund --ignore-scripts --legacy-peer-deps
+RUN npm ci --no-audit --no-fund --ignore-scripts --legacy-peer-deps
 COPY tsconfig.json ./
 COPY src ./src
 ARG GIT_SHA=dev

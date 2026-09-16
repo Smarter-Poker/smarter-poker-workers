@@ -34,3 +34,13 @@ test('the provider-only scheduled route and dispatcher are removed', () => {
     assert.equal(fs.existsSync(path.join(root, file)), false, `${file} must remain retired`);
   }
 });
+
+
+test('container dependency layers require the reviewed lockfile', () => {
+  const dockerfile = read('Dockerfile');
+  const dependencySteps = dockerfile.split('\n').filter((line) => /^RUN npm (?:install|ci)\b/.test(line));
+  assert.deepEqual(dependencySteps, [
+    'RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts --legacy-peer-deps',
+    'RUN npm ci --no-audit --no-fund --ignore-scripts --legacy-peer-deps',
+  ]);
+});
