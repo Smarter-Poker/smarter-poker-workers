@@ -108,7 +108,7 @@ so the only route that exists is `/health` and the reserved `/cron/_scaffold-pin
 
 ## Observability
 
-- Sentry for uncaught exceptions (DSN via env)
+- Local error diagnostics for uncaught route failures, reminders and content checks
 - stdout → Docker json-file (10 MB × 7 rotation)
 - `/health` endpoint for readiness + liveness + monitors
 - PostHog for optional event emissions (reusing World Hub's project)

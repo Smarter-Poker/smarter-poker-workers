@@ -6,7 +6,6 @@
 #   CRON_SECRET=<shared with Open Claw>
 #   SUPABASE_URL=<same as World Hub>
 #   SUPABASE_SERVICE_ROLE_KEY=<same as World Hub>
-#   SENTRY_DSN=<workers-scoped DSN>
 #   ALLOWED_CRON_IPS=178.104.160.250,127.0.0.1
 #   RESEND_API_KEY=<if jobs send email>
 #   TWILIO_ACCOUNT_SID=<if jobs send SMS>

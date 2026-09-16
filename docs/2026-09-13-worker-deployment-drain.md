@@ -6,7 +6,7 @@ later swept to `killed`, without a completion record. The next two-hour run
 completed 50 themes with no errors, which restored the signal but did not repair
 the shutdown defect.
 
-The existing signal handler flushed Sentry and exited immediately. It did not
+The existing signal handler flushed the former external error reporter and exited immediately. It did not
 close the listener, await accepted handlers, or retain the detached completion
 PATCH. A normal deployment could therefore discard a running job and leave its
 audit row looking abandoned. The old behavior is reproduced with a real Hono
