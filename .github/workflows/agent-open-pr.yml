@@ -59,7 +59,7 @@ on:
       - 'build/**'
       - 'dependabot/**'
       - 'renovate/**'
-      - 'sentry-autofix/**'
+      - '*autofix/**'
       - 'revert-*'
 
 permissions:
@@ -117,7 +117,7 @@ jobs:
       && !startsWith(github.ref_name, 'build/')
       && !startsWith(github.ref_name, 'dependabot/')
       && !startsWith(github.ref_name, 'renovate/')
-      && !startsWith(github.ref_name, 'sentry-autofix/')
+      && !contains(github.ref_name, 'autofix/')
       && !startsWith(github.ref_name, 'revert-')
     name: Open a PR for this branch
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

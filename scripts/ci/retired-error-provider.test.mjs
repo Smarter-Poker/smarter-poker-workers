@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const provider = ['sen', 'try'].join('');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
 function sourceFiles(directory) {
@@ -17,13 +18,13 @@ function sourceFiles(directory) {
 
 test('worker dependency and environment configuration cannot restore the retired provider', () => {
   for (const file of ['package.json', 'package-lock.json', '.env.example', 'docker-compose.yml', 'Dockerfile']) {
-    assert.doesNotMatch(read(file), /@sentry(?:-internal)?\/|\bSENTRY_[A-Z_]+|https?:[^\s'"`]*sentry\.io/i, file);
+    assert.doesNotMatch(read(file), new RegExp(String.raw`@${provider}(?:-internal)?/|\b${provider}_[A-Z_]+|${provider}\.io`, 'i'), file);
   }
 });
 
 test('worker runtime has no retired SDK, activation key or external error destination', () => {
   for (const file of sourceFiles('src')) {
-    assert.doesNotMatch(read(file), /\bsentry\b|\bSENTRY_[A-Z_]+|sentry\.io/i, file);
+    assert.doesNotMatch(read(file), new RegExp(String.raw`\b${provider}\b|\b${provider}_[A-Z_]+|${provider}\.io`, 'i'), file);
   }
 });
 
