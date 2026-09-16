@@ -16,7 +16,7 @@ permissions:
 jobs:
   checks:
     name: Typecheck + Lint + Test + Build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, smarter-local-linux-arm64]
     timeout-minutes: 10
 
     steps:
@@ -28,7 +28,7 @@ jobs:
           node-version: '20.x'
 
       - name: Install deps
-        run: npm install --no-audit --no-fund --legacy-peer-deps
+        run: npm ci --no-audit --no-fund --ignore-scripts --legacy-peer-deps
 
       - name: Typecheck
         run: npm run typecheck
