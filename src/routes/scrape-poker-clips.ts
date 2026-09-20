@@ -207,12 +207,20 @@ function decodeEntities(s: string): string {
 /**
  * Sources to scrape this run: least recently scraped first, so the whole
  * registry is walked over a day rather than the first 25 rows every hour.
+ *
+ * YouTube channels ONLY. content_sources also holds the poker news feeds
+ * (kind 'rss'), which this route can never read: they have no handle and no
+ * channel id, so every visit was charged as a failure. Between 2026-09-13 and
+ * 2026-09-15 this route retired all four poker news feeds - CardPlayer,
+ * Poker.org, PokerNews and Upswing Poker News - and newsSources('poker'),
+ * which reads only active rss rows, has had nothing to offer a horse since.
  */
 async function dueSources(): Promise<SourceRow[]> {
   const { data, error } = await getSupabase()
     .from('content_sources')
     .select('id, name, handle, channel_id, category, consecutive_failures')
     .eq('domain', 'poker')
+    .eq('kind', 'youtube_channel')
     .eq('is_active', true)
     .order('last_scraped_at', { ascending: true, nullsFirst: true })
     .limit(CONFIG.MAX_SOURCES_PER_RUN);
