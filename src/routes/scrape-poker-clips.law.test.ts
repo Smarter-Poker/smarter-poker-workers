@@ -22,6 +22,9 @@ interface Row {
   channel_id: string | null;
   category: string | null;
   consecutive_failures: number;
+  domain: string;
+  kind: string;
+  is_active: boolean;
 }
 
 const db = vi.hoisted(() => ({
@@ -32,7 +35,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock('../lib/supabase.js', () => {
   function builder(table: string) {
-    const state: { op: string; patch?: Record<string, unknown>; rows?: unknown[]; id?: unknown } = { op: 'select' };
+    const state: { op: string; patch?: Record<string, unknown>; rows?: unknown[]; id?: unknown; eq: Array<[string, unknown]> } = { op: 'select', eq: [] };
     const b: Record<string, unknown> = {};
     const self = () => b;
     Object.assign(b, {
@@ -43,6 +46,7 @@ vi.mock('../lib/supabase.js', () => {
       in: self,
       eq: (col: string, val: unknown) => {
         if (col === 'id') state.id = val;
+        state.eq.push([col, val]);
         return b;
       },
       update: (patch: Record<string, unknown>) => {
@@ -61,7 +65,10 @@ vi.mock('../lib/supabase.js', () => {
           db.updates.push({ id: state.id, patch: state.patch! });
           out = { error: null };
         } else if (table === 'content_sources') {
-          out = { data: db.due, error: null };
+          const rows = db.due.filter((r) =>
+            state.eq.every(([col, val]) => (r as unknown as Record<string, unknown>)[col] === val),
+          );
+          out = { data: rows, error: null };
         } else if (table === 'poker_clips' && state.op === 'upsert') {
           db.upserted += state.rows!.length;
           out = { error: null, count: state.rows!.length };
@@ -94,6 +101,9 @@ function row(i: number, failures: number, withChannel = true): Row {
     channel_id: withChannel ? channelId(i) : null,
     category: 'clip',
     consecutive_failures: failures,
+    domain: 'poker',
+    kind: 'youtube_channel',
+    is_active: true,
   };
 }
 
@@ -238,6 +248,29 @@ describe('only YouTube saying "gone" counts, and only while YouTube is answering
     expect(r).toEqual({ channelId: null, throttled: false, outcome: 'no-answer' });
     globalThis.fetch = vi.fn(async () => new Response('nope', { status: 404 })) as unknown as typeof fetch;
     expect((await resolveChannelId('@GoneForever')).outcome).toBe('missing');
+  });
+});
+
+describe('the channel scraper walks channels, not news feeds', () => {
+  it('a poker news feed row is never visited, charged or retired, even while YouTube is answering', async () => {
+    // 2026-09-13..15: CardPlayer, Poker.org, PokerNews and Upswing Poker News
+    // (kind 'rss', no handle, no channel id) were each charged six times by this
+    // route and retired, leaving poker news with no active source.
+    const news: Row = {
+      id: 'src-news',
+      name: 'PokerNews',
+      handle: null,
+      channel_id: null,
+      category: null,
+      consecutive_failures: 5,
+      domain: 'poker',
+      kind: 'rss',
+      is_active: true,
+    };
+    db.due = [row(1, 0), news];
+    const body = await run(() => new Response(atomFeed(1, ['2026-09-19T12:00:00+00:00']), { status: 200 }));
+    expect(body).toMatchObject({ sources_scanned: 1, youtube_answered: true, failures_charged: 0, sources_retired: 0 });
+    expect(db.updates.filter((u) => u.id === 'src-news')).toEqual([]);
   });
 });
 
