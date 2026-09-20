@@ -1,141 +1,46 @@
-#!/bin/bash
-# THE ONLY HOOK THAT FIRES BEFORE `git reset --hard origin/main` LANDS.
+#!/usr/bin/env bash
+# Prevent a ref transaction from making local commits unreachable.
 #
-# Antigravity runs that reset on a background schedule to sync the tree. For
-# uncommitted files that is intended. For LOCAL COMMITS it is destruction, and
-# once the reflog ages out they are unrecoverable. It took the trivia phase-4
-# audit doc and the [mode].js edits on 2026-08-12.
+# This hook is deliberately preventive and read-only. It does not stash,
+# snapshot, create rescue refs, reconcile state, or repair an operation after
+# the fact. The working-tree root control is one isolated worktree per agent;
+# this hook is the final fail-closed boundary for committed work.
 #
-# git has no `pre-reset` hook — the file of that name in some of these clones
-# has never once run — and `post-checkout` fires after the damage, and not on
-# `git reset` at all.
-# `reference-transaction` fires on "prepared", before any ref update is
-# committed to disk, and returning non-zero aborts the whole transaction.
-#
-# This version differs from the untracked one it replaces in three ways, each
-# of which had to change before it could be tracked and rolled to every repo:
-#
-#   1. IT SAVES BEFORE IT REFUSES. The commits about to be orphaned are written
-#      to refs/wip/orphan-guard/<stamp> first. A ref is not reachable from any
-#      branch but it is not garbage either, so even an override or a --no-verify
-#      now leaves the work recoverable. Blocking and saving are different jobs
-#      and only one of them was being done.
-#   2. IT HAS AN ESCAPE HATCH. scripts/agent-workspace.sh legitimately runs
-#      `git checkout -B <branch> origin/main`, which moves a ref backwards on
-#      purpose. Without AGENT_REF_GUARD_OK=1 this hook would wedge the one
-#      command every agent is told to start with.
-#   3. IT IS TRACKED. The version this replaces lives in .git/hooks/, which is
-#      untracked — so ten days of protection covered exactly one machine and
-#      died on every fresh clone.
-#
-# stdin is one line per ref update:  <old> SP <new> SP <ref-name> LF
-STATE="$1"
-[ "$STATE" = "prepared" ] || exit 0
+# stdin: <old-object> SP <new-object> SP <ref-name> LF
+set -u
 
-# Deliberate, announced ref rewinds. Set by scripts/agent-workspace.sh and
-# scripts/git-safe-push.sh, which move refs backwards as part of their job.
-[ "${AGENT_REF_GUARD_OK:-}" = "1" ] && exit 0
-[ -n "${CI:-}${GITHUB_ACTIONS:-}" ] && exit 0
+[ "${1:-}" = "prepared" ] || exit 0
 
 ZERO=0000000000000000000000000000000000000000
 
 while read -r OLD NEW REF; do
-    case "$REF" in
-        HEAD|refs/heads/main|refs/heads/master) ;;
-        *) continue ;;
-    esac
-    [ "$OLD" = "$ZERO" ] && continue
-    [ "$NEW" = "$ZERO" ] && continue
+  case "$REF" in
+    HEAD|refs/heads/main|refs/heads/master) ;;
+    *) continue ;;
+  esac
 
-    # OLD == NEW IS NOT NOTHING. It is `git reset --hard` with no argument:
-    # history does not move, so this hook used to `continue` past it - and
-    # discarding the WORKING TREE is that command's entire effect. It is the
-    # exact shape that wiped a full Club Bank Cashier session twice on
-    # 2026-08-23, and every guard in this repo scored a pass on it because they
-    # all look for orphaned COMMITS and correctly found none.
-    #
-    # Nothing here can PREVENT it. By the time reference-transaction fires at
-    # "prepared", git has already reset the index and the working tree -
-    # verified by running `git status` from inside this hook mid-reset and
-    # getting a clean tree back. There is no earlier hook; git has no
-    # pre-reset. So this says what just happened and points at the snapshots,
-    # which is the difference between losing an hour and losing a session.
-    if [ "$OLD" = "$NEW" ]; then
-        # DO NOT ASK THE REFLOG. At "prepared" the entry for this operation
-        # has not been written yet, so `git reflog -1` returns the PREVIOUS
-        # action and the match never fires - the same class of mistake as the
-        # dead string test this commit removes from post-checkout.
-        #
-        # Measured instead: across reset(dirty), reset(clean), commit,
-        # checkout, fetch and tag, OLD == NEW on HEAD/main occurs ONLY for
-        # `git reset` and for `git branch -M <same-name>`. A freshly written
-        # ORIG_HEAD separates those two, because reset writes it and a rename
-        # does not.
-        GD=$(git rev-parse --git-dir 2>/dev/null || echo .git)
-        IS_RESET=no
-        if [ -f "$GD/ORIG_HEAD" ]; then
-            # GNU stat first (see the note in the commit): on Linux `stat -f`
-            # is --file-system and %m is the MOUNT POINT, a path, which would
-            # make the arithmetic below fail. macOS rejects -c and falls through.
-            NOW=$(date +%s)
-            MOD=$(stat -c %Y "$GD/ORIG_HEAD" 2>/dev/null || stat -f %m "$GD/ORIG_HEAD" 2>/dev/null || echo 0)
-            [ $((NOW - MOD)) -le 5 ] && IS_RESET=yes
-        fi
-        case "$IS_RESET" in
-            yes)
-                RECENT=$(git for-each-ref --sort=-creatordate --count=3 \
-                           --format='    %(refname)  (%(creatordate:relative))' \
-                           refs/wip 2>/dev/null)
-                {
-                  echo ""
-                  echo "  A hard reset just discarded uncommitted changes in this tree."
-                  echo "  History did not move, so nothing was orphaned - but tracked"
-                  echo "  modifications are gone. Untracked files are untouched."
-                  echo ""
-                  if [ -n "$RECENT" ]; then
-                    echo "  Most recent working-tree snapshots (launchd, every 10 min):"
-                    echo "$RECENT"
-                    echo ""
-                    echo "  Recover with:  git stash apply <ref>"
-                  else
-                    echo "  No refs/wip snapshots exist. If that work mattered, check"
-                    echo "  \`git fsck --lost-found\` now, before the objects are pruned."
-                  fi
-                  echo ""
-                } >&2
-                ;;
-        esac
-        continue
-    fi
+  [ "$OLD" != "$ZERO" ] || continue
+  [ "$OLD" != "$NEW" ] || continue
 
-    # Commits reachable from OLD but not NEW: exactly what this update destroys.
-    ORPHANED=$(git log "$NEW..$OLD" --oneline 2>/dev/null | head -20)
-    [ -n "$ORPHANED" ] || continue
-
-    # SAVE FIRST. update-ref inside a reference-transaction hook is a separate
-    # transaction and does not recurse into this hook for refs/wip/*, because
-    # the loop above only inspects HEAD and main.
-    STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-    SNAP="refs/wip/orphan-guard/${STAMP}"
-    git update-ref "$SNAP" "$OLD" 2>/dev/null
-
-    {
-      echo ""
-      echo "  BLOCKED: this ref update would orphan local commits."
-      echo ""
-      echo "$ORPHANED" | sed 's/^/    /'
-      echo ""
-      echo "  They are NOT on origin. Nothing has been lost — they are saved at:"
-      echo "    $SNAP"
-      echo ""
-      echo "  Recover with:   git log $SNAP     /     git checkout -b rescue $SNAP"
-      echo "  Ship them with: bash scripts/git-safe-push.sh \"what changed\""
-      echo ""
-      echo "  If you genuinely mean to discard them:"
-      echo "    AGENT_REF_GUARD_OK=1 git reset --hard origin/main"
-      echo ""
-    } >&2
-    exit 1
+  if [ "$NEW" = "$ZERO" ]; then
+    CANDIDATE=$(git rev-list --max-count=1 "$OLD" --not --exclude="$REF" --all 2>/dev/null || true)
+    ORPHANED=$(git log --oneline --max-count=20 "$OLD" --not --exclude="$REF" --all 2>/dev/null || true)
+  else
+    CANDIDATE=$(git rev-list --max-count=1 "$OLD" --not "$NEW" --exclude="$REF" --all 2>/dev/null || true)
+    ORPHANED=$(git log --oneline --max-count=20 "$OLD" --not "$NEW" --exclude="$REF" --all 2>/dev/null || true)
+  fi
+  [ -n "$CANDIDATE" ] || continue
+  {
+    echo
+    echo "  BLOCKED: this ref update would make local commits unreachable."
+    echo
+    printf '%s\n' "$ORPHANED" | sed 's/^/    /'
+    echo
+    echo "  Create or push a branch that contains the commits, then retry."
+    echo "  No hook-created snapshot or recovery ref was written."
+    echo
+  } >&2
+  exit 1
 done
 
 exit 0
