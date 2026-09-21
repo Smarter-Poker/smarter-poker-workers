@@ -130,11 +130,19 @@ describe('quality controls fail closed', () => {
 
 describe('the promised reply contract is actually wired', () => {
   const social = source('HorseSocialEngine.ts');
+  const fleet = source('Fleet.ts');
+  const replies = social.slice(social.indexOf('export async function replyToComments'));
 
-  it('loads aliases and the whole 48-hour decision window', () => {
-    expect(social).toMatch(/select\('id, name, alias, profile_id, voice, timezone'\)/);
-    expect(social).toMatch(/48 \* 3_600_000/);
-    expect(social).toMatch(/\.range\(from, from \+ 999\)/);
+  // 2026-09-21 (P2C-03, A1): the contract this block pinned was the defect.
+  // "The whole 48-hour decision window" let a horse's older replies fall out
+  // of the caps. Now 48 hours only chooses the posts; each thread is read
+  // whole, and aliases come from the paged roster. HorseSocialEngine.live
+  // .test.ts drives the behaviour; this keeps the wiring from drifting.
+  it('loads aliases from the paged roster and whole threads, not a 48-hour slice', () => {
+    expect(replies).toMatch(/rosterOrNull\('replyToComments'\)/);
+    expect(fleet).toMatch(/select\('id, name, alias, profile_id, timezone/);
+    expect(social).toMatch(/THREAD_DISCOVERY_HOURS = 48/);
+    expect(replies).toMatch(/pagedSelect\([\s\S]*\.in\('post_id', chunk\)/);
   });
 
   it('never samples away a mandatory human reply', () => {
@@ -142,8 +150,9 @@ describe('the promised reply contract is actually wired', () => {
   });
 
   it('records the inserted reply id and its real turn number', () => {
-    expect(social).toMatch(/commentId: insertedReply\?\.id \?\? null/);
-    expect(social).toMatch(/turnIndex: decided\.turnIndex/);
+    expect(replies).toMatch(/const replyId = insertedReply\?\.id \?\? await findReplyId\(/);
+    expect(replies).toMatch(/commentId: replyId,/);
+    expect(replies).toMatch(/const turnIndex = decided\.decision\.turnIndex/);
   });
 });
 

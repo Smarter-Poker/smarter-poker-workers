@@ -32,12 +32,16 @@ export async function horsesSocialFriends(c: Context) {
     }
 
     const sendResult = await sendFriendRequests(10);
-    const acceptResult = await acceptFriendRequests(15);
+    // 2026-09-21 (D2): re-read between the two steps.
+    const acceptResult = (await engineEnabled())
+      ? await acceptFriendRequests(15)
+      : { accepted: 0, skip_reasons: { engine_disabled: 1 } };
 
     return c.json({
       success: true,
       sent: sendResult.sent,
       accepted: acceptResult.accepted,
+      skip_reasons: { send: sendResult.skip_reasons, accept: acceptResult.skip_reasons },
       timestamp: new Date().toISOString(),
     });
   } catch (err) {

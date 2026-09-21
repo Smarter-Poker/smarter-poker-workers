@@ -425,7 +425,18 @@ export async function recordBrief(postId: string, brief: PostBrief): Promise<voi
   }
 }
 
-/** Record that a reply happened, and the rule that allowed it. */
+/**
+ * Record that a reply happened, and the rule that allowed it.
+ *
+ * An audit row, written after the reply exists: nothing on the publish path
+ * reads it. The caps are counted from social_comments itself, over the whole
+ * thread (ReplyEngine), because that is what was actually published and this
+ * table has no unique key to enforce anything with. `commentId` is the reply
+ * just inserted; the six production rows without one (2026-09-05/06) came
+ * from code that never passed it (#84, #85; fixed in #108).
+ *
+ * Returns whether the row was written, so the run can count a failure.
+ */
 export async function recordThreadTurn(input: {
   postId: string;
   horseId: string;
@@ -433,7 +444,10 @@ export async function recordThreadTurn(input: {
   parentId?: string | null;
   reason: string;
   turnIndex?: number;
-}): Promise<void> {
+}): Promise<boolean> {
+  if (!input.commentId) {
+    console.warn('[voice] thread state recorded without the reply id; the reply could not be found');
+  }
   try {
     const { error } = await getSupabase().from('horse_thread_state').insert({
       post_id: input.postId,
@@ -443,9 +457,14 @@ export async function recordThreadTurn(input: {
       reason: input.reason,
       turn_index: input.turnIndex ?? 1,
     });
-    if (error) console.warn('[voice] thread state write failed:', error.message);
+    if (error) {
+      console.warn('[voice] thread state write failed:', error.message);
+      return false;
+    }
+    return true;
   } catch (e) {
     console.warn('[voice] thread state write threw:', e instanceof Error ? e.message : e);
+    return false;
   }
 }
 
