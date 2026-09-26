@@ -260,15 +260,15 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
       return 'unknown';
     }
     if (response.status === 403) {
-      // 403 is "embedding disabled" for ONE video, but three in a row from
-      // one IP is bot detection. Do not let a block read as dead videos.
+      // A 403 cannot distinguish one video's embed policy from an IP-level
+      // block. It is never durable evidence that a clip is dead; repeated
+      // 403s only activate backoff so the fleet stops amplifying the block.
       consecutive403 += 1;
       if (consecutive403 >= 3) {
         oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
         console.warn('[horse-publisher] YouTube oEmbed 403 x3; treating as a block, backing off 15 minutes');
-        return 'unknown';
       }
-      return 'bad';
+      return 'unknown';
     }
     consecutive403 = 0;
     let v: YtValidity;
@@ -608,6 +608,10 @@ export async function publishVideoForHorse(
   for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
     const result = await publishVideoClip(horse, kind, opts.fleet ?? [], 'horse-video-reels');
     if (result.success || result.skipped) return result;
+    // A lost RPC acknowledgement may already represent a committed post.
+    // Do not try the alternate topic in the same run or relabel uncertainty
+    // as a definite failure; the durable author/asset retry owns recovery.
+    if (result.outcome === 'unknown') return result;
     errors.push(`${kind}_video: ${result.error ?? 'failed'}`);
   }
   return { ...base, success: false, error: errors.join(' | ') };
