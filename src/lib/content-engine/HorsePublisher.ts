@@ -76,6 +76,7 @@ export interface PublishResult {
   caption?: string;
   collided?: boolean;
   error?: string;
+  outcome?: 'unknown';
   skipped?: 'posted_recently';
   /** Phase 2: how well the words matched the subject, and what grounded them. */
   relevance?: number;
@@ -201,6 +202,7 @@ const VALIDITY_TTL_MS = 24 * 3_600_000;
 let oembedBackoffUntil = 0;
 let consecutive403 = 0;
 export const OEMBED_BACKOFF_MS = 15 * 60_000;
+export const YOUTUBE_OEMBED_TIMEOUT_MS = 8_000;
 
 /**
  * Per-run supply telemetry, surfaced in the route's result JSON so a run
@@ -237,10 +239,19 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
   }
   const videoId = key.slice(3);
   const verificationStartedAt = new Date().toISOString();
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error('youtube_oembed_timeout')),
+    YOUTUBE_OEMBED_TIMEOUT_MS,
+  );
+  timeout.unref?.();
   try {
     const response = await fetch(
       `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
-      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' } },
+      {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' },
+        signal: controller.signal,
+      },
     );
     bumpSupplyStat(`yt_http_${response.status}`);
     if (response.status === 429 || response.status >= 500) {
@@ -291,9 +302,11 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     validityCache.set(key, { v, at: Date.now() });
     return v;
   } catch (e) {
-    bumpSupplyStat('yt_fetch_error');
+    bumpSupplyStat(controller.signal.aborted ? 'yt_timeout_unknown' : 'yt_fetch_error');
     console.warn('[horse-publisher] YouTube oEmbed fetch error:', e instanceof Error ? e.message : e);
     return 'unknown';
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -396,8 +409,14 @@ export async function publishVideoClip(
         clip = candidate as unknown as LibraryClip;
         break;
       }
-      await recordValidity(candidate.id, false);
-      bumpSupplyStat('poker_clip_retired_on_use');
+      // Unknown means the verifier, shared registry, or network could not
+      // answer. Only a definitive negative may retire durable supply.
+      if (verdict === 'bad') {
+        await recordValidity(candidate.id, false);
+        bumpSupplyStat('poker_clip_retired_on_use');
+      } else {
+        bumpSupplyStat('poker_clip_unknown_on_use');
+      }
       fresh.splice(idx, 1);
     }
     if (!clip) return { ...base, success: false, error: 'No valid poker clips found' };
@@ -514,7 +533,12 @@ export async function publishVideoClip(
     },
   });
   if (!published.success || !published.postId || !published.reelId) {
-    return { ...base, success: false, error: published.error ?? 'Atomic horse video publication failed' };
+    return {
+      ...base,
+      success: false,
+      outcome: published.outcome,
+      error: published.error ?? 'Atomic horse video publication failed',
+    };
   }
   await recordBrief(published.postId, written.brief);
   return {

@@ -48,6 +48,7 @@ export interface HorseVideoPublicationResult {
   postId?: string;
   reelId?: string;
   created?: boolean;
+  outcome?: 'unknown';
   error?: string;
 }
 
@@ -113,17 +114,41 @@ export async function publishHorseVideoAtomically(
     return { success: false, error: 'horse video publication is missing required author, caption, or semantic data' };
   }
 
-  const { data, error } = await getSupabase().rpc('publish_horse_video_reel', {
-    p_author_id: input.authorId,
-    p_video_url: input.videoUrl,
-    p_caption: input.caption,
-    p_topic: input.topic,
-    p_asset_key: input.assetKey,
-    p_phrase_norm: input.phraseNorm,
-    p_semantic_key: input.semanticKey,
-    p_metadata: input.metadata,
-  });
+  let response: Awaited<ReturnType<ReturnType<typeof getSupabase>['rpc']>>;
+  try {
+    response = await getSupabase().rpc('publish_horse_video_reel', {
+      p_author_id: input.authorId,
+      p_video_url: input.videoUrl,
+      p_caption: input.caption,
+      p_topic: input.topic,
+      p_asset_key: input.assetKey,
+      p_phrase_norm: input.phraseNorm,
+      p_semantic_key: input.semanticKey,
+      p_metadata: input.metadata,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      outcome: 'unknown',
+      error: `atomic horse video publication outcome unknown: ${message}`,
+    };
+  }
+  const { data, error } = response;
   if (error) {
+    const code = String(error.code ?? '');
+    const message = String(error.message ?? 'database request failed');
+    if (
+      !code
+      || /^PGRST00[0-2]$/.test(code)
+      || /abort|timeout|timed out|network|fetch|connection|socket|econnreset/i.test(message)
+    ) {
+      return {
+        success: false,
+        outcome: 'unknown',
+        error: `atomic horse video publication outcome unknown: ${message}`,
+      };
+    }
     return { success: false, error: `atomic horse video publication failed: ${error.message}` };
   }
 

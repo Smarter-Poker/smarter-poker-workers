@@ -9,7 +9,7 @@
  */
 import type { Context } from 'hono';
 import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetScheduler.js';
-import { loadFleet, postModeEnabled } from '../lib/content-engine/Fleet.js';
+import { loadFleet, readPostModeStates } from '../lib/content-engine/Fleet.js';
 import {
   publishVideoForHorse,
   takeSupplyStats,
@@ -24,10 +24,16 @@ export async function horseVideoReels(c: Context) {
   const startedAt = Date.now();
   const now = new Date();
   try {
-    const [pokerEnabled, sportsEnabled] = await Promise.all([
-      postModeEnabled('poker_video'),
-      postModeEnabled('sports_video'),
-    ]);
+    let modeStates: Record<'poker_video' | 'sports_video', boolean>;
+    try {
+      modeStates = await readPostModeStates(['poker_video', 'sports_video']);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[horse-video-reels] mode state unavailable:', message);
+      return c.json({ success: false, error: `mode_state_unavailable: ${message}` }, 503);
+    }
+    const pokerEnabled = modeStates.poker_video;
+    const sportsEnabled = modeStates.sports_video;
     const allowedTypes: HorseVideoTopic[] = [];
     if (pokerEnabled) allowedTypes.push('poker');
     if (sportsEnabled) allowedTypes.push('sports');
@@ -42,6 +48,14 @@ export async function horseVideoReels(c: Context) {
     }
 
     const fleet = await loadFleet();
+    if (!fleet.length) {
+      return c.json({
+        success: false,
+        error: 'active_horse_fleet_empty',
+        modes: { poker_video: pokerEnabled, sports_video: sportsEnabled },
+        timestamp: now.toISOString(),
+      }, 503);
+    }
     const due = fleet
       .map((horse) => ({ horse, slot: isDueForPost(horse.profile_id, horse.timezone, now) }))
       .filter((item) => item.slot.due)
@@ -76,9 +90,12 @@ export async function horseVideoReels(c: Context) {
 
     const posted = results.filter((result) => result.success);
     const skipped = results.filter((result) => result.skipped === 'posted_recently');
-    const failed = results.filter((result) => !result.success && !result.skipped);
+    const unknown = results.filter((result) => result.outcome === 'unknown');
+    const failed = results.filter(
+      (result) => !result.success && !result.skipped && result.outcome !== 'unknown',
+    );
     const errors: Record<string, number> = {};
-    for (const result of failed) {
+    for (const result of [...failed, ...unknown]) {
       const key = result.error ?? 'unknown';
       errors[key] = (errors[key] ?? 0) + 1;
     }
@@ -88,8 +105,8 @@ export async function horseVideoReels(c: Context) {
     // the response status, while partial progress and guard-race skips remain
     // successful runs with their detailed counts intact.
     const systemicFailure = (
-      (results.length > 0 && posted.length === 0 && skipped.length === 0 && failed.length === results.length)
-      || (deadlineHit && results.length === 0 && due.length > 0)
+      deadlineHit
+      || (posted.length === 0 && failed.length + unknown.length > 0)
     );
     const payload = {
       success: !systemicFailure,
@@ -101,6 +118,7 @@ export async function horseVideoReels(c: Context) {
       replayed: posted.filter((result) => result.created === false).length,
       skipped_recent: skipped.length,
       failed: failed.length,
+      unknown: unknown.length,
       by_type: posted.reduce<Record<string, number>>((counts, result) => {
         const key = result.type ?? 'unknown';
         counts[key] = (counts[key] ?? 0) + 1;

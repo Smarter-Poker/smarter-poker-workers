@@ -121,11 +121,30 @@ describe('atomic horse video publication', () => {
   });
 
   it('surfaces the authoritative transaction failure without a local retry', async () => {
-    rpc.mockResolvedValue({ data: null, error: { message: 'reel mirror missing' } });
+    rpc.mockResolvedValue({ data: null, error: { code: '23514', message: 'reel mirror missing' } });
     await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
       success: false,
       error: 'atomic horse video publication failed: reel mirror missing',
     });
     expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains an unknown outcome when the RPC acknowledgement is lost', async () => {
+    rpc.mockRejectedValue(new Error('supabase request exceeded 20000ms and was aborted'));
+    await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
+      success: false,
+      outcome: 'unknown',
+      error: 'atomic horse video publication outcome unknown: supabase request exceeded 20000ms and was aborted',
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+
+    rpc.mockResolvedValue({
+      data: null,
+      error: { code: 'PGRST002', message: 'database connection unavailable' },
+    });
+    await expect(publishHorseVideoAtomically(input)).resolves.toMatchObject({
+      success: false,
+      outcome: 'unknown',
+    });
   });
 });
