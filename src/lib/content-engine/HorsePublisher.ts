@@ -51,6 +51,7 @@ import {
   recordYouTubeVerification,
   type HorseVideoTopic,
 } from './HorseVideoPublication.js';
+import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -179,9 +180,12 @@ interface LibraryClip {
  * one VM IP, and YouTube started answering 429. A 429 is not "this video is
  * gone"; treating it as one silenced the whole fleet for eight hours.
  *
- *   ok       -> oEmbed returned an embeddable iframe
- *   bad      -> oEmbed said 401/403/404 (age-gated, embed-disabled, removed)
- *   unknown  -> throttled (429), network error, or we are inside a backoff
+ *   ok       -> oEmbed returned an iframe AND pinned yt-dlp proved that the
+ *               video is public/unlisted, age-free, and playable in embeds
+ *   bad      -> either verifier proved private, paid/auth gated, age/region
+ *               restricted, embed-disabled, removed, or Made-for-Kids when
+ *               that optional yt-dlp metadata is present
+ *   unknown  -> throttled, network/runtime/parser error, or active backoff
  *
  * Results are cached in-process for a day (an optimisation, not a memory:
  * the ledger is the memory). After a 429 nothing is asked for 15 minutes.
@@ -286,6 +290,30 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
       if (body.title && body.title.trim()) oembedTitles.set(key, body.title.trim());
       v = body.html && body.html.includes('iframe') ? 'ok' : 'bad';
       if (v === 'ok') {
+        // oEmbed cannot distinguish a free public clip from Premium,
+        // members-only, sign-in, age, or region gates. The pinned yt-dlp
+        // runtime asks for metadata only (`--skip-download`) and must agree
+        // before the shared registry may record a positive verdict.
+        const metadata = await verifyYouTubeMetadata(videoId);
+        bumpSupplyStat(`yt_metadata_${metadata.reason.replace(/[^0-9a-z]+/gi, '_').slice(0, 48)}`);
+        if (metadata.verdict === 'unknown') {
+          if (/^(?:yt_dlp_(?:transient_failure|timeout|execution_error|self_check_timeout|runtime_unavailable|version_mismatch))$/.test(metadata.reason)) {
+            oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
+            bumpSupplyStat('yt_metadata_backoff_started');
+            console.warn('[horse-publisher] YouTube metadata probe unavailable; backing off 15 minutes');
+          }
+          return 'unknown';
+        }
+        if (metadata.verdict !== 'verified') {
+          await recordYouTubeVerification(
+            videoId,
+            metadata.verdict,
+            verificationStartedAt,
+          );
+          v = 'bad';
+        }
+      }
+      if (v === 'ok') {
         const recorded = await recordYouTubeVerification(
           videoId,
           'verified',
@@ -295,7 +323,7 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
           bumpSupplyStat('yt_shared_verdict_failed');
           return 'unknown';
         }
-      } else {
+      } else if (body.html?.includes('iframe') !== true) {
         await recordYouTubeVerification(videoId, 'embed_disabled', verificationStartedAt);
       }
     }

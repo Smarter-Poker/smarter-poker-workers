@@ -8,7 +8,12 @@
  * boundary.
  */
 import type { Context } from 'hono';
-import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetScheduler.js';
+import {
+  fleetHash,
+  isDueForPost,
+  DUE_WINDOW_HOURS,
+  type DueResult,
+} from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, readPostModeStates } from '../lib/content-engine/Fleet.js';
 import {
   publishVideoForHorse,
@@ -19,6 +24,61 @@ import type { HorseVideoTopic } from '../lib/content-engine/HorseVideoPublicatio
 
 export const MAX_HORSE_VIDEO_REELS_PER_RUN = 80;
 export const HORSE_VIDEO_REELS_DEADLINE_MS = 540_000;
+export const HORSE_VIDEO_QUEUE_STRATEGY = 'deterministic_round_robin_v1';
+
+interface DueHorseVideoItem {
+  horse: { profile_id: string };
+  slot: DueResult;
+}
+
+export interface FairHorseVideoQueue<T> {
+  queue: T[];
+  cursor: number;
+}
+
+/**
+ * Select a stable, hourly cohort without storing mutable cursor state.
+ *
+ * The prior `age DESC LIMIT 80` always returned the same oldest horses. A
+ * permanently failing first cohort could therefore prevent every later due
+ * horse from ever being attempted. For an over-cap run, this selector hashes
+ * the full due set into a stable ring and advances exactly one capacity-sized
+ * window each UTC hour. Retries inside the same hour see the same cohort;
+ * scheduled hourly runs advance to the next one. Within the selected cohort,
+ * older due slots retain priority.
+ */
+export function selectFairHorseVideoQueue<T extends DueHorseVideoItem>(
+  due: readonly T[],
+  now: Date,
+  limit = MAX_HORSE_VIDEO_REELS_PER_RUN,
+): FairHorseVideoQueue<T> {
+  const capacity = Math.max(0, Math.floor(limit));
+  const ageOrder = (a: T, b: T) => (
+    (b.slot.age ?? 0) - (a.slot.age ?? 0)
+    || a.horse.profile_id.localeCompare(b.horse.profile_id)
+  );
+  if (capacity === 0 || due.length === 0) return { queue: [], cursor: 0 };
+  if (due.length <= capacity) {
+    return { queue: [...due].sort(ageOrder), cursor: 0 };
+  }
+
+  const ring = [...due].sort((a, b) => (
+    fleetHash(a.horse.profile_id, 'horse-video-queue-order')
+      - fleetHash(b.horse.profile_id, 'horse-video-queue-order')
+    || a.horse.profile_id.localeCompare(b.horse.profile_id)
+  ));
+  const epochHour = Math.floor(now.getTime() / 3_600_000);
+  const offset = fleetHash('horse-video-reels', 'queue-cursor') % ring.length;
+  const cursor = (
+    offset
+    + (epochHour % ring.length) * (capacity % ring.length)
+  ) % ring.length;
+  const queue = Array.from(
+    { length: Math.min(capacity, ring.length) },
+    (_, index) => ring[(cursor + index) % ring.length]!,
+  ).sort(ageOrder);
+  return { queue, cursor };
+}
 
 export async function horseVideoReels(c: Context) {
   const startedAt = Date.now();
@@ -58,9 +118,9 @@ export async function horseVideoReels(c: Context) {
     }
     const due = fleet
       .map((horse) => ({ horse, slot: isDueForPost(horse.profile_id, horse.timezone, now) }))
-      .filter((item) => item.slot.due)
-      .sort((a, b) => (b.slot.age ?? 0) - (a.slot.age ?? 0));
-    const queue = due.slice(0, MAX_HORSE_VIDEO_REELS_PER_RUN);
+      .filter((item) => item.slot.due);
+    const selection = selectFairHorseVideoQueue(due, now);
+    const queue = selection.queue;
     const results: PublishResult[] = [];
     let deadlineHit = false;
 
@@ -129,6 +189,8 @@ export async function horseVideoReels(c: Context) {
       supply: takeSupplyStats(),
       deadline_hit: deadlineHit,
       cap_hit: due.length > MAX_HORSE_VIDEO_REELS_PER_RUN,
+      queue_strategy: HORSE_VIDEO_QUEUE_STRATEGY,
+      queue_cursor: selection.cursor,
       due_window_hours: DUE_WINDOW_HOURS,
       duration_ms: Date.now() - startedAt,
       timestamp: now.toISOString(),

@@ -7,12 +7,16 @@ const mocks = vi.hoisted(() => ({
   publishHorseVideoAtomically: vi.fn(),
   recordValidity: vi.fn(),
   recordYouTubeVerification: vi.fn(),
+  verifyYouTubeMetadata: vi.fn(),
   writeCaption: vi.fn(),
 }));
 
 vi.mock('./HorseVideoPublication.js', () => ({
   recordYouTubeVerification: mocks.recordYouTubeVerification,
   publishHorseVideoAtomically: mocks.publishHorseVideoAtomically,
+}));
+vi.mock('./YouTubeMetadataVerifier.js', () => ({
+  verifyYouTubeMetadata: mocks.verifyYouTubeMetadata,
 }));
 vi.mock('./Fleet.js', () => ({ postModeEnabled: mocks.postModeEnabled }));
 vi.mock('../supabase.js', () => ({
@@ -65,6 +69,10 @@ beforeEach(() => {
   _resetValidityCache();
   vi.clearAllMocks();
   mocks.postModeEnabled.mockResolvedValue(true);
+  mocks.verifyYouTubeMetadata.mockResolvedValue({
+    verdict: 'verified',
+    reason: 'yt_dlp_public_embeddable',
+  });
   mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA']));
   mocks.writeCaption.mockResolvedValue({
     text: 'A real caption',
@@ -96,6 +104,53 @@ describe('horse video oEmbed proof', () => {
       'verified',
       expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
     );
+    expect(mocks.verifyYouTubeMetadata).toHaveBeenCalledWith('AAAAAAAAAAA');
+  });
+
+  it.each([
+    ['premium/subscriber-only', 'restricted', 'youtube_subscriber_only'],
+    ['authentication-only', 'restricted', 'youtube_needs_auth'],
+    ['age-restricted', 'restricted', 'youtube_age_restricted'],
+    ['region-restricted', 'restricted', 'youtube_region_restricted'],
+    ['Made-for-Kids when yt-dlp exposes it', 'restricted', 'youtube_made_for_kids'],
+    ['embed-disabled', 'embed_disabled', 'youtube_embed_disabled'],
+  ])('refuses %s metadata before recording a positive verdict', async (_label, verdict, reason) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      html: '<iframe src="https://www.youtube.com/embed/AAAAAAAAAAA"></iframe>',
+      title: 'A real title',
+    }), { status: 200 })) as typeof fetch;
+    mocks.verifyYouTubeMetadata.mockResolvedValue({ verdict, reason });
+    mocks.recordYouTubeVerification.mockResolvedValue(true);
+
+    await expect(youtubeValidity('https://youtube.com/watch?v=AAAAAAAAAAA')).resolves.toBe('bad');
+    expect(mocks.recordYouTubeVerification).toHaveBeenCalledTimes(1);
+    expect(mocks.recordYouTubeVerification).toHaveBeenCalledWith(
+      'AAAAAAAAAAA',
+      verdict,
+      expect.any(String),
+    );
+    expect(mocks.recordYouTubeVerification).not.toHaveBeenCalledWith(
+      'AAAAAAAAAAA',
+      'verified',
+      expect.any(String),
+    );
+  });
+
+  it('keeps a transient yt-dlp/runtime failure unknown and never writes a positive verdict', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      html: '<iframe src="https://www.youtube.com/embed/AAAAAAAAAAA"></iframe>',
+    }), { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    mocks.verifyYouTubeMetadata.mockResolvedValue({
+      verdict: 'unknown',
+      reason: 'yt_dlp_transient_failure',
+    });
+
+    await expect(youtubeValidity('https://youtube.com/watch?v=AAAAAAAAAAA')).resolves.toBe('unknown');
+    await expect(youtubeValidity('https://youtube.com/watch?v=BBBBBBBBBBB')).resolves.toBe('unknown');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocks.verifyYouTubeMetadata).toHaveBeenCalledTimes(1);
+    expect(mocks.recordYouTubeVerification).not.toHaveBeenCalled();
   });
 
   it('returns unknown and does not cache a local success when the shared write fails', async () => {
