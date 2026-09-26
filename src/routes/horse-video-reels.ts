@@ -83,8 +83,16 @@ export async function horseVideoReels(c: Context) {
       errors[key] = (errors[key] ?? 0) + 1;
     }
 
-    return c.json({
-      success: true,
+    // Do not let an enabled producer report a healthy HTTP 200 when every
+    // attempted publication failed. Open Claw's critical-job monitor keys on
+    // the response status, while partial progress and guard-race skips remain
+    // successful runs with their detailed counts intact.
+    const systemicFailure = (
+      (results.length > 0 && posted.length === 0 && skipped.length === 0 && failed.length === results.length)
+      || (deadlineHit && results.length === 0 && due.length > 0)
+    );
+    const payload = {
+      success: !systemicFailure,
       fleet: fleet.length,
       due: due.length,
       attempted: results.length,
@@ -108,7 +116,8 @@ export async function horseVideoReels(c: Context) {
       timestamp: now.toISOString(),
       post_ids: posted.map((result) => result.postId).filter(Boolean),
       reel_ids: posted.map((result) => result.reelId).filter(Boolean),
-    });
+    };
+    return c.json(payload, systemicFailure ? 503 : 200);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn('[horse-video-reels] fatal:', message);

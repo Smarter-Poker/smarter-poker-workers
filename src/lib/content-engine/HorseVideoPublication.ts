@@ -39,7 +39,7 @@ export interface HorseVideoPublicationInput {
   topic: HorseVideoTopic;
   assetKey: string;
   phraseNorm: string;
-  semanticKey?: string | null;
+  semanticKey: string;
   metadata: Record<string, unknown>;
 }
 
@@ -109,8 +109,8 @@ export async function publishHorseVideoAtomically(
   if (!derivedKey?.startsWith('yt:') || derivedKey !== input.assetKey) {
     return { success: false, error: 'horse video publication requires one canonical YouTube asset key' };
   }
-  if (!input.authorId || !input.caption.trim() || !input.phraseNorm) {
-    return { success: false, error: 'horse video publication is missing required author or caption data' };
+  if (!input.authorId || !input.caption.trim() || !input.phraseNorm || !input.semanticKey.trim()) {
+    return { success: false, error: 'horse video publication is missing required author, caption, or semantic data' };
   }
 
   const { data, error } = await getSupabase().rpc('publish_horse_video_reel', {
@@ -120,7 +120,7 @@ export async function publishHorseVideoAtomically(
     p_topic: input.topic,
     p_asset_key: input.assetKey,
     p_phrase_norm: input.phraseNorm,
-    p_semantic_key: input.semanticKey || null,
+    p_semantic_key: input.semanticKey,
     p_metadata: input.metadata,
   });
   if (error) {

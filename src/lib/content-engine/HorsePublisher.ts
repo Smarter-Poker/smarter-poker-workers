@@ -489,6 +489,9 @@ export async function publishVideoClip(
     fleet,
   );
   if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
+  if (!written.semanticKey) {
+    return { ...base, success: false, error: 'Video caption has no durable semantic identity' };
+  }
   const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
 
   const key = assetKeyFor(clip.source_url);

@@ -120,11 +120,31 @@ describe('horseVideoReels', () => {
     const c = context();
     await horseVideoReels(c);
     expect(c.captured.body).toMatchObject({
+      success: true,
       attempted: 2,
       posted: 1,
       replayed: 1,
       failed: 1,
       errors: { 'verification registry unavailable': 1 },
+    });
+  });
+
+  it('returns a monitored failure when every enabled publication attempt fails', async () => {
+    mocks.publishVideoForHorse.mockResolvedValue({
+      success: false,
+      horse: 'Alpha',
+      profile_id: 'horse-a',
+      error: 'shared verification registry unavailable',
+    });
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(c.captured.body).toMatchObject({
+      success: false,
+      attempted: 2,
+      posted: 0,
+      failed: 2,
+      errors: { 'shared verification registry unavailable': 2 },
     });
   });
 

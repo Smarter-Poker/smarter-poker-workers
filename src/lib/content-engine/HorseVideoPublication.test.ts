@@ -110,6 +110,16 @@ describe('atomic horse video publication', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  it('fails closed before the RPC when semantic identity is absent', async () => {
+    await expect(
+      publishHorseVideoAtomically({ ...input, semanticKey: '   ' }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining('semantic'),
+    });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it('surfaces the authoritative transaction failure without a local retry', async () => {
     rpc.mockResolvedValue({ data: null, error: { message: 'reel mirror missing' } });
     await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
