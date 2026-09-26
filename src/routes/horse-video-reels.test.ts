@@ -15,17 +15,24 @@ vi.mock('../lib/content-engine/Fleet.js', () => ({
   readPostModeStates: mocks.readPostModeStates,
 }));
 
-vi.mock('../lib/content-engine/FleetScheduler.js', () => ({
-  DUE_WINDOW_HOURS: 3,
-  isDueForPost: mocks.isDueForPost,
-}));
+vi.mock('../lib/content-engine/FleetScheduler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/content-engine/FleetScheduler.js')>();
+  return {
+    ...actual,
+    isDueForPost: mocks.isDueForPost,
+  };
+});
 
 vi.mock('../lib/content-engine/HorsePublisher.js', () => ({
   publishVideoForHorse: mocks.publishVideoForHorse,
   takeSupplyStats: mocks.takeSupplyStats,
 }));
 
-import { horseVideoReels } from './horse-video-reels.js';
+import {
+  HORSE_VIDEO_QUEUE_STRATEGY,
+  horseVideoReels,
+  selectFairHorseVideoQueue,
+} from './horse-video-reels.js';
 
 const horses = [
   { id: 1, name: 'Alpha', profile_id: 'horse-a', timezone: 'UTC' },
@@ -127,6 +134,81 @@ describe('horseVideoReels', () => {
     expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(1);
     expect(mocks.publishVideoForHorse.mock.calls[0]![0]).toMatchObject({ profile_id: 'horse-a' });
     expect(c.captured.body).toMatchObject({ due: 1, attempted: 1, posted: 1 });
+  });
+
+  it('keeps retries deterministic within an hour and rotates over-cap cohorts next hour', () => {
+    const due = Array.from({ length: 200 }, (_, index) => ({
+      horse: { profile_id: `horse-${String(index).padStart(3, '0')}` },
+      slot: { due: true, age: index % 3 },
+    }));
+    const firstAt = new Date('2026-09-26T12:05:00.000Z');
+    const nextAt = new Date('2026-09-26T13:05:00.000Z');
+    const thirdAt = new Date('2026-09-26T14:05:00.000Z');
+    const first = selectFairHorseVideoQueue(due, firstAt);
+    const retry = selectFairHorseVideoQueue([...due].reverse(), firstAt);
+    const next = selectFairHorseVideoQueue(due, nextAt);
+    const third = selectFairHorseVideoQueue(due, thirdAt);
+    const firstIds = first.queue.map((item) => item.horse.profile_id);
+    const retryIds = retry.queue.map((item) => item.horse.profile_id);
+    const nextIds = next.queue.map((item) => item.horse.profile_id);
+
+    expect(firstIds).toEqual(retryIds);
+    expect(firstIds).toHaveLength(80);
+    expect(nextIds).toHaveLength(80);
+    expect(new Set(firstIds).size).toBe(80);
+    expect(new Set(nextIds).size).toBe(80);
+    expect(nextIds.every((id) => !firstIds.includes(id))).toBe(true);
+    expect(new Set([
+      ...firstIds,
+      ...nextIds,
+      ...third.queue.map((item) => item.horse.profile_id),
+    ]).size).toBe(200);
+    expect(next.cursor).not.toBe(first.cursor);
+  });
+
+  it('does not let a permanently failing first 80 monopolize the next scheduled run', async () => {
+    const largeFleet = Array.from({ length: 200 }, (_, index) => ({
+      id: index + 1,
+      name: `Horse ${index + 1}`,
+      profile_id: `horse-${String(index).padStart(3, '0')}`,
+      timezone: 'UTC',
+    }));
+    mocks.loadFleet.mockResolvedValue(largeFleet);
+    mocks.publishVideoForHorse.mockImplementation(async (horse: (typeof largeFleet)[number]) => ({
+      success: false,
+      horse: horse.name,
+      profile_id: horse.profile_id,
+      error: 'permanent source rejection',
+    }));
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-26T12:05:00.000Z'));
+      const firstContext = context();
+      await horseVideoReels(firstContext);
+      const firstIds = mocks.publishVideoForHorse.mock.calls.map((call) => call[0].profile_id as string);
+
+      mocks.publishVideoForHorse.mockClear();
+      vi.setSystemTime(new Date('2026-09-26T13:05:00.000Z'));
+      const nextContext = context();
+      await horseVideoReels(nextContext);
+      const nextIds = mocks.publishVideoForHorse.mock.calls.map((call) => call[0].profile_id as string);
+
+      expect(firstIds).toHaveLength(80);
+      expect(nextIds).toHaveLength(80);
+      expect(nextIds.every((id) => !firstIds.includes(id))).toBe(true);
+      expect(firstContext.captured).toMatchObject({
+        status: 503,
+        body: {
+          due: 200,
+          attempted: 80,
+          cap_hit: true,
+          queue_strategy: HORSE_VIDEO_QUEUE_STRATEGY,
+        },
+      });
+      expect(nextContext.captured.body.queue_cursor).not.toBe(firstContext.captured.body.queue_cursor);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('pages when approved video modes have no active fleet to process', async () => {
