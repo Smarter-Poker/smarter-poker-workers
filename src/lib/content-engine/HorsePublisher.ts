@@ -310,12 +310,6 @@ export function _resetValidityCache(): void {
   consecutive403 = 0;
 }
 
-export function convertToEmbedUrl(url: string): string {
-  const key = assetKeyFor(url);
-  if (key && key.startsWith('yt:')) return `https://www.youtube.com/embed/${key.slice(3)}`;
-  return url;
-}
-
 /** Deterministic slice of sports sources for this horse. */
 async function getHorseSources(profileId: string): Promise<string[]> {
   const { data } = await getSupabase().from('sports_clips').select('source').limit(1000);
