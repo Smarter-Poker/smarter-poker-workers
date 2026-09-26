@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from './operationalAlerts.js';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  OPERATIONAL_ALERT_TARGET_TASK_ID, OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert,
+} from './operationalAlerts.js';
 import { alertScraperCritical } from './scraperAlerts.js';
 
 const { rpc } = vi.hoisted(() => ({ rpc: vi.fn() }));
@@ -11,12 +16,49 @@ beforeEach(() => {
 });
 
 describe('durable operational alert delivery', () => {
-  it('acknowledges only a persisted receipt and passes the unchanged event identity', async () => {
+  it('acknowledges only a persisted receipt and passes the event identity addressed to the fleet', async () => {
     await expect(recordOperationalAlert(event)).resolves.toBe('17');
     expect(rpc).toHaveBeenCalledWith('fn_record_operational_alert', {
       p_source: event.source, p_event_key: event.eventKey, p_alertname: event.alertname,
-      p_status: event.status, p_severity: event.severity, p_payload: event.payload,
+      p_status: event.status, p_severity: event.severity,
+      p_payload: { ...event.payload, target_task_id: OPERATIONAL_ALERT_TARGET_TASK_ID },
     });
+  });
+
+  // Regression, 2026-09-26: workers.scraper-watchdog, workers.scraper,
+  // workers.deploy-error-poll and video-library-scraper rows reached the inbox
+  // with no payload.target_task_id, so the fleet lane that fixes them never saw them.
+  it('addresses every recorded alert to the production-alerts fleet', async () => {
+    expect(OPERATIONAL_ALERT_TARGET_TASK_ID).toBe('01a09b86-5ba8-7290-8657-1041f13dd3ca');
+    await recordOperationalAlert(event);
+    await alertScraperCritical('addressing-test-scraper', 'stale feed', { startedAt: '2026-09-26T12:00:00Z' });
+    expect(rpc).toHaveBeenCalledTimes(2);
+    for (const [, args] of rpc.mock.calls) {
+      expect(args.p_payload.target_task_id).toBe('01a09b86-5ba8-7290-8657-1041f13dd3ca');
+    }
+    expect(event.payload).not.toHaveProperty('target_task_id');
+  });
+
+  it('refuses an alert addressed to a different task instead of silently rerouting it', async () => {
+    await expect(recordOperationalAlert({ ...event, payload: { target_task_id: 'someone-else' } }))
+      .rejects.toBeInstanceOf(OperationalAlertDeliveryError);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('is the only code in this service that writes the operational inbox', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url));
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (/\.ts$/.test(name) && !/\.test\.ts$/.test(name)) files.push(path);
+      }
+    };
+    walk(root);
+    const writers = files.filter((path) => /fn_record_operational_alert|from\(['"]operational_alert_events['"]\)\s*\.(insert|upsert|update)/
+      .test(readFileSync(path, 'utf8'))).map((path) => relative(root, path)).sort();
+    expect(writers).toEqual(['lib/operationalAlerts.ts']);
   });
 
   it.each([
