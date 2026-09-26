@@ -40,4 +40,15 @@ describe('the isolated horse Reels producer remains video-only', () => {
     expect(body).not.toContain(".from('social_posts')");
     expect(body).not.toContain(".from('social_reels')");
   });
+
+  it('neither publisher falls through after an atomic outcome becomes unknown', () => {
+    const isolatedStart = publisher.indexOf('export async function publishVideoForHorse');
+    const isolatedEnd = publisher.indexOf('\nasync function postNewsLink', isolatedStart);
+    const isolated = publisher.slice(isolatedStart, isolatedEnd);
+    expect(isolated).toMatch(/publishVideoClip[\s\S]*result\.outcome === 'unknown'[\s\S]*return result/);
+
+    const mixedStart = publisher.indexOf('export async function publishForHorse');
+    const mixed = publisher.slice(mixedStart);
+    expect(mixed).toMatch(/publishVideoClip[\s\S]*result\.outcome === 'unknown'[\s\S]*return result/);
+  });
 });

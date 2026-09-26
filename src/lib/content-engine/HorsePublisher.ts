@@ -840,6 +840,10 @@ export async function publishForHorse(
     attempts.push(`${kind}_news: ${result.error}`);
     result = await publishVideoClip(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
+    // The mixed publisher is disabled, but retain the same lost-ACK law if it
+    // is ever re-enabled: an unknown atomic outcome may already be committed,
+    // so no alternate category or grounded fallback may publish behind it.
+    if (result.outcome === 'unknown') return result;
     attempts.push(`${kind}_video: ${result.error}`);
   }
 
