@@ -144,6 +144,8 @@ describe('video scrape result authority', () => {
       expect(res.status).toBe(503); expect(await res.json()).toMatchObject({ accepted: true, success: false });
       expect(db.alerts).toHaveLength(1);
       expect(db.alerts[0]).toMatchObject({ p_source: 'video-library-scraper', p_event_key: runId, p_alertname: 'VideoLibraryScrapeFailed' });
+      expect((db.alerts[0] as { p_payload: Record<string, unknown> }).p_payload.target_task_id)
+        .toBe('01a09b86-5ba8-7290-8657-1041f13dd3ca');
     });
   it('does not acknowledge a returned database error', async () => {
     db.auditError = { message: 'disk full' };
