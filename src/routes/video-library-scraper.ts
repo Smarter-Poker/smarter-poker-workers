@@ -16,6 +16,7 @@ import type { Context } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { getSupabase } from '../lib/supabase.js';
+import { OperationalAlertDeliveryError, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
 export async function videoLibraryScraper(c: Context) {
   try {
@@ -67,12 +68,14 @@ export async function videoLibraryScraper(c: Context) {
         return c.json({ success: false, accepted: false, error: auditError?.message ?? 'Scrape report commit unconfirmed' }, 503);
       }
       if (failed) {
-        const { data: alertId, error: alertError } = await supabase.rpc('fn_record_operational_alert', {
-          p_source: 'video-library-scraper', p_event_key: body.run_id,
-          p_alertname: 'VideoLibraryScrapeFailed', p_status: 'firing', p_severity: 'warning',
-          p_payload: { report: proof, audit_id: body.run_id },
-        });
-        if (alertError || !Number.isSafeInteger(alertId) || Number(alertId) <= 0) {
+        try {
+          await recordOperationalAlert({
+            source: 'video-library-scraper', eventKey: body.run_id,
+            alertname: 'VideoLibraryScrapeFailed', status: 'firing', severity: 'warning',
+            payload: { report: proof, audit_id: body.run_id },
+          });
+        } catch (error) {
+          if (!(error instanceof OperationalAlertDeliveryError)) throw error;
           return c.json({ success: false, accepted: false, error: 'Operational alert receipt unconfirmed' }, 503);
         }
       }
