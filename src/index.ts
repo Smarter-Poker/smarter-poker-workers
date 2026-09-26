@@ -51,6 +51,7 @@ import { horsesSocialAll } from './routes/horses-social-all.js';
 import { horsesStories } from './routes/horses-stories.js';
 import { horseByIndex, horseBatch } from './routes/horse-by-index.js';
 import { horsePosts } from './routes/horse-posts.js';
+import { horseVideoReels } from './routes/horse-video-reels.js';
 import { scrapeSportsClips } from './routes/scrape-sports-clips.js';
 import { scrapePokerClips } from './routes/scrape-poker-clips.js';
 import { revalidatePokerClips } from './routes/revalidate-poker-clips.js';
@@ -317,6 +318,8 @@ app.post('/cron/horse-batch/:horseIndex', horseBatch);
 // horse-batch routes above are the hand-over shim; see routes/horse-by-index.ts.
 app.get('/cron/horse-posts', horsePosts);
 app.post('/cron/horse-posts', horsePosts);
+app.get('/cron/horse-video-reels', horseVideoReels);
+app.post('/cron/horse-video-reels', horseVideoReels);
 app.get('/cron/tour-schedule-scraper', tourScheduleScraperHandler);
 app.post('/cron/tour-schedule-scraper', tourScheduleScraperHandler);
 

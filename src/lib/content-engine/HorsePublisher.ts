@@ -46,6 +46,11 @@ import {
   normalizePhrase,
 } from './ContentLedger.js';
 import { fleetHash } from './FleetScheduler.js';
+import {
+  publishHorseVideoAtomically,
+  recordYouTubeVerification,
+  type HorseVideoTopic,
+} from './HorseVideoPublication.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -66,6 +71,8 @@ export interface PublishResult {
   profile_id: string;
   type?: string;
   postId?: string;
+  reelId?: string;
+  created?: boolean;
   caption?: string;
   collided?: boolean;
   error?: string;
@@ -229,6 +236,7 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     return 'unknown';
   }
   const videoId = key.slice(3);
+  const verificationStartedAt = new Date().toISOString();
   try {
     const response = await fetch(
       `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
@@ -255,10 +263,30 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     let v: YtValidity;
     if (!response.ok) {
       v = 'bad';
+      if (response.status === 401 || response.status === 404) {
+        await recordYouTubeVerification(
+          videoId,
+          response.status === 401 ? 'embed_disabled' : 'unavailable',
+          verificationStartedAt,
+        );
+      }
     } else {
       const body = (await response.json()) as { html?: string; title?: string };
       if (body.title && body.title.trim()) oembedTitles.set(key, body.title.trim());
       v = body.html && body.html.includes('iframe') ? 'ok' : 'bad';
+      if (v === 'ok') {
+        const recorded = await recordYouTubeVerification(
+          videoId,
+          'verified',
+          verificationStartedAt,
+        );
+        if (!recorded) {
+          bumpSupplyStat('yt_shared_verdict_failed');
+          return 'unknown';
+        }
+      } else {
+        await recordYouTubeVerification(videoId, 'embed_disabled', verificationStartedAt);
+      }
     }
     validityCache.set(key, { v, at: Date.now() });
     return v;
@@ -331,12 +359,16 @@ async function seedMemoryFromHistory(profileId: string): Promise<void> {
   }
 }
 
-async function postVideoClip(
+export async function publishVideoClip(
   horse: FleetHorse,
   clipType: 'poker' | 'sports',
   fleet: AuthorHorse[],
+  scheduler = 'fleet',
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
+  if (!(await postModeEnabled(`${clipType}_video`))) {
+    return { ...base, success: false, error: `${clipType}_video awaits approval` };
+  }
   let clip: LibraryClip | SportsClipRow | null = null;
 
   if (clipType === 'poker') {
@@ -366,7 +398,7 @@ async function postVideoClip(
       const idx = Math.floor(Math.random() * fresh.length);
       const candidate = fresh[idx]!;
       const verdict = await youtubeValidity(candidate.source_url);
-      if (verdict !== 'bad') {
+      if (verdict === 'ok') {
         clip = candidate as unknown as LibraryClip;
         break;
       }
@@ -420,7 +452,7 @@ async function postVideoClip(
     for (let i = 0; i < 3 && fresh.length > 0; i++) {
       const idx = Math.floor(Math.random() * fresh.length);
       const candidate = fresh[idx]!;
-      if ((await youtubeValidity(candidate.source_url)) !== 'bad') {
+      if ((await youtubeValidity(candidate.source_url)) === 'ok') {
         clip = candidate;
         break;
       }
@@ -465,35 +497,35 @@ async function postVideoClip(
   if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
   const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
 
-  const embedUrl = convertToEmbedUrl(clip.source_url);
-  const { data: post, error } = await getSupabase()
-    .from('social_posts')
-    .insert({
-      author_id: horse.profile_id,
-      content: picked.text,
-      content_type: 'video',
-      media_urls: [embedUrl],
-      visibility: 'public',
-      metadata: {
-        clip_type: clipType,
-        clip_id: (clip as SportsClipRow).id ?? (clip as LibraryClip).video_id,
-        scheduler: 'fleet',
-      },
-    })
-    .select('id')
-    .maybeSingle();
-
-  if (error) return { ...base, success: false, error: error.message };
-  const postId = (post as { id: string } | null)?.id ?? null;
   const key = assetKeyFor(clip.source_url);
-  if (key) await recordAssetUse(key, horse.profile_id, postId);
-  await recordPhrase(picked.norm, horse.profile_id, postId);
-  if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, postId);
-  if (postId) await recordBrief(postId, written.brief);
+  if (!key?.startsWith('yt:')) {
+    return { ...base, success: false, error: 'Selected video has no canonical YouTube identity' };
+  }
+  const published = await publishHorseVideoAtomically({
+    authorId: horse.profile_id,
+    videoUrl: clip.source_url,
+    caption: picked.text,
+    topic: clipType,
+    assetKey: key,
+    phraseNorm: picked.norm,
+    semanticKey: written.semanticKey,
+    metadata: {
+      clip_type: clipType,
+      clip_id: (clip as SportsClipRow).id ?? (clip as LibraryClip).video_id,
+      clip_source: (clip as SportsClipRow).source ?? null,
+      scheduler,
+    },
+  });
+  if (!published.success || !published.postId || !published.reelId) {
+    return { ...base, success: false, error: published.error ?? 'Atomic horse video publication failed' };
+  }
+  await recordBrief(published.postId, written.brief);
   return {
     ...base,
     success: true,
-    postId: postId ?? undefined,
+    postId: published.postId,
+    reelId: published.reelId,
+    created: published.created,
     type: `${clipType}_video`,
     caption: picked.text.slice(0, 60),
     collided: picked.collided,
@@ -504,6 +536,60 @@ async function postVideoClip(
     tagged: written.tagged?.alias,
     briefSummary: summarise(written.brief),
   };
+}
+
+/** A stable video preference order for one horse and UTC day. */
+export function videoKindOrder(
+  profileId: string,
+  now: Date,
+  allowed: readonly HorseVideoTopic[],
+): HorseVideoTopic[] {
+  const unique = [...new Set(allowed)].filter(
+    (kind): kind is HorseVideoTopic => kind === 'poker' || kind === 'sports',
+  );
+  if (unique.length < 2) return unique;
+  const roll = (fleetHash(`${profileId}:${now.toISOString().slice(0, 10)}`, 'video-kind') % 10_000) / 10_000;
+  const preferred: HorseVideoTopic = roll < sportsShareFor(profileId) ? 'sports' : 'poker';
+  return preferred === 'sports' ? ['sports', 'poker'] : ['poker', 'sports'];
+}
+
+/**
+ * Publish only an approved poker or sports video for a horse.
+ *
+ * This entry point does not read the master mixed-content engine switch. It
+ * is intentionally safe for the isolated `/cron/horse-video-reels` route:
+ * both video modes fail closed, and there is no news or grounded fallback.
+ */
+export async function publishVideoForHorse(
+  horse: FleetHorse,
+  opts: {
+    fleet?: AuthorHorse[];
+    now?: Date;
+    skipGuard?: boolean;
+    allowedTypes?: HorseVideoTopic[];
+  } = {},
+): Promise<PublishResult> {
+  const base = { horse: horse.name, profile_id: horse.profile_id };
+  if (!opts.skipGuard && (await postedRecently(horse.profile_id))) {
+    return { ...base, success: false, skipped: 'posted_recently' };
+  }
+
+  const requested = opts.allowedTypes ?? ['poker', 'sports'];
+  const approved: HorseVideoTopic[] = [];
+  for (const kind of requested) {
+    if (await postModeEnabled(`${kind}_video`)) approved.push(kind);
+  }
+  if (!approved.length) {
+    return { ...base, success: false, error: 'All horse video modes await approval' };
+  }
+
+  const errors: string[] = [];
+  for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
+    const result = await publishVideoClip(horse, kind, opts.fleet ?? [], 'horse-video-reels');
+    if (result.success || result.skipped) return result;
+    errors.push(`${kind}_video: ${result.error ?? 'failed'}`);
+  }
+  return { ...base, success: false, error: errors.join(' | ') };
 }
 
 async function postNewsLink(
@@ -727,7 +813,7 @@ export async function publishForHorse(
     let result = await postNewsLink(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
     attempts.push(`${kind}_news: ${result.error}`);
-    result = await postVideoClip(horse, kind, opts.fleet ?? []);
+    result = await publishVideoClip(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
     attempts.push(`${kind}_video: ${result.error}`);
   }
