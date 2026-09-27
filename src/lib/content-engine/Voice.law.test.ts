@@ -671,6 +671,30 @@ describe('live caption failures cannot recur', () => {
     }
   });
 
+  it('grounds the two fresh-production poker titles the old vocabulary rejected', () => {
+    const titles = [
+      'JENNIFER TILLY REACTS TO EPIC POKER HAND VS ANTONIO ESFANDIARI',
+      'The $1,700 Bet That Put Pocket Aces in Hell',
+    ];
+    for (const title of titles) {
+      const brief = briefForAsset({ kind: 'video', title, domainHint: 'poker' });
+      expect(brief.concepts.length).toBeGreaterThan(0);
+      for (const id of fleetIds(80)) {
+        const out = composeCaption(brief, styleSheetFor(id));
+        expect(out.text).not.toBe('');
+        expect(relevanceOf(out.text, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+      }
+    }
+  });
+
+  it('does not invent a poker take for a motivational title or player-menu placeholder', () => {
+    const titles = ['Dreams do come true 🙏 ✨️', 'Keyboard shortcuts'];
+    for (const title of titles) {
+      const brief = briefForAsset({ kind: 'video', title, domainHint: 'poker' });
+      for (const id of fleetIds(20)) expect(composeCaption(brief, styleSheetFor(id)).text).toBe('');
+    }
+  });
+
   it('rejects the unsupported titles observed in the 17:10 production run', () => {
     const assets = [
       { domain: 'poker' as const, title: 'My Sister Is Way Into Aliens' },

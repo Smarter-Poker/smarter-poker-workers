@@ -84,6 +84,8 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   bluff: ['bluff', 'bluffing', 'bluffed', 'stone cold'],
   hero_call: ['hero call', 'hero-call', 'crazy call', 'sick call'],
   cooler: ['cooler', 'set over set', 'aces cracked'],
+  pocket_aces: ['pocket aces', 'pocket rockets'],
+  reaction: ['reacts', 'reacted', 'reaction'],
   bad_beat: ['bad beat', 'brutal beat', 'suck out', 'sucked out', 'runner runner', 'one outer', 'two outer'],
   all_in: ['all in', 'all-in', 'shove', 'shoved', 'jam', 'jammed'],
   final_table: ['final table', 'ft bubble'],

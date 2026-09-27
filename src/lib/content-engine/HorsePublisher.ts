@@ -30,7 +30,8 @@ import { getSupabase } from '../supabase.js';
 import { postModeEnabled } from './Fleet.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
-import { isUninformativeTitle } from './PostBrief.js';
+import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
+import { hasSpecificTake } from './Composer.js';
 import {
   candidateClips,
   newsSources,
@@ -96,12 +97,19 @@ export interface SharedHorseVideoSupply {
   sports: SupplyClip[];
 }
 
+export interface SharedHorseVideoSupplyCount {
+  scanned: number;
+  verified: number;
+  /** Fresh positive assets whose stored metadata can ground a safe caption. */
+  captionable: number;
+}
+
 export type PreparedSharedHorseVideoSupply =
   | {
       status: 'ok';
       supply: SharedHorseVideoSupply;
       availableTypes: HorseVideoTopic[];
-      counts: Partial<Record<HorseVideoTopic, { scanned: number; verified: number }>>;
+      counts: Partial<Record<HorseVideoTopic, SharedHorseVideoSupplyCount>>;
     }
   | { status: 'unknown'; error: string };
 
@@ -225,6 +233,9 @@ let consecutive403 = 0;
 export const OEMBED_BACKOFF_MS = 15 * 60_000;
 export const YOUTUBE_OEMBED_TIMEOUT_MS = 8_000;
 
+/** Bound ledger reads when one caption-ready asset is stale for this horse. */
+export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
+
 /**
  * Per-run supply telemetry, surfaced in the route's result JSON so a run
  * that publishes nothing says WHY in cron_execution_log. Added after eight
@@ -233,8 +244,8 @@ export const YOUTUBE_OEMBED_TIMEOUT_MS = 8_000;
  * the statuses seen during the burst were never recorded anywhere.
  */
 const supplyStats: Record<string, number> = {};
-export function bumpSupplyStat(key: string): void {
-  supplyStats[key] = (supplyStats[key] ?? 0) + 1;
+export function bumpSupplyStat(key: string, amount = 1): void {
+  supplyStats[key] = (supplyStats[key] ?? 0) + amount;
 }
 export function takeSupplyStats(): Record<string, number> {
   const out = { ...supplyStats, oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0 };
@@ -257,7 +268,7 @@ export async function prepareSharedHorseVideoSupply(
     (kind): kind is HorseVideoTopic => kind === 'poker' || kind === 'sports',
   );
   const supply: SharedHorseVideoSupply = { poker: [], sports: [] };
-  const counts: Partial<Record<HorseVideoTopic, { scanned: number; verified: number }>> = {};
+  const counts: Partial<Record<HorseVideoTopic, SharedHorseVideoSupplyCount>> = {};
 
   try {
     const pools = await Promise.all(requested.map(async (kind) => ({
@@ -278,8 +289,14 @@ export async function prepareSharedHorseVideoSupply(
       if (lookup.status === 'unknown') {
         return { status: 'unknown', error: `${kind}: ${lookup.error}` };
       }
-      supply[kind] = canonical.filter((clip) => lookup.videoIds.has(clip.video_id));
-      counts[kind] = { scanned: canonical.length, verified: supply[kind].length };
+      const verified = canonical.filter((clip) => lookup.videoIds.has(clip.video_id));
+      const captionable = verified.filter((clip) => isCaptionableSharedVideoClip(clip, kind));
+      supply[kind] = captionable;
+      counts[kind] = {
+        scanned: canonical.length,
+        verified: verified.length,
+        captionable: captionable.length,
+      };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -292,6 +309,27 @@ export async function prepareSharedHorseVideoSupply(
     availableTypes: requested.filter((kind) => supply[kind].length > 0),
     counts,
   };
+}
+
+/**
+ * Availability proof and caption grounding are separate contracts.
+ *
+ * A fresh public YouTube verdict proves that an embed can play; it does not
+ * turn scraper placeholders such as "Keyboard shortcuts" into a subject a
+ * horse can discuss. Keep that distinction at preflight so unsupported
+ * metadata cannot consume every horse's six-draft quality loop.
+ */
+export function isCaptionableSharedVideoClip(
+  clip: SupplyClip,
+  topic: HorseVideoTopic,
+): boolean {
+  return hasSpecificTake(briefForAsset({
+    kind: 'video',
+    title: clip.title,
+    source: clip.source,
+    domainHint: topic,
+    sportHint: clip.category,
+  }));
 }
 
 export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {
@@ -475,6 +513,7 @@ export async function publishVideoClip(
     return { ...base, success: false, error: `${clipType}_video awaits approval` };
   }
   let clip: LibraryClip | SportsClipRow | null = null;
+  let captionCandidates: Array<LibraryClip | SportsClipRow> = [];
 
   if (scheduler === 'horse-video-reels') {
     if (!sharedSupply) {
@@ -485,30 +524,32 @@ export async function publishVideoClip(
         error: 'shared verified video supply unavailable',
       };
     }
-    const verified = sharedSupply[clipType];
-    if (!verified.length) {
+    const verifiedCaptionable = sharedSupply[clipType];
+    if (!verifiedCaptionable.length) {
       return {
         ...base,
         success: false,
-        error: `No fresh public verified ${clipType} clips in supply`,
+        error: `No fresh public verified caption-ready ${clipType} clips in supply`,
       };
     }
 
-    const sourceNames = [...new Set(verified.map((candidate) => candidate.source).filter(Boolean))]
+    const sourceNames = [...new Set(verifiedCaptionable.map((candidate) => candidate.source).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
     const mine = new Set(sliceForHorse(sourceNames, horse.profile_id));
-    const preferred = verified.filter((candidate) => mine.has(candidate.source));
+    const preferred = verifiedCaptionable.filter((candidate) => mine.has(candidate.source));
     const freshFrom = async (rows: SupplyClip[]) => {
       const keys = rows.map((candidate) => assetKeyFor(candidate.source_url)).filter(Boolean) as string[];
       const usable = await filterUnusedAssets(keys, horse.profile_id);
       return rows.filter((candidate) => {
         const key = assetKeyFor(candidate.source_url);
-        return !!key && usable.has(key);
+        return !!key
+          && usable.has(key)
+          && isCaptionableSharedVideoClip(candidate, clipType);
       });
     };
     let fresh = preferred.length ? await freshFrom(preferred) : [];
-    if (!fresh.length && preferred.length !== verified.length) {
-      fresh = await freshFrom(verified);
+    if (!fresh.length && preferred.length !== verifiedCaptionable.length) {
+      fresh = await freshFrom(verifiedCaptionable);
       bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
     }
     if (!fresh.length) {
@@ -518,7 +559,11 @@ export async function publishVideoClip(
         error: `All ${clipType} verified clips already posted`,
       };
     }
-    clip = fresh[Math.floor(Math.random() * fresh.length)]!;
+    const offset = Math.floor(Math.random() * fresh.length);
+    captionCandidates = Array.from(
+      { length: Math.min(MAX_VIDEO_CAPTION_CANDIDATES, fresh.length) },
+      (_, index) => fresh[(offset + index) % fresh.length]!,
+    );
     bumpSupplyStat(`${clipType}_shared_verified_selected`);
   } else if (clipType === 'poker') {
     // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
@@ -616,88 +661,121 @@ export async function publishVideoClip(
     if (!clip) return { ...base, success: false, error: 'No valid sports clips found' };
   }
 
+  // The legacy publisher validates one live candidate. The isolated Reel
+  // producer receives a proof snapshot and may try a small bounded sequence
+  // when a safe caption for the first asset is stale. It never makes a live
+  // YouTube request here and never relaxes the caption gate.
+  if (captionCandidates.length === 0 && clip) captionCandidates = [clip];
+
   await seedMemoryFromHistory(horse.profile_id);
 
-  // Phase 2: the caption is written from a brief of THIS clip - its title,
-  // channel and sport - not drawn from a pool keyed on a category. See
-  // PostBrief.ts for what the old path produced.
-  // Prefer the title YouTube just gave us over the one the scraper stored,
-  // and repair the row while we are here (self-healing, bounded, one write).
-  const storedTitle = (clip as LibraryClip).title || '';
-  const realTitle = cachedOembedTitle(clip.source_url);
-  let title = storedTitle;
-  if (realTitle && isUninformativeTitle(storedTitle, (clip as SportsClipRow).source ?? undefined)
-      && !isUninformativeTitle(realTitle, (clip as SportsClipRow).source ?? undefined)) {
-    title = realTitle;
-    if (clipType === 'sports' && (clip as SportsClipRow).id) {
-      const { error: fixErr } = await getSupabase()
-        .from('sports_clips')
-        .update({ title: realTitle })
-        .eq('id', (clip as SportsClipRow).id);
-      if (fixErr) console.warn('[horse-publisher] title repair failed:', fixErr.message);
-      else bumpSupplyStat('title_repaired');
-    }
-  }
-  const written = await writeCaption(
-    horse as AuthorHorse,
-    {
-      kind: 'video',
-      title,
-      source: (clip as SportsClipRow).source ?? undefined,
-      domainHint: clipType,
-      sportHint: (clip as SportsClipRow).sport_type ?? (clip as LibraryClip).category ?? null,
-    },
-    fleet,
-  );
-  if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
-  if (!written.semanticKey) {
-    return { ...base, success: false, error: 'Video caption has no durable semantic identity' };
-  }
-  const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
+  let belowFloor = 0;
+  let stale = 0;
+  let missingSemantic = 0;
+  for (const candidate of captionCandidates) {
+    bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
 
-  const key = assetKeyFor(clip.source_url);
-  if (!key?.startsWith('yt:')) {
-    return { ...base, success: false, error: 'Selected video has no canonical YouTube identity' };
-  }
-  const published = await publishHorseVideoAtomically({
-    authorId: horse.profile_id,
-    videoUrl: clip.source_url,
-    caption: picked.text,
-    topic: clipType,
-    assetKey: key,
-    phraseNorm: picked.norm,
-    semanticKey: written.semanticKey,
-    metadata: {
-      clip_type: clipType,
-      clip_id: (clip as SportsClipRow).id ?? (clip as LibraryClip).video_id,
-      clip_source: (clip as SportsClipRow).source ?? null,
-      scheduler,
-    },
-  });
-  if (!published.success || !published.postId || !published.reelId) {
+    // Phase 2: the caption is written from a brief of THIS clip - its title,
+    // channel and sport - not drawn from a pool keyed on a category. See
+    // PostBrief.ts for what the old path produced.
+    // Prefer the title YouTube just gave us over the one the scraper stored,
+    // and repair the row while we are here (self-healing, bounded, one write).
+    const storedTitle = (candidate as LibraryClip).title || '';
+    const realTitle = cachedOembedTitle(candidate.source_url);
+    let title = storedTitle;
+    if (realTitle && isUninformativeTitle(storedTitle, (candidate as SportsClipRow).source ?? undefined)
+        && !isUninformativeTitle(realTitle, (candidate as SportsClipRow).source ?? undefined)) {
+      title = realTitle;
+      if (clipType === 'sports' && (candidate as SportsClipRow).id) {
+        const { error: fixErr } = await getSupabase()
+          .from('sports_clips')
+          .update({ title: realTitle })
+          .eq('id', (candidate as SportsClipRow).id);
+        if (fixErr) console.warn('[horse-publisher] title repair failed:', fixErr.message);
+        else bumpSupplyStat('title_repaired');
+      }
+    }
+    const written = await writeCaption(
+      horse as AuthorHorse,
+      {
+        kind: 'video',
+        title,
+        source: (candidate as SportsClipRow).source ?? undefined,
+        domainHint: clipType,
+        sportHint: (candidate as SportsClipRow).sport_type ?? (candidate as LibraryClip).category ?? null,
+      },
+      fleet,
+    );
+    if (!written.text) {
+      if (written.belowFloor) {
+        belowFloor += 1;
+        bumpSupplyStat(`${clipType}_caption_below_floor`);
+      } else {
+        stale += 1;
+        bumpSupplyStat(`${clipType}_caption_stale`);
+      }
+      continue;
+    }
+    if (!written.semanticKey) {
+      missingSemantic += 1;
+      bumpSupplyStat(`${clipType}_caption_missing_semantic`);
+      continue;
+    }
+    const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
+
+    const key = assetKeyFor(candidate.source_url);
+    if (!key?.startsWith('yt:')) {
+      return { ...base, success: false, error: 'Selected video has no canonical YouTube identity' };
+    }
+    const published = await publishHorseVideoAtomically({
+      authorId: horse.profile_id,
+      videoUrl: candidate.source_url,
+      caption: picked.text,
+      topic: clipType,
+      assetKey: key,
+      phraseNorm: picked.norm,
+      semanticKey: written.semanticKey,
+      metadata: {
+        clip_type: clipType,
+        clip_id: (candidate as SportsClipRow).id ?? (candidate as LibraryClip).video_id,
+        clip_source: (candidate as SportsClipRow).source ?? null,
+        scheduler,
+      },
+    });
+    // A failed acknowledgement may hide a committed write. A definite RPC
+    // rejection may be a cadence or concurrent-ledger guard. Neither permits
+    // trying a second asset inside the same publication attempt.
+    if (!published.success || !published.postId || !published.reelId) {
+      return {
+        ...base,
+        success: false,
+        outcome: published.outcome,
+        error: published.error ?? 'Atomic horse video publication failed',
+      };
+    }
+    await recordBrief(published.postId, written.brief);
     return {
       ...base,
-      success: false,
-      outcome: published.outcome,
-      error: published.error ?? 'Atomic horse video publication failed',
+      success: true,
+      postId: published.postId,
+      reelId: published.reelId,
+      created: published.created,
+      type: `${clipType}_video`,
+      caption: picked.text.slice(0, 60),
+      collided: picked.collided,
+      relevance: written.relevance,
+      grounding: written.grounding,
+      drafts: written.attempts,
+      belowFloor: written.belowFloor,
+      tagged: written.tagged?.alias,
+      briefSummary: summarise(written.brief),
     };
   }
-  await recordBrief(published.postId, written.brief);
+
   return {
     ...base,
-    success: true,
-    postId: published.postId,
-    reelId: published.reelId,
-    created: published.created,
-    type: `${clipType}_video`,
-    caption: picked.text.slice(0, 60),
-    collided: picked.collided,
-    relevance: written.relevance,
-    grounding: written.grounding,
-    drafts: written.attempts,
-    belowFloor: written.belowFloor,
-    tagged: written.tagged?.alias,
-    briefSummary: summarise(written.brief),
+    success: false,
+    error: `No fresh caption cleared the quality gate (candidates=${captionCandidates.length}, below_floor=${belowFloor}, stale=${stale}, missing_semantic=${missingSemantic})`,
   };
 }
 

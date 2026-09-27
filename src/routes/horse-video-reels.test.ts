@@ -179,6 +179,31 @@ describe('horseVideoReels', () => {
     expect(mocks.publishVideoForHorse).not.toHaveBeenCalled();
   });
 
+  it('distinguishes playable embeds with unusable metadata from zero verifier supply', async () => {
+    mocks.prepareSharedHorseVideoSupply.mockResolvedValue({
+      status: 'ok',
+      availableTypes: [],
+      supply: { poker: [], sports: [] },
+      counts: {
+        poker: { scanned: 1000, verified: 4, captionable: 0 },
+        sports: { scanned: 1000, verified: 3, captionable: 0 },
+      },
+    });
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(c.captured.body).toMatchObject({
+      success: false,
+      error: 'no_grounded_captionable_verified_video_supply',
+      supply_preflight: 'uncaptionable',
+      attempted: 0,
+      blocked_preflight: 2,
+      failed: 2,
+      unknown: 0,
+    });
+    expect(mocks.publishVideoForHorse).not.toHaveBeenCalled();
+  });
+
   it('does not attempt horses outside their due window', async () => {
     mocks.isDueForPost.mockImplementation((id: string) => ({ due: id === 'horse-a', age: 0 }));
     const c = context();

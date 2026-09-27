@@ -53,6 +53,18 @@ const POKER_TAKES: Record<string, string[]> = {
     'that is not a mistake, that is just the deck',
     'both players played it right and one of them still loses the stack',
   ],
+  pocket_aces: [
+    'pocket aces are still one pair when the pot gets uncomfortable',
+    'pocket aces make the first decision easy and every later street harder',
+    'the discipline with pocket aces starts when the board stops cooperating',
+    'pocket aces win plenty and still create some of the hardest folds',
+  ],
+  reaction: [
+    'the reaction after a hand like that tells the whole story',
+    'watching the reaction is half the reason this hand is worth replaying',
+    'that reaction says exactly how unusual the decision was',
+    'the hand ends, but the reaction is what stays with you',
+  ],
   bad_beat: [
     'brutal, and the maths does not care how it felt',
     'that runout is the reason people quit and the reason people stay',

@@ -149,9 +149,14 @@ export async function horseVideoReels(c: Context) {
       runnableTypes = prepared.availableTypes;
       sharedSupplyCounts = prepared.counts;
       if (!runnableTypes.length) {
+        const hasVerifiedSupply = Object.values(prepared.counts).some(
+          (count) => (count?.verified ?? 0) > 0,
+        );
         return c.json({
           success: false,
-          error: 'no_fresh_public_verified_video_supply',
+          error: hasVerifiedSupply
+            ? 'no_grounded_captionable_verified_video_supply'
+            : 'no_fresh_public_verified_video_supply',
           fleet: fleet.length,
           due: due.length,
           attempted: 0,
@@ -159,7 +164,7 @@ export async function horseVideoReels(c: Context) {
           posted: 0,
           failed: queue.length,
           unknown: 0,
-          supply_preflight: 'empty',
+          supply_preflight: hasVerifiedSupply ? 'uncaptionable' : 'empty',
           supply: prepared.counts,
           modes: { poker_video: pokerEnabled, sports_video: sportsEnabled },
           timestamp: now.toISOString(),
