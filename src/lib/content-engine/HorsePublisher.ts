@@ -34,9 +34,11 @@ import { isUninformativeTitle } from './PostBrief.js';
 import {
   candidateClips,
   newsSources,
+  platformCandidateClips,
   recordValidity,
   sliceForHorse,
   sportsShareFor,
+  type SupplyClip,
 } from './ClipSupply.js';
 import {
   assetKeyFor,
@@ -48,6 +50,7 @@ import {
 import { fleetHash } from './FleetScheduler.js';
 import {
   publishHorseVideoAtomically,
+  readFreshSharedYouTubeVerificationIds,
   recordYouTubeVerification,
   type HorseVideoTopic,
 } from './HorseVideoPublication.js';
@@ -87,6 +90,20 @@ export interface PublishResult {
   tagged?: string;
   briefSummary?: string;
 }
+
+export interface SharedHorseVideoSupply {
+  poker: SupplyClip[];
+  sports: SupplyClip[];
+}
+
+export type PreparedSharedHorseVideoSupply =
+  | {
+      status: 'ok';
+      supply: SharedHorseVideoSupply;
+      availableTypes: HorseVideoTopic[];
+      counts: Partial<Record<HorseVideoTopic, { scanned: number; verified: number }>>;
+    }
+  | { status: 'unknown'; error: string };
 
 /** A horse that has posted inside this many hours is not due again. */
 export const RECENT_POST_GUARD_HOURS = 20;
@@ -223,6 +240,58 @@ export function takeSupplyStats(): Record<string, number> {
   const out = { ...supplyStats, oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0 };
   for (const k of Object.keys(supplyStats)) delete supplyStats[k];
   return out;
+}
+
+/**
+ * Build one immutable verification snapshot for the whole scheduled run.
+ *
+ * Each enabled category costs one bounded pool read and one service-role RPC,
+ * regardless of whether 1 or 80 horses are due. Only fresh positive registry
+ * rows survive into the snapshot. No YouTube/oEmbed/yt-dlp call exists on
+ * this path.
+ */
+export async function prepareSharedHorseVideoSupply(
+  allowedTypes: readonly HorseVideoTopic[],
+): Promise<PreparedSharedHorseVideoSupply> {
+  const requested = [...new Set(allowedTypes)].filter(
+    (kind): kind is HorseVideoTopic => kind === 'poker' || kind === 'sports',
+  );
+  const supply: SharedHorseVideoSupply = { poker: [], sports: [] };
+  const counts: Partial<Record<HorseVideoTopic, { scanned: number; verified: number }>> = {};
+
+  try {
+    const pools = await Promise.all(requested.map(async (kind) => ({
+      kind,
+      pool: await platformCandidateClips(kind),
+    })));
+    for (const { kind, pool } of pools) {
+      if (pool.status === 'unknown') {
+        return { status: 'unknown', error: `${kind}: ${pool.error}` };
+      }
+      const canonical = pool.clips.filter((clip) => (
+        /^[A-Za-z0-9_-]{11}$/.test(clip.video_id)
+        && assetKeyFor(clip.source_url) === `yt:${clip.video_id}`
+      ));
+      const lookup = await readFreshSharedYouTubeVerificationIds(
+        canonical.map((clip) => clip.video_id),
+      );
+      if (lookup.status === 'unknown') {
+        return { status: 'unknown', error: `${kind}: ${lookup.error}` };
+      }
+      supply[kind] = canonical.filter((clip) => lookup.videoIds.has(clip.video_id));
+      counts[kind] = { scanned: canonical.length, verified: supply[kind].length };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: 'unknown', error: `shared video supply outcome unknown: ${message}` };
+  }
+
+  return {
+    status: 'ok',
+    supply,
+    availableTypes: requested.filter((kind) => supply[kind].length > 0),
+    counts,
+  };
 }
 
 export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {
@@ -399,6 +468,7 @@ export async function publishVideoClip(
   clipType: 'poker' | 'sports',
   fleet: AuthorHorse[],
   scheduler = 'fleet',
+  sharedSupply?: SharedHorseVideoSupply,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!(await postModeEnabled(`${clipType}_video`))) {
@@ -406,7 +476,51 @@ export async function publishVideoClip(
   }
   let clip: LibraryClip | SportsClipRow | null = null;
 
-  if (clipType === 'poker') {
+  if (scheduler === 'horse-video-reels') {
+    if (!sharedSupply) {
+      return {
+        ...base,
+        success: false,
+        outcome: 'unknown',
+        error: 'shared verified video supply unavailable',
+      };
+    }
+    const verified = sharedSupply[clipType];
+    if (!verified.length) {
+      return {
+        ...base,
+        success: false,
+        error: `No fresh public verified ${clipType} clips in supply`,
+      };
+    }
+
+    const sourceNames = [...new Set(verified.map((candidate) => candidate.source).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+    const mine = new Set(sliceForHorse(sourceNames, horse.profile_id));
+    const preferred = verified.filter((candidate) => mine.has(candidate.source));
+    const freshFrom = async (rows: SupplyClip[]) => {
+      const keys = rows.map((candidate) => assetKeyFor(candidate.source_url)).filter(Boolean) as string[];
+      const usable = await filterUnusedAssets(keys, horse.profile_id);
+      return rows.filter((candidate) => {
+        const key = assetKeyFor(candidate.source_url);
+        return !!key && usable.has(key);
+      });
+    };
+    let fresh = preferred.length ? await freshFrom(preferred) : [];
+    if (!fresh.length && preferred.length !== verified.length) {
+      fresh = await freshFrom(verified);
+      bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
+    }
+    if (!fresh.length) {
+      return {
+        ...base,
+        success: false,
+        error: `All ${clipType} verified clips already posted`,
+      };
+    }
+    clip = fresh[Math.floor(Math.random() * fresh.length)]!;
+    bumpSupplyStat(`${clipType}_shared_verified_selected`);
+  } else if (clipType === 'poker') {
     // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
     // source registry first, the whole pool only if that slice is thin. The
     // 150-literal ClipLibrary.ts array this replaced was used 114 deep in one
@@ -616,11 +730,20 @@ export async function publishVideoForHorse(
     now?: Date;
     skipGuard?: boolean;
     allowedTypes?: HorseVideoTopic[];
+    sharedSupply?: SharedHorseVideoSupply;
   } = {},
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!opts.skipGuard && (await postedRecently(horse.profile_id))) {
     return { ...base, success: false, skipped: 'posted_recently' };
+  }
+  if (!opts.sharedSupply) {
+    return {
+      ...base,
+      success: false,
+      outcome: 'unknown',
+      error: 'shared verified video supply unavailable',
+    };
   }
 
   const requested = opts.allowedTypes ?? ['poker', 'sports'];
@@ -634,7 +757,13 @@ export async function publishVideoForHorse(
 
   const errors: string[] = [];
   for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
-    const result = await publishVideoClip(horse, kind, opts.fleet ?? [], 'horse-video-reels');
+    const result = await publishVideoClip(
+      horse,
+      kind,
+      opts.fleet ?? [],
+      'horse-video-reels',
+      opts.sharedSupply,
+    );
     if (result.success || result.skipped) return result;
     // A lost RPC acknowledgement may already represent a committed post.
     // Do not try the alternate topic in the same run or relabel uncertainty

@@ -8,12 +8,65 @@ vi.mock('../supabase.js', () => ({
 
 import {
   publishHorseVideoAtomically,
+  readFreshSharedYouTubeVerificationIds,
   recordYouTubeVerification,
 } from './HorseVideoPublication.js';
 
 beforeEach(() => rpc.mockReset());
 
 describe('shared YouTube verification', () => {
+  it('sanitizes and batches candidate ids through the service-role verification RPC', async () => {
+    rpc.mockResolvedValue({
+      data: [
+        { youtube_video_id: 'AAAAAAAAAAA' },
+        { youtube_video_id: 'BBBBBBBBBBB' },
+      ],
+      error: null,
+    });
+
+    await expect(readFreshSharedYouTubeVerificationIds([
+      ' AAAAAAAAAAA ',
+      'too-short',
+      'AAAAAAAAAAA',
+      'BBBBBBBBBBB',
+    ])).resolves.toEqual({
+      status: 'ok',
+      videoIds: new Set(['AAAAAAAAAAA', 'BBBBBBBBBBB']),
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith('fn_fresh_public_youtube_verification_ids', {
+      p_youtube_video_ids: ['AAAAAAAAAAA', 'BBBBBBBBBBB'],
+    });
+  });
+
+  it('keeps a registry error or malformed response unknown instead of calling it empty supply', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'registry unavailable' } });
+    await expect(readFreshSharedYouTubeVerificationIds(['AAAAAAAAAAA'])).resolves.toEqual({
+      status: 'unknown',
+      error: 'shared YouTube verification registry unavailable: registry unavailable',
+    });
+
+    rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(readFreshSharedYouTubeVerificationIds(['AAAAAAAAAAA'])).resolves.toEqual({
+      status: 'unknown',
+      error: 'shared YouTube verification registry returned a malformed payload',
+    });
+
+    rpc.mockRejectedValueOnce(new Error('request aborted'));
+    await expect(readFreshSharedYouTubeVerificationIds(['AAAAAAAAAAA'])).resolves.toEqual({
+      status: 'unknown',
+      error: 'shared YouTube verification registry outcome unknown: request aborted',
+    });
+  });
+
+  it('treats a successful empty registry answer as definite zero eligible supply', async () => {
+    rpc.mockResolvedValue({ data: [], error: null });
+    await expect(readFreshSharedYouTubeVerificationIds(['AAAAAAAAAAA'])).resolves.toEqual({
+      status: 'ok',
+      videoIds: new Set(),
+    });
+  });
+
   it('records a fresh positive oEmbed verdict with the race boundary', async () => {
     rpc.mockResolvedValue({
       data: [{ video_id: 'AAAAAAAAAAA', verification_status: 'resolved', resolved: true }],
