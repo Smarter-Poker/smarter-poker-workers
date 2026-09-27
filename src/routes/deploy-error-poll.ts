@@ -8,6 +8,7 @@
  */
 import type { Context } from 'hono';
 import { recordDeploymentMonitorHealth } from '../lib/deploymentMonitorHealth.js';
+import { currentMainFailure } from '../lib/currentMainFailure.js';
 import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
 const TEAM_ID = 'team_SVD8r7AOPH065G3usBxVvrBc';
@@ -99,21 +100,20 @@ export async function deployErrorPoll(c: Context) {
       summary: 'Deployment monitoring can read Vercel again',
       projectId: PROJECT_ID, teamId: TEAM_ID, deploymentsRead: data.deployments.length,
     });
-    const allDeployments = data.deployments;
-    // Vercel returns newest first. Preserve the existing current-main signal;
-    // a READY successor is not a claim that historical incidents were fixed.
-    const deployments = allDeployments.filter((d) => d.meta?.githubCommitRef === 'main');
-    const latestActionable = deployments.find(
-      (d) => d.state === 'READY' || d.state === 'ERROR' || d.state === 'BUILDING',
-    );
-    if (latestActionable?.state === 'READY') {
-      return c.json({ action: 'ok', message: 'Latest actionable deployment is READY',
-        latestSha: latestActionable.meta?.githubCommitSha?.substring(0, 9) });
+    // Vercel returns newest first. Only the newest settled main build speaks for
+    // main: an in-progress build is not a reason to re-report an ERROR that a
+    // newer READY build already superseded (see currentMainFailure). Nothing
+    // here resolves an earlier incident: a READY successor is not a claim that
+    // historical incidents were fixed.
+    const verdict = currentMainFailure(data.deployments);
+    if (verdict.kind === 'ready') {
+      return c.json({ action: 'ok', message: 'Latest settled main deployment is READY',
+        latestSha: verdict.deployment.meta?.githubCommitSha?.substring(0, 9) });
     }
-    const latestError = deployments.find((d) => d.state === 'ERROR');
-    if (!latestError) {
-      return c.json({ action: 'ok', message: 'No ERROR main deployments found', checked: deployments.length });
+    if (verdict.kind === 'unsettled') {
+      return c.json({ action: 'ok', message: 'No settled main deployment found', checked: verdict.checked });
     }
+    const latestError = verdict.deployment;
     const deployId = latestError.uid;
     const commitSha = latestError.meta?.githubCommitSha ?? '';
     const commitMsg = latestError.meta?.githubCommitMessage ?? '';
