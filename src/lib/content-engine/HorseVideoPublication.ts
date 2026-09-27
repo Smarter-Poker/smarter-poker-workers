@@ -32,6 +32,17 @@ interface PublicationRow {
   created?: boolean;
 }
 
+interface FreshVerificationRow {
+  youtube_video_id?: unknown;
+}
+
+export type FreshYouTubeVerificationLookup =
+  | { status: 'ok'; videoIds: Set<string> }
+  | { status: 'unknown'; error: string };
+
+const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+export const SHARED_YOUTUBE_VERIFICATION_BATCH_LIMIT = 1_000;
+
 export interface HorseVideoPublicationInput {
   authorId: string;
   videoUrl: string;
@@ -56,6 +67,74 @@ function firstRow<T>(data: unknown): T | null {
   if (Array.isArray(data)) return (data[0] as T | undefined) ?? null;
   if (data && typeof data === 'object') return data as T;
   return null;
+}
+
+/**
+ * Read the canonical shared public-playability verdicts in one bounded batch.
+ *
+ * The scheduled horse producer must not fan out to YouTube once per horse.
+ * World Hub's verifier owns the network proof and records it in the shared
+ * registry; this service-role-only RPC exposes only fresh positive ids. A
+ * failed/malformed read is an unknown operation, while a successful empty
+ * array is a definite "no currently proven candidates" answer.
+ */
+export async function readFreshSharedYouTubeVerificationIds(
+  candidateIds: readonly string[],
+): Promise<FreshYouTubeVerificationLookup> {
+  const ids = [...new Set(candidateIds
+    .map((id) => id.trim())
+    .filter((id) => YOUTUBE_VIDEO_ID.test(id)))];
+  if (ids.length === 0) return { status: 'ok', videoIds: new Set() };
+  if (ids.length > SHARED_YOUTUBE_VERIFICATION_BATCH_LIMIT) {
+    return {
+      status: 'unknown',
+      error: `shared YouTube verification batch exceeds ${SHARED_YOUTUBE_VERIFICATION_BATCH_LIMIT} ids`,
+    };
+  }
+
+  let response: Awaited<ReturnType<ReturnType<typeof getSupabase>['rpc']>>;
+  try {
+    response = await getSupabase().rpc('fn_fresh_public_youtube_verification_ids', {
+      p_youtube_video_ids: ids,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'unknown',
+      error: `shared YouTube verification registry outcome unknown: ${message}`,
+    };
+  }
+
+  if (response.error) {
+    return {
+      status: 'unknown',
+      error: `shared YouTube verification registry unavailable: ${response.error.message}`,
+    };
+  }
+  if (!Array.isArray(response.data)) {
+    return {
+      status: 'unknown',
+      error: 'shared YouTube verification registry returned a malformed payload',
+    };
+  }
+
+  const requested = new Set(ids);
+  const videoIds = new Set<string>();
+  for (const value of response.data as FreshVerificationRow[]) {
+    const videoId = value?.youtube_video_id;
+    if (
+      typeof videoId !== 'string'
+      || !YOUTUBE_VIDEO_ID.test(videoId)
+      || !requested.has(videoId)
+    ) {
+      return {
+        status: 'unknown',
+        error: 'shared YouTube verification registry returned a malformed payload',
+      };
+    }
+    videoIds.add(videoId);
+  }
+  return { status: 'ok', videoIds };
 }
 
 /**

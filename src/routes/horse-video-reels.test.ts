@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   loadFleet: vi.fn(),
   readPostModeStates: vi.fn(),
   isDueForPost: vi.fn(),
+  prepareSharedHorseVideoSupply: vi.fn(),
   publishVideoForHorse: vi.fn(),
   takeSupplyStats: vi.fn(),
 }));
@@ -24,6 +25,7 @@ vi.mock('../lib/content-engine/FleetScheduler.js', async (importOriginal) => {
 });
 
 vi.mock('../lib/content-engine/HorsePublisher.js', () => ({
+  prepareSharedHorseVideoSupply: mocks.prepareSharedHorseVideoSupply,
   publishVideoForHorse: mocks.publishVideoForHorse,
   takeSupplyStats: mocks.takeSupplyStats,
 }));
@@ -59,6 +61,12 @@ beforeEach(() => {
   mocks.loadFleet.mockResolvedValue(horses);
   mocks.readPostModeStates.mockResolvedValue({ poker_video: true, sports_video: false });
   mocks.isDueForPost.mockReturnValue({ due: true, age: 1 });
+  mocks.prepareSharedHorseVideoSupply.mockResolvedValue({
+    status: 'ok',
+    availableTypes: ['poker'],
+    supply: { poker: [{ video_id: 'AAAAAAAAAAA' }], sports: [] },
+    counts: { poker: { scanned: 1, verified: 1 } },
+  });
   mocks.publishVideoForHorse.mockImplementation(async (horse: (typeof horses)[number]) => ({
     success: true,
     horse: horse.name,
@@ -114,8 +122,12 @@ describe('horseVideoReels', () => {
     const c = context();
     await horseVideoReels(c);
     expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareSharedHorseVideoSupply).toHaveBeenCalledTimes(1);
     for (const call of mocks.publishVideoForHorse.mock.calls) {
-      expect(call[1]).toMatchObject({ allowedTypes: ['poker'] });
+      expect(call[1]).toMatchObject({
+        allowedTypes: ['poker'],
+        sharedSupply: { poker: [{ video_id: 'AAAAAAAAAAA' }], sports: [] },
+      });
     }
     expect(c.captured.body).toMatchObject({
       posted: 2,
@@ -127,6 +139,46 @@ describe('horseVideoReels', () => {
     });
   });
 
+  it('stops before per-horse work when the shared registry outcome is unknown', async () => {
+    mocks.prepareSharedHorseVideoSupply.mockResolvedValue({
+      status: 'unknown',
+      error: 'poker: shared registry unavailable',
+    });
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(c.captured.body).toMatchObject({
+      success: false,
+      supply_preflight: 'unknown',
+      attempted: 0,
+      blocked_preflight: 2,
+      error: 'poker: shared registry unavailable',
+    });
+    expect(mocks.publishVideoForHorse).not.toHaveBeenCalled();
+  });
+
+  it('reports definite zero verified supply without turning it into a transport unknown', async () => {
+    mocks.prepareSharedHorseVideoSupply.mockResolvedValue({
+      status: 'ok',
+      availableTypes: [],
+      supply: { poker: [], sports: [] },
+      counts: { poker: { scanned: 400, verified: 0 } },
+    });
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(c.captured.body).toMatchObject({
+      success: false,
+      supply_preflight: 'empty',
+      attempted: 0,
+      blocked_preflight: 2,
+      failed: 2,
+      unknown: 0,
+      supply: { poker: { scanned: 400, verified: 0 } },
+    });
+    expect(mocks.publishVideoForHorse).not.toHaveBeenCalled();
+  });
+
   it('does not attempt horses outside their due window', async () => {
     mocks.isDueForPost.mockImplementation((id: string) => ({ due: id === 'horse-a', age: 0 }));
     const c = context();
@@ -134,6 +186,32 @@ describe('horseVideoReels', () => {
     expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(1);
     expect(mocks.publishVideoForHorse.mock.calls[0]![0]).toMatchObject({ profile_id: 'horse-a' });
     expect(c.captured.body).toMatchObject({ due: 1, attempted: 1, posted: 1 });
+  });
+
+  it('prepares one shared proof snapshot for a 51-horse run instead of 306 YouTube probes', async () => {
+    const dueFleet = Array.from({ length: 51 }, (_, index) => ({
+      id: index + 1,
+      name: `Horse ${index + 1}`,
+      profile_id: `horse-${index + 1}`,
+      timezone: 'UTC',
+    }));
+    mocks.loadFleet.mockResolvedValue(dueFleet);
+    mocks.publishVideoForHorse.mockImplementation(async (horse: (typeof dueFleet)[number]) => ({
+      success: true,
+      horse: horse.name,
+      profile_id: horse.profile_id,
+      type: 'poker_video',
+      postId: `post-${horse.id}`,
+      reelId: `reel-${horse.id}`,
+      created: true,
+    }));
+
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(200);
+    expect(c.captured.body).toMatchObject({ due: 51, attempted: 51, posted: 51 });
+    expect(mocks.prepareSharedHorseVideoSupply).toHaveBeenCalledTimes(1);
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(51);
   });
 
   it('keeps retries deterministic within an hour and rotates over-cap cohorts next hour', () => {

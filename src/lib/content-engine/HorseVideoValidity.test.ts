@@ -3,10 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   candidateClips: vi.fn(),
   filterUnusedAssets: vi.fn(),
+  platformCandidateClips: vi.fn(),
   postModeEnabled: vi.fn(),
   publishHorseVideoAtomically: vi.fn(),
+  readFreshSharedYouTubeVerificationIds: vi.fn(),
   recordValidity: vi.fn(),
   recordYouTubeVerification: vi.fn(),
+  sliceForHorse: vi.fn(),
   verifyYouTubeMetadata: vi.fn(),
   writeCaption: vi.fn(),
 }));
@@ -14,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./HorseVideoPublication.js', () => ({
   recordYouTubeVerification: mocks.recordYouTubeVerification,
   publishHorseVideoAtomically: mocks.publishHorseVideoAtomically,
+  readFreshSharedYouTubeVerificationIds: mocks.readFreshSharedYouTubeVerificationIds,
 }));
 vi.mock('./YouTubeMetadataVerifier.js', () => ({
   verifyYouTubeMetadata: mocks.verifyYouTubeMetadata,
@@ -40,8 +44,9 @@ vi.mock('./VoiceWriter.js', () => ({
 vi.mock('./ClipSupply.js', () => ({
   candidateClips: mocks.candidateClips,
   newsSources: vi.fn(),
+  platformCandidateClips: mocks.platformCandidateClips,
   recordValidity: mocks.recordValidity,
-  sliceForHorse: vi.fn(),
+  sliceForHorse: mocks.sliceForHorse,
   sportsShareFor: vi.fn(() => 0.1),
 }));
 vi.mock('./ContentLedger.js', () => ({
@@ -57,6 +62,7 @@ vi.mock('./ContentLedger.js', () => ({
 
 import {
   _resetValidityCache,
+  prepareSharedHorseVideoSupply,
   publishVideoClip,
   publishVideoForHorse,
   YOUTUBE_OEMBED_TIMEOUT_MS,
@@ -74,6 +80,12 @@ beforeEach(() => {
     reason: 'yt_dlp_public_embeddable',
   });
   mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA']));
+  mocks.sliceForHorse.mockImplementation((all: string[]) => all.slice(0, 8));
+  mocks.platformCandidateClips.mockResolvedValue({ status: 'ok', clips: [] });
+  mocks.readFreshSharedYouTubeVerificationIds.mockResolvedValue({
+    status: 'ok',
+    videoIds: new Set<string>(),
+  });
   mocks.writeCaption.mockResolvedValue({
     text: 'A real caption',
     semanticKey: 'semantic:poker:aces',
@@ -91,6 +103,237 @@ afterEach(() => {
 });
 
 describe('horse video oEmbed proof', () => {
+  it('prepares one shared-registry batch per enabled category and retains category purity', async () => {
+    mocks.platformCandidateClips.mockImplementation(async (domain: 'poker' | 'sports') => ({
+      status: 'ok',
+      clips: [{
+        id: `${domain}-clip`,
+        video_id: domain === 'poker' ? 'AAAAAAAAAAA' : 'BBBBBBBBBBB',
+        source_url: `https://youtube.com/watch?v=${domain === 'poker' ? 'AAAAAAAAAAA' : 'BBBBBBBBBBB'}`,
+        source: `${domain} source`,
+        title: `${domain} title`,
+        category: domain,
+        oembed_ok: null,
+      }],
+    }));
+    mocks.readFreshSharedYouTubeVerificationIds.mockImplementation(async (ids: string[]) => ({
+      status: 'ok',
+      videoIds: new Set(ids),
+    }));
+
+    await expect(prepareSharedHorseVideoSupply(['poker', 'sports'])).resolves.toMatchObject({
+      status: 'ok',
+      availableTypes: ['poker', 'sports'],
+      supply: {
+        poker: [{ video_id: 'AAAAAAAAAAA', category: 'poker' }],
+        sports: [{ video_id: 'BBBBBBBBBBB', category: 'sports' }],
+      },
+      counts: {
+        poker: { scanned: 1, verified: 1 },
+        sports: { scanned: 1, verified: 1 },
+      },
+    });
+    expect(mocks.platformCandidateClips).toHaveBeenCalledTimes(2);
+    expect(mocks.readFreshSharedYouTubeVerificationIds).toHaveBeenCalledTimes(2);
+  });
+
+  it('distinguishes a registry outage from a successful zero-positive answer', async () => {
+    mocks.platformCandidateClips.mockResolvedValue({
+      status: 'ok',
+      clips: [{
+        id: 'clip-a', video_id: 'AAAAAAAAAAA',
+        source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
+        source: 'Poker source', title: 'Poker title', category: 'poker', oembed_ok: null,
+      }],
+    });
+    mocks.readFreshSharedYouTubeVerificationIds.mockResolvedValueOnce({
+      status: 'unknown',
+      error: 'registry transport failed',
+    });
+    await expect(prepareSharedHorseVideoSupply(['poker'])).resolves.toEqual({
+      status: 'unknown',
+      error: 'poker: registry transport failed',
+    });
+
+    mocks.readFreshSharedYouTubeVerificationIds.mockResolvedValueOnce({
+      status: 'ok',
+      videoIds: new Set(),
+    });
+    await expect(prepareSharedHorseVideoSupply(['poker'])).resolves.toMatchObject({
+      status: 'ok',
+      availableTypes: [],
+      supply: { poker: [] },
+      counts: { poker: { scanned: 1, verified: 0 } },
+    });
+  });
+
+  it('keeps unproven and subscription-gated candidates out of the scheduled snapshot', async () => {
+    mocks.platformCandidateClips.mockResolvedValue({
+      status: 'ok',
+      clips: ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
+        id: `clip-${videoId}`,
+        video_id: videoId,
+        source_url: `https://youtube.com/watch?v=${videoId}`,
+        source: 'Poker source',
+        title: `Title ${videoId}`,
+        category: 'poker',
+        oembed_ok: null,
+      })),
+    });
+    // Only A has a fresh positive proof. B may be negative, stale, private,
+    // subscriber-only, or simply not yet proven; none is a publishable state.
+    mocks.readFreshSharedYouTubeVerificationIds.mockResolvedValue({
+      status: 'ok',
+      videoIds: new Set(['AAAAAAAAAAA']),
+    });
+
+    await expect(prepareSharedHorseVideoSupply(['poker'])).resolves.toMatchObject({
+      status: 'ok',
+      availableTypes: ['poker'],
+      supply: { poker: [{ video_id: 'AAAAAAAAAAA' }] },
+      counts: { poker: { scanned: 2, verified: 1 } },
+    });
+  });
+
+  it('scheduled publication consumes only shared positives and performs no YouTube fanout', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA']));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true,
+      postId: 'post-1',
+      reelId: 'reel-1',
+      created: true,
+    });
+    const supply = {
+      poker: [{
+        id: 'clip-a', video_id: 'AAAAAAAAAAA',
+        source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
+        source: 'Poker source', title: 'Poker title', category: 'poker', oembed_ok: null,
+      }],
+      sports: [],
+    };
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      {
+        skipGuard: true,
+        now: new Date('2026-09-26T14:00:00Z'),
+        allowedTypes: ['poker'],
+        sharedSupply: supply,
+      },
+    )).resolves.toMatchObject({ success: true, type: 'poker_video' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({
+      topic: 'poker',
+      videoUrl: 'https://youtube.com/watch?v=AAAAAAAAAAA',
+      metadata: expect.objectContaining({ scheduler: 'horse-video-reels' }),
+    }));
+  });
+
+  it('publishes a verified sports snapshot as sports without a poker relabel or native processing', async () => {
+    globalThis.fetch = vi.fn() as typeof fetch;
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:BBBBBBBBBBB']));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true, postId: 'post-s', reelId: 'reel-s', created: true,
+    });
+    const sports = [{
+      id: 'sports-b', video_id: 'BBBBBBBBBBB',
+      source_url: 'https://youtube.com/watch?v=BBBBBBBBBBB',
+      source: 'Sports source', title: 'Sports title', category: 'football', oembed_ok: null,
+    }];
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      { skipGuard: true, allowedTypes: ['sports'], sharedSupply: { poker: [], sports } },
+    )).resolves.toMatchObject({ success: true, type: 'sports_video' });
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({
+      topic: 'sports',
+      videoUrl: 'https://youtube.com/watch?v=BBBBBBBBBBB',
+      metadata: expect.objectContaining({ clip_type: 'sports', scheduler: 'horse-video-reels' }),
+    }));
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stale process-wide YouTube backoff when a fresh shared positive exists', async () => {
+    const fetchMock = vi.fn(async () => new Response('rate limited', { status: 429 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    await expect(youtubeValidity('https://youtube.com/watch?v=AAAAAAAAAAA')).resolves.toBe('unknown');
+
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:BBBBBBBBBBB']));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true, postId: 'post-b', reelId: 'reel-b', created: true,
+    });
+    const poker = [{
+      id: 'clip-b', video_id: 'BBBBBBBBBBB',
+      source_url: 'https://youtube.com/watch?v=BBBBBBBBBBB',
+      source: 'Poker source', title: 'Poker title', category: 'poker', oembed_ok: null,
+    }];
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      { skipGuard: true, allowedTypes: ['poker'], sharedSupply: { poker, sports: [] } },
+    )).resolves.toMatchObject({ success: true, type: 'poker_video' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('widens once from the horse slice to the full verified platform pool', async () => {
+    const supply = {
+      poker: Array.from({ length: 10 }, (_, index) => {
+        const videoId = `${String(index).padStart(11, 'A')}`.slice(-11);
+        return {
+          id: `clip-${index}`, video_id: videoId,
+          source_url: `https://youtube.com/watch?v=${videoId}`,
+          source: `Source ${index}`, title: `Title ${index}`, category: 'poker', oembed_ok: null,
+        };
+      }),
+      sports: [],
+    };
+    const allKeys = new Set(supply.poker.map((clip) => `yt:${clip.video_id}`));
+    mocks.filterUnusedAssets
+      .mockResolvedValueOnce(new Set())
+      .mockResolvedValueOnce(allKeys);
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true, postId: 'post-1', reelId: 'reel-1', created: true,
+    });
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      { skipGuard: true, allowedTypes: ['poker'], sharedSupply: supply },
+    )).resolves.toMatchObject({ success: true });
+    expect(mocks.filterUnusedAssets).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails scheduled publication closed without a shared snapshot and never falls back to live verification', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      { skipGuard: true, allowedTypes: ['poker', 'sports'] },
+    )).resolves.toMatchObject({
+      success: false,
+      outcome: 'unknown',
+      error: 'shared verified video supply unavailable',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
+  });
+
+  it('treats an empty verified category as definite zero supply, not transport unknown', async () => {
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      { skipGuard: true, allowedTypes: ['poker'], sharedSupply: { poker: [], sports: [] } },
+    )).resolves.toMatchObject({
+      success: false,
+      error: 'poker_video: No fresh public verified poker clips in supply',
+    });
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
+  });
+
   it('returns ok only after the positive verdict is durable in the shared registry', async () => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
       html: '<iframe src="https://www.youtube.com/embed/AAAAAAAAAAA"></iframe>',
@@ -275,8 +518,8 @@ describe('horse video oEmbed proof', () => {
   });
 
   it('does not attempt an alternate topic after an atomic outcome becomes unknown', async () => {
-    mocks.candidateClips.mockResolvedValue({
-      clips: [{
+    const sharedSupply = {
+      poker: [{
         id: 'clip-a',
         video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
@@ -285,13 +528,8 @@ describe('horse video oEmbed proof', () => {
         category: 'cash',
         oembed_ok: null,
       }],
-      widened: false,
-    });
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      html: '<iframe src="https://www.youtube.com/embed/AAAAAAAAAAA"></iframe>',
-      title: 'Test clip',
-    }), { status: 200 })) as typeof fetch;
-    mocks.recordYouTubeVerification.mockResolvedValue(true);
+      sports: [],
+    };
     mocks.publishHorseVideoAtomically.mockResolvedValue({
       success: false,
       outcome: 'unknown',
@@ -300,14 +538,18 @@ describe('horse video oEmbed proof', () => {
 
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
-      { skipGuard: true, now: new Date('2026-09-26T14:00:00Z'), allowedTypes: ['poker', 'sports'] },
+      {
+        skipGuard: true,
+        now: new Date('2026-09-26T14:00:00Z'),
+        allowedTypes: ['poker', 'sports'],
+        sharedSupply,
+      },
     )).resolves.toMatchObject({
       success: false,
       outcome: 'unknown',
       error: expect.stringContaining('outcome unknown'),
     });
-    expect(mocks.candidateClips).toHaveBeenCalledTimes(1);
-    expect(mocks.candidateClips).toHaveBeenCalledWith('poker', 'horse-a');
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
     expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(1);
   });
 });

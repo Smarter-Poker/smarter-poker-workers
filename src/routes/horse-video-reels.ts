@@ -16,9 +16,11 @@ import {
 } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, readPostModeStates } from '../lib/content-engine/Fleet.js';
 import {
+  prepareSharedHorseVideoSupply,
   publishVideoForHorse,
   takeSupplyStats,
   type PublishResult,
+  type SharedHorseVideoSupply,
 } from '../lib/content-engine/HorsePublisher.js';
 import type { HorseVideoTopic } from '../lib/content-engine/HorseVideoPublication.js';
 
@@ -121,6 +123,49 @@ export async function horseVideoReels(c: Context) {
       .filter((item) => item.slot.due);
     const selection = selectFairHorseVideoQueue(due, now);
     const queue = selection.queue;
+    let runnableTypes = allowedTypes;
+    let sharedSupply: SharedHorseVideoSupply | undefined;
+    let sharedSupplyCounts: Record<string, unknown> = {};
+    if (queue.length > 0) {
+      const prepared = await prepareSharedHorseVideoSupply(allowedTypes);
+      if (prepared.status === 'unknown') {
+        return c.json({
+          success: false,
+          error: prepared.error,
+          fleet: fleet.length,
+          due: due.length,
+          attempted: 0,
+          blocked_preflight: queue.length,
+          posted: 0,
+          failed: 0,
+          unknown: queue.length,
+          supply_preflight: 'unknown',
+          supply: takeSupplyStats(),
+          modes: { poker_video: pokerEnabled, sports_video: sportsEnabled },
+          timestamp: now.toISOString(),
+        }, 503);
+      }
+      sharedSupply = prepared.supply;
+      runnableTypes = prepared.availableTypes;
+      sharedSupplyCounts = prepared.counts;
+      if (!runnableTypes.length) {
+        return c.json({
+          success: false,
+          error: 'no_fresh_public_verified_video_supply',
+          fleet: fleet.length,
+          due: due.length,
+          attempted: 0,
+          blocked_preflight: queue.length,
+          posted: 0,
+          failed: queue.length,
+          unknown: 0,
+          supply_preflight: 'empty',
+          supply: prepared.counts,
+          modes: { poker_video: pokerEnabled, sports_video: sportsEnabled },
+          timestamp: now.toISOString(),
+        }, 503);
+      }
+    }
     const results: PublishResult[] = [];
     let deadlineHit = false;
 
@@ -136,7 +181,8 @@ export async function horseVideoReels(c: Context) {
         results.push(await publishVideoForHorse(item.horse, {
           fleet,
           now,
-          allowedTypes,
+          allowedTypes: runnableTypes,
+          sharedSupply,
         }));
       } catch (error) {
         results.push({
@@ -186,7 +232,8 @@ export async function horseVideoReels(c: Context) {
       }, {}),
       errors,
       modes: { poker_video: pokerEnabled, sports_video: sportsEnabled },
-      supply: takeSupplyStats(),
+      supply: { ...sharedSupplyCounts, runtime: takeSupplyStats() },
+      supply_preflight: queue.length > 0 ? 'ok' : 'not_needed',
       deadline_hit: deadlineHit,
       cap_hit: due.length > MAX_HORSE_VIDEO_REELS_PER_RUN,
       queue_strategy: HORSE_VIDEO_QUEUE_STRATEGY,
