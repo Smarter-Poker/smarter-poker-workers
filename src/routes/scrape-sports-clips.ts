@@ -15,22 +15,29 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { isUninformativeTitle } from '../lib/content-engine/PostBrief.js';
 
 const CONFIG = {
   MAX_CLIPS_PER_CHANNEL: 10,
   MAX_TOTAL_CLIPS: 100,
   REQUEST_TIMEOUT: 15000,
   REQUEST_DELAY: 1500,
+  // The route already spends 57 seconds on its deliberate inter-channel
+  // pacing. Keep fallback metadata inside a further 24-second worst-case
+  // budget so a changed YouTube page cannot turn one run into an unbounded
+  // chain of external requests.
+  OEMBED_TIMEOUT: 3000,
+  MAX_OEMBED_FALLBACKS_PER_RUN: 8,
 } as const;
 
-interface SportsChannel {
+export interface SportsChannel {
   name: string;
   handle: string;
   sport: string;
   category: string;
 }
 
-interface Clip {
+export interface Clip {
   video_id: string;
   source_url: string;
   title: string;
@@ -38,6 +45,23 @@ interface Clip {
   sport_type: string;
   category: string;
   channel_handle: string;
+}
+
+export interface ShortsCandidate {
+  videoId: string;
+  title: string | null;
+}
+
+export interface OEmbedFallbackState {
+  remaining: number;
+  attempted: number;
+  resolved: number;
+  cache: Map<string, string | null>;
+}
+
+export interface ChannelScrapeResult {
+  clips: Clip[];
+  rejectedMissingTitle: number;
 }
 
 const SPORTS_CHANNELS: SportsChannel[] = [
@@ -118,34 +142,273 @@ async function fetchPage(url: string): Promise<string | null> {
 function cleanText(text: string | null | undefined): string {
   if (!text) return '';
   return text
-    .replace(/\\u0026/g, '&')
-    .replace(/\\u003c/g, '<')
-    .replace(/\\u003e/g, '>')
-    .replace(/\\"/g, '"')
-    .replace(/\\/g, '')
-    .replace(/\n/g, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(?:39|x27);/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-async function scrapeChannelShorts(channel: SportsChannel): Promise<Clip[]> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function at(value: unknown, ...path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function textFrom(value: unknown): string {
+  if (typeof value === 'string') return cleanText(value);
+  if (!isRecord(value)) return '';
+  for (const key of ['simpleText', 'content']) {
+    if (typeof value[key] === 'string') return cleanText(value[key]);
+  }
+  if (Array.isArray(value.runs)) {
+    return cleanText(value.runs
+      .map((run) => isRecord(run) && typeof run.text === 'string' ? run.text : '')
+      .join(''));
+  }
+  return textFrom(at(value, 'accessibilityData', 'label'));
+}
+
+function validVideoId(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{11}$/.test(value) ? value : null;
+}
+
+function idFromShortsUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  return validVideoId(value.match(/(?:^|\/)shorts\/([A-Za-z0-9_-]{11})(?:[/?#]|$)/)?.[1]);
+}
+
+function rendererVideoId(renderer: Record<string, unknown>): string | null {
+  const candidates = [
+    renderer.videoId,
+    at(renderer, 'navigationEndpoint', 'reelWatchEndpoint', 'videoId'),
+    at(renderer, 'navigationEndpoint', 'watchEndpoint', 'videoId'),
+    at(renderer, 'onTap', 'innertubeCommand', 'reelWatchEndpoint', 'videoId'),
+    at(renderer, 'onTap', 'innertubeCommand', 'watchEndpoint', 'videoId'),
+  ];
+  for (const candidate of candidates) {
+    const id = validVideoId(candidate);
+    if (id) return id;
+  }
+
+  const urls = [
+    at(renderer, 'navigationEndpoint', 'commandMetadata', 'webCommandMetadata', 'url'),
+    at(renderer, 'onTap', 'innertubeCommand', 'commandMetadata', 'webCommandMetadata', 'url'),
+  ];
+  for (const url of urls) {
+    const id = idFromShortsUrl(url);
+    if (id) return id;
+  }
+
+  if (typeof renderer.entityId === 'string') {
+    return validVideoId(renderer.entityId.match(/shorts-shelf-item-([A-Za-z0-9_-]{11})$/)?.[1]);
+  }
+  return null;
+}
+
+function stripAccessibilitySuffix(value: string): string {
+  return cleanText(value.replace(
+    /,\s*(?:[\d.,]+\s*)?(?:[KMB]|thousand|million|billion)?\s*views?\s*-\s*play short\s*$/i,
+    '',
+  ));
+}
+
+function rendererTitle(renderer: Record<string, unknown>, modern: boolean): string | null {
+  const candidates = modern
+    ? [
+        at(renderer, 'overlayMetadata', 'primaryText'),
+        renderer.title,
+        renderer.headline,
+      ]
+    : [
+        renderer.headline,
+        renderer.title,
+        at(renderer, 'overlayMetadata', 'primaryText'),
+      ];
+  for (const candidate of candidates) {
+    const title = textFrom(candidate);
+    if (title) return title;
+  }
+  if (typeof renderer.accessibilityText === 'string') {
+    return stripAccessibilitySuffix(renderer.accessibilityText) || null;
+  }
+  return null;
+}
+
+/**
+ * Return the JSON object assigned to ytInitialData without executing page
+ * JavaScript. A brace-aware scanner is used because titles may themselves
+ * contain braces or escaped quotes.
+ */
+function assignedInitialData(html: string): unknown[] {
+  const assignments = [
+    /(?:^|[^A-Za-z0-9_$])(?:var\s+)?ytInitialData\s*=\s*/g,
+    /window\[["']ytInitialData["']\]\s*=\s*/g,
+  ];
+  const starts = new Set<number>();
+  for (const pattern of assignments) {
+    for (const match of html.matchAll(pattern)) {
+      const brace = html.indexOf('{', (match.index ?? 0) + match[0].length);
+      if (brace >= 0) starts.add(brace);
+    }
+  }
+
+  const parsed: unknown[] = [];
+  for (const start of starts) {
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let i = start; i < html.length; i++) {
+      const char = html[i]!;
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') {
+        quoted = true;
+      } else if (char === '{') {
+        depth += 1;
+      } else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            parsed.push(JSON.parse(html.slice(start, i + 1)) as unknown);
+          } catch {
+            // A malformed or changed payload is not permission to guess by
+            // pairing unrelated regex matches. Fail this payload closed.
+          }
+          break;
+        }
+      }
+    }
+  }
+  return parsed;
+}
+
+/**
+ * Parse only renderer-scoped Shorts metadata. The previous implementation
+ * built one global video-id array and one global title array, then paired the
+ * Nth members. YouTube player-menu titles live in the same HTML, so that
+ * positional join corrupted thousands of rows. Here the ID and title must be
+ * siblings inside one recognised renderer object.
+ */
+export function parseYouTubeShortsPage(html: string): ShortsCandidate[] {
+  const candidates = new Map<string, ShortsCandidate>();
+
+  const addRenderer = (value: unknown, modern: boolean) => {
+    if (!isRecord(value)) return;
+    const videoId = rendererVideoId(value);
+    if (!videoId) return;
+    const title = rendererTitle(value, modern);
+    const prior = candidates.get(videoId);
+    if (!prior || (!prior.title && title)) candidates.set(videoId, { videoId, title });
+  };
+
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (!isRecord(value)) return;
+    addRenderer(value.reelItemRenderer, false);
+    addRenderer(value.shortsLockupViewModel, true);
+    for (const child of Object.values(value)) visit(child);
+  };
+
+  for (const payload of assignedInitialData(html)) visit(payload);
+  return [...candidates.values()];
+}
+
+export function isUsableSportsClipTitle(title: string | null | undefined, source: string): boolean {
+  const cleaned = cleanText(title);
+  return !!cleaned && !isUninformativeTitle(cleaned, source);
+}
+
+export function createOEmbedFallbackState(
+  limit = CONFIG.MAX_OEMBED_FALLBACKS_PER_RUN,
+): OEmbedFallbackState {
+  return {
+    remaining: Math.max(0, Math.floor(limit)),
+    attempted: 0,
+    resolved: 0,
+    cache: new Map(),
+  };
+}
+
+async function fetchOEmbedTitle(videoId: string, source: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CONFIG.OEMBED_TIMEOUT);
+  timeout.unref?.();
+  try {
+    const response = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`,
+      {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      },
+    );
+    if (!response.ok) return null;
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || payload.provider_name !== 'YouTube' || payload.type !== 'video') return null;
+    const title = cleanText(typeof payload.title === 'string' ? payload.title : '');
+    return isUsableSportsClipTitle(title, source) ? title : null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[scrape-sports-clips] oEmbed metadata unavailable for ${videoId}: ${message}`);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fallbackTitle(
+  videoId: string,
+  source: string,
+  state: OEmbedFallbackState,
+): Promise<string | null> {
+  if (state.cache.has(videoId)) return state.cache.get(videoId) ?? null;
+  if (state.remaining <= 0) return null;
+  state.remaining -= 1;
+  state.attempted += 1;
+  const title = await fetchOEmbedTitle(videoId, source);
+  state.cache.set(videoId, title);
+  if (title) state.resolved += 1;
+  return title;
+}
+
+export async function scrapeChannelShorts(
+  channel: SportsChannel,
+  fallbackState: OEmbedFallbackState,
+): Promise<ChannelScrapeResult> {
   const clips: Clip[] = [];
+  let rejectedMissingTitle = 0;
   const shortsUrl = `https://www.youtube.com/${channel.handle}/shorts`;
   const html = await fetchPage(shortsUrl);
-  if (!html) return clips;
+  if (!html) return { clips, rejectedMissingTitle };
 
-  const shortIdPattern = /\/shorts\/([a-zA-Z0-9_-]{11})/g;
-  const matches = [...html.matchAll(shortIdPattern)];
-  const uniqueIds = [...new Set(matches.map((m) => m[1]).filter((id): id is string => !!id))];
-
-  const titlePattern = /"title":\s*\{"runs":\s*\[\{"text":\s*"([^"]+)"\}\]/g;
-  const titles = [...html.matchAll(titlePattern)]
-    .map((m) => cleanText(m[1]))
-    .filter((t) => t.length > 0);
-
-  for (let i = 0; i < Math.min(uniqueIds.length, CONFIG.MAX_CLIPS_PER_CHANNEL); i++) {
-    const videoId = uniqueIds[i];
-    if (!videoId) continue;
-    const title = titles[i] ?? `${channel.name} ${channel.sport.toUpperCase()} Clip`;
+  const candidates = parseYouTubeShortsPage(html).slice(0, CONFIG.MAX_CLIPS_PER_CHANNEL);
+  for (const candidate of candidates) {
+    const videoId = candidate.videoId;
+    let title = cleanText(candidate.title);
+    if (!isUsableSportsClipTitle(title, channel.name)) {
+      title = await fallbackTitle(videoId, channel.name, fallbackState) ?? '';
+    }
+    if (!isUsableSportsClipTitle(title, channel.name)) {
+      rejectedMissingTitle += 1;
+      continue;
+    }
     clips.push({
       video_id: videoId,
       source_url: `https://www.youtube.com/shorts/${videoId}`,
@@ -157,21 +420,48 @@ async function scrapeChannelShorts(channel: SportsChannel): Promise<Clip[]> {
     });
   }
 
-  return clips;
+  return { clips, rejectedMissingTitle };
 }
 
-async function saveClips(clips: Clip[]): Promise<{ saved: number; skipped: number }> {
+export async function saveClips(
+  clips: Clip[],
+): Promise<{ saved: number; skipped: number; repaired: number; failed: number }> {
   let saved = 0;
   let skipped = 0;
+  let repaired = 0;
+  let failed = 0;
   const supabase = getSupabase();
 
-  const { data: existingData } = await supabase.from('sports_clips').select('source_url');
-  const existing = (existingData ?? []) as Array<{ source_url: string }>;
-  const existingUrls = new Set(existing.map((c) => c.source_url));
+  if (clips.length === 0) return { saved, skipped, repaired, failed };
+
+  const candidateUrls = [...new Set(clips.map((clip) => clip.source_url))];
+  const { data: existingData, error: existingError } = await supabase
+    .from('sports_clips')
+    .select('source_url, title')
+    .in('source_url', candidateUrls);
+  if (existingError) throw new Error(`sports_clips inventory read failed: ${existingError.message}`);
+  const existing = (existingData ?? []) as Array<{ source_url: string; title: string | null }>;
+  const existingByUrl = new Map(existing.map((clip) => [clip.source_url, clip.title]));
 
   for (const clip of clips) {
-    if (existingUrls.has(clip.source_url)) {
-      skipped++;
+    if (existingByUrl.has(clip.source_url)) {
+      const existingTitle = existingByUrl.get(clip.source_url);
+      if (!isUsableSportsClipTitle(existingTitle, clip.source)
+        && isUsableSportsClipTitle(clip.title, clip.source)) {
+        const { error } = await supabase
+          .from('sports_clips')
+          .update({ title: clip.title })
+          .eq('source_url', clip.source_url);
+        if (error) {
+          failed += 1;
+          console.warn('[scrape-sports-clips] title repair error:', error.message);
+        } else {
+          repaired += 1;
+          existingByUrl.set(clip.source_url, clip.title);
+        }
+      } else {
+        skipped += 1;
+      }
       continue;
     }
     const { data, error } = await supabase
@@ -190,35 +480,49 @@ async function saveClips(clips: Clip[]): Promise<{ saved: number; skipped: numbe
 
     if (data && !error) {
       saved++;
-      existingUrls.add(clip.source_url);
+      existingByUrl.set(clip.source_url, clip.title);
     } else if (error) {
+      failed += 1;
       console.warn('[scrape-sports-clips] insert error:', error.message);
     }
   }
 
-  return { saved, skipped };
+  return { saved, skipped, repaired, failed };
 }
 
 export async function scrapeSportsClips(c: Context) {
   try {
+    const dryRun = c.req.query('dry_run') === '1';
     const allClips: Clip[] = [];
+    const fallbackState = createOEmbedFallbackState();
+    let rejectedMissingTitle = 0;
 
     for (const channel of SPORTS_CHANNELS) {
       if (allClips.length >= CONFIG.MAX_TOTAL_CLIPS) break;
-      const clips = await scrapeChannelShorts(channel);
-      allClips.push(...clips);
+      const result = await scrapeChannelShorts(channel, fallbackState);
+      const remaining = CONFIG.MAX_TOTAL_CLIPS - allClips.length;
+      allClips.push(...result.clips.slice(0, remaining));
+      rejectedMissingTitle += result.rejectedMissingTitle;
       await delay(CONFIG.REQUEST_DELAY);
     }
 
-    const { saved, skipped } = await saveClips(allClips);
+    const { saved, skipped, repaired, failed } = dryRun
+      ? { saved: 0, skipped: 0, repaired: 0, failed: 0 }
+      : await saveClips(allClips);
 
     return c.json({
       success: true,
+      dry_run: dryRun,
       timestamp: new Date().toISOString(),
       channels_scraped: SPORTS_CHANNELS.length,
       found: allClips.length,
       saved,
       skipped,
+      repaired,
+      failed,
+      rejected_missing_title: rejectedMissingTitle,
+      oembed_fallbacks_attempted: fallbackState.attempted,
+      oembed_fallbacks_resolved: fallbackState.resolved,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
