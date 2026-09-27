@@ -128,14 +128,16 @@ async function fetchPage(url: string): Promise<string | null> {
         'Accept-Language': 'en-US,en;q=0.9',
       },
     });
-    clearTimeout(timeout);
     if (!response.ok) return null;
     return await response.text();
   } catch (error) {
-    clearTimeout(timeout);
     const msg = error instanceof Error ? error.message : String(error);
     console.warn(`[scrape-sports-clips] failed to fetch ${url}: ${msg}`);
     return null;
+  } finally {
+    // Keep the deadline active while the response body is consumed. Clearing
+    // it after headers arrive would allow a stalled body to hang the run.
+    clearTimeout(timeout);
   }
 }
 
@@ -490,21 +492,55 @@ export async function saveClips(
   return { saved, skipped, repaired, failed };
 }
 
+/**
+ * Apply the run cap without letting the channel registry's ordering decide
+ * the whole feed. The registry is grouped NBA, NFL, MLB, NHL, soccer, then
+ * general sports; taking the first 100 therefore used to stop after the ten
+ * NBA channels. One item per channel per pass keeps the selection stable,
+ * gives every readable curated channel a chance, and drops duplicate video
+ * ids shared by network-wide channels such as ESPN.
+ */
+export function capClipsRoundRobin(
+  channelClips: readonly (readonly Clip[])[],
+  limit = CONFIG.MAX_TOTAL_CLIPS,
+): Clip[] {
+  const cap = Math.max(0, Math.floor(limit));
+  if (cap === 0) return [];
+  const selected: Clip[] = [];
+  const seenVideoIds = new Set<string>();
+  const depth = Math.max(0, ...channelClips.map((clips) => clips.length));
+
+  for (let position = 0; position < depth && selected.length < cap; position += 1) {
+    for (const clips of channelClips) {
+      const clip = clips[position];
+      if (!clip || seenVideoIds.has(clip.video_id)) continue;
+      seenVideoIds.add(clip.video_id);
+      selected.push(clip);
+      if (selected.length >= cap) break;
+    }
+  }
+  return selected;
+}
+
 export async function scrapeSportsClips(c: Context) {
   try {
     const dryRun = c.req.query('dry_run') === '1';
-    const allClips: Clip[] = [];
     const fallbackState = createOEmbedFallbackState();
-    let rejectedMissingTitle = 0;
+    // Stagger request starts rather than awaiting every response before the
+    // next delay. All 38 channels are still spaced 1.5 seconds apart, while a
+    // slow 15-second response can overlap later requests instead of multiplying
+    // the route duration past the dispatcher's bounded execution window.
+    const channelResults = await Promise.all(SPORTS_CHANNELS.map(async (channel, index) => {
+      if (index > 0) await delay(index * CONFIG.REQUEST_DELAY);
+      return scrapeChannelShorts(channel, fallbackState);
+    }));
+    const channelClips = channelResults.map((result) => result.clips);
+    const rejectedMissingTitle = channelResults.reduce(
+      (total, result) => total + result.rejectedMissingTitle,
+      0,
+    );
 
-    for (const channel of SPORTS_CHANNELS) {
-      if (allClips.length >= CONFIG.MAX_TOTAL_CLIPS) break;
-      const result = await scrapeChannelShorts(channel, fallbackState);
-      const remaining = CONFIG.MAX_TOTAL_CLIPS - allClips.length;
-      allClips.push(...result.clips.slice(0, remaining));
-      rejectedMissingTitle += result.rejectedMissingTitle;
-      await delay(CONFIG.REQUEST_DELAY);
-    }
+    const allClips = capClipsRoundRobin(channelClips);
 
     const { saved, skipped, repaired, failed } = dryRun
       ? { saved: 0, skipped: 0, repaired: 0, failed: 0 }
@@ -514,7 +550,8 @@ export async function scrapeSportsClips(c: Context) {
       success: true,
       dry_run: dryRun,
       timestamp: new Date().toISOString(),
-      channels_scraped: SPORTS_CHANNELS.length,
+      channels_scraped: channelResults.length,
+      channels_with_clips: channelClips.filter((clips) => clips.length > 0).length,
       found: allClips.length,
       saved,
       skipped,

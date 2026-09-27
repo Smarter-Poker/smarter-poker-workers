@@ -56,6 +56,7 @@ vi.mock('../lib/supabase.js', () => ({
 }));
 
 import {
+  capClipsRoundRobin,
   createOEmbedFallbackState,
   parseYouTubeShortsPage,
   saveClips,
@@ -226,9 +227,42 @@ describe('sports Shorts metadata integrity', () => {
     await vi.runAllTimersAsync();
     await pending;
 
-    expect(c.body).toMatchObject({ success: true, dry_run: true, found: 76, saved: 0, repaired: 0 });
+    expect(c.body).toMatchObject({
+      success: true,
+      dry_run: true,
+      channels_scraped: 38,
+      channels_with_clips: 38,
+      found: 2,
+      saved: 0,
+      repaired: 0,
+    });
     expect(db.inserted).toEqual([]);
     expect(db.updated).toEqual([]);
+  });
+
+  it('stagger-starts the full curated scan without serializing slow channel responses', async () => {
+    const startedAt: number[] = [];
+    globalThis.fetch = vi.fn(async (input: unknown) => {
+      if (!String(input).includes('/shorts')) throw new Error(`unexpected fallback request ${String(input)}`);
+      startedAt.push(Date.now());
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      return new Response(currentShortsPage(), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const c = context({ dry_run: '1' });
+    const pending = scrapeSportsClips(c as never);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(startedAt).toHaveLength(38);
+    expect(startedAt.at(-1)! - startedAt[0]!).toBe(37 * 1_500);
+    expect(c.body).toMatchObject({
+      success: true,
+      dry_run: true,
+      channels_scraped: 38,
+      channels_with_clips: 38,
+      found: 2,
+    });
   });
 
   it('uses bounded oEmbed metadata only when a renderer title is unusable', async () => {
@@ -305,5 +339,34 @@ describe('sports Shorts metadata integrity', () => {
       patch: { title: 'Ohtani launches a walk off home run' },
     }]);
     expect(db.inserted).toEqual([]);
+  });
+
+  it('round-robins the full curated set so late sports survive the 100-clip cap', () => {
+    const sports = [
+      ...Array(10).fill('nba'),
+      ...Array(10).fill('nfl'),
+      ...Array(5).fill('mlb'),
+      ...Array(5).fill('nhl'),
+      ...Array(5).fill('soccer'),
+      ...Array(3).fill('general'),
+    ];
+    const groups = sports.map((sport, channelIndex) => Array.from({ length: 10 }, (_, position) => ({
+      ...clip(
+        `${String(channelIndex).padStart(3, '0')}${String(position).padStart(8, '0')}`,
+        `${sport} athlete scores a remarkable game winner`,
+      ),
+      source: `Channel ${channelIndex}`,
+      sport_type: sport,
+    })));
+
+    const selected = capClipsRoundRobin(groups, 100);
+    const bySport = new Map<string, number>();
+    for (const item of selected) bySport.set(item.sport_type, (bySport.get(item.sport_type) ?? 0) + 1);
+
+    expect(selected).toHaveLength(100);
+    expect([...bySport.keys()]).toEqual(['nba', 'nfl', 'mlb', 'nhl', 'soccer', 'general']);
+    expect(bySport.get('soccer')).toBeGreaterThanOrEqual(10);
+    expect(bySport.get('general')).toBeGreaterThanOrEqual(6);
+    expect(selected.some((item) => item.source === 'Channel 37')).toBe(true);
   });
 });
