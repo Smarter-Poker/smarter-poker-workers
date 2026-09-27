@@ -62,6 +62,7 @@ vi.mock('./ContentLedger.js', () => ({
 
 import {
   _resetValidityCache,
+  MAX_VIDEO_CAPTION_CANDIDATES,
   prepareSharedHorseVideoSupply,
   publishVideoClip,
   publishVideoForHorse,
@@ -111,7 +112,7 @@ describe('horse video oEmbed proof', () => {
         video_id: domain === 'poker' ? 'AAAAAAAAAAA' : 'BBBBBBBBBBB',
         source_url: `https://youtube.com/watch?v=${domain === 'poker' ? 'AAAAAAAAAAA' : 'BBBBBBBBBBB'}`,
         source: `${domain} source`,
-        title: `${domain} title`,
+        title: domain === 'poker' ? 'All in on the river' : 'Buzzer beater game winner',
         category: domain,
         oembed_ok: null,
       }],
@@ -175,7 +176,7 @@ describe('horse video oEmbed proof', () => {
         video_id: videoId,
         source_url: `https://youtube.com/watch?v=${videoId}`,
         source: 'Poker source',
-        title: `Title ${videoId}`,
+        title: `All in on the river ${videoId}`,
         category: 'poker',
         oembed_ok: null,
       })),
@@ -195,6 +196,57 @@ describe('horse video oEmbed proof', () => {
     });
   });
 
+  it('separates fresh verifier proof from grounded-caption readiness before horses run', async () => {
+    const poker = [
+      ['8IseCEZyIxU', 'Rampage Poker', 'Dreams do come true 🙏 ✨️', 'vlog'],
+      ['rcMpnCfR2UM', 'PokerGO', 'JENNIFER TILLY REACTS TO EPIC POKER HAND VS ANTONIO ESFANDIARI', 'stream'],
+      ['RYZXl4LBlZc', 'The Lodge', 'The Kind Of River Card You Think About On Your Drive Home...', 'stream'],
+      ['faH94pxMH6U', 'Bart Hanson', 'The $1,700 Bet That Put Pocket Aces in Hell', 'training'],
+    ].map(([videoId, source, title, category]) => ({
+      id: `clip-${videoId}`,
+      video_id: videoId!,
+      source_url: `https://youtube.com/watch?v=${videoId}`,
+      source: source!,
+      title: title!,
+      category: category!,
+      oembed_ok: null,
+    }));
+    const sports = ['NwvvRR71abM', 'bnoADRClYs4', 'k72VZZX2yY8'].map((videoId) => ({
+      id: `clip-${videoId}`,
+      video_id: videoId,
+      source_url: `https://youtube.com/watch?v=${videoId}`,
+      source: 'ESPN NBA',
+      title: 'Keyboard shortcuts',
+      category: 'highlight',
+      oembed_ok: null,
+    }));
+    mocks.platformCandidateClips.mockImplementation(async (domain: 'poker' | 'sports') => ({
+      status: 'ok',
+      clips: domain === 'poker' ? poker : sports,
+    }));
+    mocks.readFreshSharedYouTubeVerificationIds.mockImplementation(async (ids: string[]) => ({
+      status: 'ok',
+      videoIds: new Set(ids),
+    }));
+
+    await expect(prepareSharedHorseVideoSupply(['poker', 'sports'])).resolves.toMatchObject({
+      status: 'ok',
+      availableTypes: ['poker'],
+      supply: {
+        poker: [
+          { video_id: 'rcMpnCfR2UM' },
+          { video_id: 'RYZXl4LBlZc' },
+          { video_id: 'faH94pxMH6U' },
+        ],
+        sports: [],
+      },
+      counts: {
+        poker: { scanned: 4, verified: 4, captionable: 3 },
+        sports: { scanned: 3, verified: 3, captionable: 0 },
+      },
+    });
+  });
+
   it('scheduled publication consumes only shared positives and performs no YouTube fanout', async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock as typeof fetch;
@@ -209,7 +261,7 @@ describe('horse video oEmbed proof', () => {
       poker: [{
         id: 'clip-a', video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
-        source: 'Poker source', title: 'Poker title', category: 'poker', oembed_ok: null,
+        source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
       }],
       sports: [],
     };
@@ -242,7 +294,7 @@ describe('horse video oEmbed proof', () => {
     const sports = [{
       id: 'sports-b', video_id: 'BBBBBBBBBBB',
       source_url: 'https://youtube.com/watch?v=BBBBBBBBBBB',
-      source: 'Sports source', title: 'Sports title', category: 'football', oembed_ok: null,
+      source: 'Sports source', title: 'Buzzer beater game winner', category: 'football', oembed_ok: null,
     }];
 
     await expect(publishVideoForHorse(
@@ -270,7 +322,7 @@ describe('horse video oEmbed proof', () => {
     const poker = [{
       id: 'clip-b', video_id: 'BBBBBBBBBBB',
       source_url: 'https://youtube.com/watch?v=BBBBBBBBBBB',
-      source: 'Poker source', title: 'Poker title', category: 'poker', oembed_ok: null,
+      source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
     }];
 
     await expect(publishVideoForHorse(
@@ -288,7 +340,7 @@ describe('horse video oEmbed proof', () => {
         return {
           id: `clip-${index}`, video_id: videoId,
           source_url: `https://youtube.com/watch?v=${videoId}`,
-          source: `Source ${index}`, title: `Title ${index}`, category: 'poker', oembed_ok: null,
+          source: `Source ${index}`, title: `All in on the river ${index}`, category: 'poker', oembed_ok: null,
         };
       }),
       sports: [],
@@ -306,6 +358,88 @@ describe('horse video oEmbed proof', () => {
       { skipGuard: true, allowedTypes: ['poker'], sharedSupply: supply },
     )).resolves.toMatchObject({ success: true });
     expect(mocks.filterUnusedAssets).toHaveBeenCalledTimes(2);
+  });
+
+  it('tries the next caption-ready shared clip when the first exhausts the freshness gate', async () => {
+    const poker = ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
+      id: `clip-${videoId}`,
+      video_id: videoId,
+      source_url: `https://youtube.com/watch?v=${videoId}`,
+      source: 'Poker source',
+      title: 'All in on the river',
+      category: 'poker',
+      oembed_ok: null,
+    }));
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA', 'yt:BBBBBBBBBBB']));
+    mocks.writeCaption
+      .mockResolvedValueOnce({
+        text: '', semanticKey: 'caption:stale', stale: true, brief: {}, relevance: 1,
+        grounding: ['title'], attempts: 6, belowFloor: false,
+      })
+      .mockResolvedValueOnce({
+        text: 'A fresh grounded caption', semanticKey: 'caption:fresh', stale: false, brief: {}, relevance: 1,
+        grounding: ['title'], attempts: 1, belowFloor: false,
+      });
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true, postId: 'post-next', reelId: 'reel-next', created: true,
+    });
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      await expect(publishVideoForHorse(
+        { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+        {
+          skipGuard: true,
+          now: new Date('2026-09-26T14:00:00Z'),
+          allowedTypes: ['poker'],
+          sharedSupply: { poker, sports: [] },
+        },
+      )).resolves.toMatchObject({ success: true, postId: 'post-next', reelId: 'reel-next' });
+    } finally {
+      random.mockRestore();
+    }
+    expect(mocks.writeCaption).toHaveBeenCalledTimes(2);
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(1);
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({
+      videoUrl: 'https://youtube.com/watch?v=BBBBBBBBBBB',
+      semanticKey: 'caption:fresh',
+    }));
+  });
+
+  it('bounds caption fallbacks and never converts them into YouTube fanout', async () => {
+    globalThis.fetch = vi.fn() as typeof fetch;
+    const poker = Array.from({ length: 10 }, (_, index) => {
+      const videoId = String(index).padStart(11, 'A');
+      return {
+        id: `clip-${videoId}`,
+        video_id: videoId,
+        source_url: `https://youtube.com/watch?v=${videoId}`,
+        source: 'Poker source',
+        title: 'All in on the river',
+        category: 'poker',
+        oembed_ok: null,
+      };
+    });
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map((clip) => `yt:${clip.video_id}`)));
+    mocks.writeCaption.mockResolvedValue({
+      text: '', semanticKey: 'caption:stale', stale: true, brief: {}, relevance: 1,
+      grounding: ['title'], attempts: 6, belowFloor: false,
+    });
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      {
+        skipGuard: true,
+        allowedTypes: ['poker'],
+        sharedSupply: { poker, sports: [] },
+      },
+    )).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining(`candidates=${MAX_VIDEO_CAPTION_CANDIDATES}`),
+    });
+    expect(mocks.writeCaption).toHaveBeenCalledTimes(MAX_VIDEO_CAPTION_CANDIDATES);
+    expect(mocks.publishHorseVideoAtomically).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
   });
 
   it('fails scheduled publication closed without a shared snapshot and never falls back to live verification', async () => {
@@ -329,7 +463,7 @@ describe('horse video oEmbed proof', () => {
       { skipGuard: true, allowedTypes: ['poker'], sharedSupply: { poker: [], sports: [] } },
     )).resolves.toMatchObject({
       success: false,
-      error: 'poker_video: No fresh public verified poker clips in supply',
+      error: 'poker_video: No fresh public verified caption-ready poker clips in supply',
     });
     expect(mocks.candidateClips).not.toHaveBeenCalled();
   });
@@ -453,7 +587,7 @@ describe('horse video oEmbed proof', () => {
         video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
         source: 'Test channel',
-        title: 'Test clip',
+        title: 'All in on the river',
         category: 'cash',
         oembed_ok: null,
       }],
@@ -503,7 +637,7 @@ describe('horse video oEmbed proof', () => {
         video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
         source: 'Test channel',
-        title: 'Test clip',
+        title: 'All in on the river',
         category: 'cash',
         oembed_ok: null,
       }],
@@ -519,17 +653,18 @@ describe('horse video oEmbed proof', () => {
 
   it('does not attempt an alternate topic after an atomic outcome becomes unknown', async () => {
     const sharedSupply = {
-      poker: [{
-        id: 'clip-a',
-        video_id: 'AAAAAAAAAAA',
-        source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
+      poker: ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
+        id: `clip-${videoId}`,
+        video_id: videoId,
+        source_url: `https://youtube.com/watch?v=${videoId}`,
         source: 'Test channel',
-        title: 'Test clip',
+        title: 'All in on the river',
         category: 'cash',
         oembed_ok: null,
-      }],
+      })),
       sports: [],
     };
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA', 'yt:BBBBBBBBBBB']));
     mocks.publishHorseVideoAtomically.mockResolvedValue({
       success: false,
       outcome: 'unknown',
@@ -551,5 +686,6 @@ describe('horse video oEmbed proof', () => {
     });
     expect(mocks.candidateClips).not.toHaveBeenCalled();
     expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(1);
+    expect(mocks.writeCaption).toHaveBeenCalledTimes(1);
   });
 });
