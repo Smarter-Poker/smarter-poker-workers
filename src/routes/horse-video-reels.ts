@@ -6,6 +6,14 @@
  * publisher. Only the separately approved `poker_video` and `sports_video`
  * modes can run, and the publisher has the same gates again at its write
  * boundary.
+ *
+ * One post per horse per scheduler slot, across both producers. This route
+ * and the fleet route (horse-posts) find a horse due by the same
+ * FleetScheduler window, so both name the same slot (fleetSlotId) and the
+ * publisher writes the same metadata.publication_key. When the fleet engine
+ * is on as well, whichever insert lands second fails on the publication-key
+ * index inside the RPC and is counted here as `duplicate_slot`: a skip, not
+ * a failure, with no ledger rows and no alert.
  */
 import type { Context } from 'hono';
 import {
@@ -16,6 +24,7 @@ import {
 } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, readPostModeStates } from '../lib/content-engine/Fleet.js';
 import {
+  fleetSlotId,
   prepareSharedHorseVideoSupply,
   publishVideoForHorse,
   takeSupplyStats,
@@ -188,6 +197,10 @@ export async function horseVideoReels(c: Context) {
           now,
           allowedTypes: runnableTypes,
           sharedSupply,
+          // The slot this run found the horse due for, read from the same
+          // clock, so the fleet route and an overlapping run of this one
+          // name the same slot and build the same publication key.
+          slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
         }));
       } catch (error) {
         results.push({
@@ -205,6 +218,10 @@ export async function horseVideoReels(c: Context) {
     const failed = results.filter(
       (result) => !result.success && !result.skipped && result.outcome !== 'unknown',
     );
+    const skippedByReason: Record<string, number> = {};
+    for (const result of results) {
+      if (result.skipped) skippedByReason[result.skipped] = (skippedByReason[result.skipped] ?? 0) + 1;
+    }
     const errors: Record<string, number> = {};
     for (const result of [...failed, ...unknown]) {
       const key = result.error ?? 'unknown';
@@ -228,6 +245,10 @@ export async function horseVideoReels(c: Context) {
       created: posted.filter((result) => result.created === true).length,
       replayed: posted.filter((result) => result.created === false).length,
       skipped_recent: skipped.length,
+      // Another producer or run already published this horse's slot (23505
+      // on the publication key inside the RPC): a skip, not a failure.
+      duplicate_slot: skippedByReason.duplicate_slot ?? 0,
+      skipped_by_reason: skippedByReason,
       failed: failed.length,
       unknown: unknown.length,
       by_type: posted.reduce<Record<string, number>>((counts, result) => {

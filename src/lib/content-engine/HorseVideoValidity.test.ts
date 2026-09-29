@@ -71,6 +71,8 @@ import {
 } from './HorsePublisher.js';
 
 const originalFetch = globalThis.fetch;
+/** The FleetScheduler slot the route found the horse due for. */
+const SLOT = '2026-09-26T14';
 
 beforeEach(() => {
   _resetValidityCache();
@@ -269,7 +271,7 @@ describe('horse video oEmbed proof', () => {
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
       {
-        skipGuard: true,
+        skipGuard: true, slot: SLOT,
         now: new Date('2026-09-26T14:00:00Z'),
         allowedTypes: ['poker'],
         sharedSupply: supply,
@@ -299,7 +301,7 @@ describe('horse video oEmbed proof', () => {
 
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
-      { skipGuard: true, allowedTypes: ['sports'], sharedSupply: { poker: [], sports } },
+      { skipGuard: true, slot: SLOT, allowedTypes: ['sports'], sharedSupply: { poker: [], sports } },
     )).resolves.toMatchObject({ success: true, type: 'sports_video' });
     expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({
       topic: 'sports',
@@ -327,7 +329,7 @@ describe('horse video oEmbed proof', () => {
 
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
-      { skipGuard: true, allowedTypes: ['poker'], sharedSupply: { poker, sports: [] } },
+      { skipGuard: true, slot: SLOT, allowedTypes: ['poker'], sharedSupply: { poker, sports: [] } },
     )).resolves.toMatchObject({ success: true, type: 'poker_video' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
@@ -355,7 +357,7 @@ describe('horse video oEmbed proof', () => {
 
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
-      { skipGuard: true, allowedTypes: ['poker'], sharedSupply: supply },
+      { skipGuard: true, slot: SLOT, allowedTypes: ['poker'], sharedSupply: supply },
     )).resolves.toMatchObject({ success: true });
     expect(mocks.filterUnusedAssets).toHaveBeenCalledTimes(2);
   });
@@ -388,7 +390,7 @@ describe('horse video oEmbed proof', () => {
       await expect(publishVideoForHorse(
         { id: 1, name: 'Alpha', profile_id: 'horse-a' },
         {
-          skipGuard: true,
+          skipGuard: true, slot: SLOT,
           now: new Date('2026-09-26T14:00:00Z'),
           allowedTypes: ['poker'],
           sharedSupply: { poker, sports: [] },
@@ -428,7 +430,7 @@ describe('horse video oEmbed proof', () => {
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
       {
-        skipGuard: true,
+        skipGuard: true, slot: SLOT,
         allowedTypes: ['poker'],
         sharedSupply: { poker, sports: [] },
       },
@@ -447,7 +449,7 @@ describe('horse video oEmbed proof', () => {
     globalThis.fetch = fetchMock as typeof fetch;
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
-      { skipGuard: true, allowedTypes: ['poker', 'sports'] },
+      { skipGuard: true, slot: SLOT, allowedTypes: ['poker', 'sports'] },
     )).resolves.toMatchObject({
       success: false,
       outcome: 'unknown',
@@ -460,7 +462,7 @@ describe('horse video oEmbed proof', () => {
   it('treats an empty verified category as definite zero supply, not transport unknown', async () => {
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
-      { skipGuard: true, allowedTypes: ['poker'], sharedSupply: { poker: [], sports: [] } },
+      { skipGuard: true, slot: SLOT, allowedTypes: ['poker'], sharedSupply: { poker: [], sports: [] } },
     )).resolves.toMatchObject({
       success: false,
       error: 'poker_video: No fresh public verified caption-ready poker clips in supply',
@@ -651,6 +653,50 @@ describe('horse video oEmbed proof', () => {
     expect(mocks.recordValidity).toHaveBeenCalledWith('clip-a', false);
   });
 
+  it('reads a slot-index duplicate from the atomic result by code first, then by message', async () => {
+    const sharedSupply = {
+      poker: [{
+        id: 'clip-a', video_id: 'AAAAAAAAAAA',
+        source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
+        source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
+      }],
+      sports: [],
+    };
+    const opts = { skipGuard: true, slot: SLOT, allowedTypes: ['poker' as const], sharedSupply };
+    const horse = { id: 1, name: 'Alpha', profile_id: 'horse-a' };
+    const duplicate = { success: false, skipped: 'duplicate_slot', publicationKey: `fleet:horse-a:${SLOT}` };
+
+    // The database's own code, with the index named: a duplicate of the slot.
+    mocks.publishHorseVideoAtomically.mockResolvedValueOnce({
+      success: false,
+      code: '23505',
+      error: 'atomic horse video publication failed: duplicate key value violates unique constraint "uq_social_posts_metadata_publication_key"',
+    });
+    await expect(publishVideoForHorse(horse, opts)).resolves.toMatchObject(duplicate);
+
+    // A result without a code (an older shape) still decides by the message.
+    mocks.publishHorseVideoAtomically.mockResolvedValueOnce({
+      success: false,
+      error: 'atomic horse video publication failed: duplicate key value violates unique constraint "uq_social_posts_metadata_publication_key"',
+    });
+    await expect(publishVideoForHorse(horse, opts)).resolves.toMatchObject(duplicate);
+
+    // Naming the key under another code is not a duplicate: the code decides.
+    mocks.publishHorseVideoAtomically.mockResolvedValueOnce({
+      success: false,
+      code: '23514',
+      error: 'atomic horse video publication failed: duplicate key value on publication_key is not what this is',
+    });
+    await expect(publishVideoForHorse(horse, opts)).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining('not what this is'),
+    });
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(3);
+    for (const call of mocks.publishHorseVideoAtomically.mock.calls) {
+      expect(call[0].metadata).toMatchObject({ publication_key: `fleet:horse-a:${SLOT}`, scheduler: 'horse-video-reels' });
+    }
+  });
+
   it('does not attempt an alternate topic after an atomic outcome becomes unknown', async () => {
     const sharedSupply = {
       poker: ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
@@ -674,7 +720,7 @@ describe('horse video oEmbed proof', () => {
     await expect(publishVideoForHorse(
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
       {
-        skipGuard: true,
+        skipGuard: true, slot: SLOT,
         now: new Date('2026-09-26T14:00:00Z'),
         allowedTypes: ['poker', 'sports'],
         sharedSupply,

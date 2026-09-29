@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   loadFleet: vi.fn(),
   readPostModeStates: vi.fn(),
   isDueForPost: vi.fn(),
+  fleetSlotId: vi.fn(),
   prepareSharedHorseVideoSupply: vi.fn(),
   publishVideoForHorse: vi.fn(),
   takeSupplyStats: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../lib/content-engine/FleetScheduler.js', async (importOriginal) => {
 });
 
 vi.mock('../lib/content-engine/HorsePublisher.js', () => ({
+  fleetSlotId: mocks.fleetSlotId,
   prepareSharedHorseVideoSupply: mocks.prepareSharedHorseVideoSupply,
   publishVideoForHorse: mocks.publishVideoForHorse,
   takeSupplyStats: mocks.takeSupplyStats,
@@ -61,6 +63,9 @@ beforeEach(() => {
   mocks.loadFleet.mockResolvedValue(horses);
   mocks.readPostModeStates.mockResolvedValue({ poker_video: true, sports_video: false });
   mocks.isDueForPost.mockReturnValue({ due: true, age: 1 });
+  mocks.fleetSlotId.mockImplementation((_profileId: string, _timezone: string, now: Date) => (
+    `${now.toISOString().slice(0, 10)}T${String(now.getUTCHours()).padStart(2, '0')}`
+  ));
   mocks.prepareSharedHorseVideoSupply.mockResolvedValue({
     status: 'ok',
     availableTypes: ['poker'],
@@ -202,6 +207,76 @@ describe('horseVideoReels', () => {
       unknown: 0,
     });
     expect(mocks.publishVideoForHorse).not.toHaveBeenCalled();
+  });
+
+  it('passes the slot it found each horse due for, so both producers build one publication key', async () => {
+    const c = context();
+    await horseVideoReels(c);
+    const now = new Date(c.captured.body.timestamp as string);
+    const slot = `${now.toISOString().slice(0, 10)}T${String(now.getUTCHours()).padStart(2, '0')}`;
+    expect(mocks.fleetSlotId).toHaveBeenCalledTimes(2);
+    expect(mocks.fleetSlotId).toHaveBeenCalledWith('horse-a', 'UTC', now);
+    expect(mocks.fleetSlotId).toHaveBeenCalledWith('horse-b', 'UTC', now);
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(2);
+    for (const call of mocks.publishVideoForHorse.mock.calls) {
+      expect(call[1]).toMatchObject({ now, slot });
+    }
+  });
+
+  it('counts a slot another producer already filled as a duplicate skip, not a failure or an alert', async () => {
+    mocks.publishVideoForHorse
+      .mockResolvedValueOnce({
+        success: false,
+        horse: 'Alpha',
+        profile_id: 'horse-a',
+        skipped: 'duplicate_slot',
+        publicationKey: 'fleet:horse-a:2026-09-26T12',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        horse: 'Bravo',
+        profile_id: 'horse-b',
+        type: 'poker_video',
+        postId: 'post-2',
+        reelId: 'reel-2',
+        created: true,
+      });
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(200);
+    expect(c.captured.body).toMatchObject({
+      success: true,
+      attempted: 2,
+      posted: 1,
+      failed: 0,
+      unknown: 0,
+      skipped_recent: 0,
+      duplicate_slot: 1,
+      skipped_by_reason: { duplicate_slot: 1 },
+      errors: {},
+      post_ids: ['post-2'],
+    });
+  });
+
+  it('keeps a run in which every slot was already filled healthy', async () => {
+    mocks.publishVideoForHorse.mockImplementation(async (horse: (typeof horses)[number]) => ({
+      success: false,
+      horse: horse.name,
+      profile_id: horse.profile_id,
+      skipped: 'duplicate_slot',
+      publicationKey: `fleet:${horse.profile_id}:2026-09-26T12`,
+    }));
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(200);
+    expect(c.captured.body).toMatchObject({
+      success: true,
+      attempted: 2,
+      posted: 0,
+      failed: 0,
+      duplicate_slot: 2,
+      errors: {},
+    });
   });
 
   it('does not attempt horses outside their due window', async () => {
@@ -464,6 +539,7 @@ describe('horseVideoReels', () => {
     expect(route).not.toMatch(/\bengineEnabled\b/);
     expect(route).not.toMatch(/\bpublishForHorse\b/);
     expect(route).toContain('publishVideoForHorse');
+    expect(route).toMatch(/slot: fleetSlotId\(item\.horse\.profile_id, item\.horse\.timezone, now\),/);
     expect(index).toContain("import { horseVideoReels } from './routes/horse-video-reels.js';");
     expect(index).toContain("app.get('/cron/horse-video-reels', horseVideoReels);");
     expect(index).toContain("app.post('/cron/horse-video-reels', horseVideoReels);");

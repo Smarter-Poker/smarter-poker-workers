@@ -185,14 +185,25 @@ describe('fleet duplicate protection lives in the database', () => {
     // The RPC has no publication_key argument; the reserved column stays NULL.
     expect(call.slice(0, call.indexOf('});')).replace(metadata, '')).not.toMatch(/publication_key/);
     // Handled before the generic failure return, so no brief is recorded.
+    // The code decides (23505 on the named index); the message is the fallback.
     const after = call.slice(call.indexOf('});'));
-    expect(after.indexOf("isDuplicateSlotMessage(published.error)")).toBeGreaterThan(-1);
+    expect(after.indexOf("isDuplicateSlotPublication(published)")).toBeGreaterThan(-1);
+    expect(publisher).toMatch(/if \(published\.code\) return published\.code === '23505';\s+return isDuplicateSlotMessage\(message\);/);
     expect(after.indexOf("skipped: 'duplicate_slot'")).toBeLessThan(after.indexOf('recordBrief('));
-    // A fleet write without its key is refused before the RPC.
+    // A video write without its key is refused before the RPC, whichever
+    // producer is writing (2026-09-29: the isolated route carries it too).
     const video = publisher.slice(publisher.indexOf('export async function publishVideoClip('));
-    expect(video.indexOf("scheduler === 'fleet' && !publicationKey")).toBeLessThan(
+    expect(video.indexOf('if (!publicationKey) {')).toBeLessThan(
       video.indexOf('await publishHorseVideoAtomically('),
     );
+    expect(video).not.toMatch(/scheduler === 'fleet' && !publicationKey/);
+    // The isolated producer builds the same key from the same slot.
+    const isolated = publisher.slice(publisher.indexOf('export async function publishVideoForHorse('));
+    const isolatedBody = isolated.slice(0, isolated.indexOf('\nasync function postNewsLink'));
+    expect(isolatedBody).toMatch(/const slot = opts\.slot \?\? fleetSlotId\(horse\.profile_id, horse\.timezone, /);
+    expect(isolatedBody).toMatch(/if \(!slot\) return \{ \.\.\.base, success: false, skipped: 'no_slot' \};/);
+    expect(isolatedBody).toMatch(/const publicationKey = fleetPublicationKey\(horse\.profile_id, slot\);/);
+    expect(isolatedBody).toMatch(/'horse-video-reels',\s+opts\.sharedSupply,\s+publicationKey,/);
   });
 
   it('the recent-post guard fails closed', () => {
