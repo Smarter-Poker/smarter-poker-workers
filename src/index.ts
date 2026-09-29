@@ -49,7 +49,6 @@ import { trainingDailyChallenge } from './routes/training-daily-challenge.js';
 import { hardStop } from './routes/hard-stop.js';
 import { horsesSocialAll } from './routes/horses-social-all.js';
 import { horsesStories } from './routes/horses-stories.js';
-import { horseByIndex, horseBatch } from './routes/horse-by-index.js';
 import { horsePosts } from './routes/horse-posts.js';
 import { horseVideoReels } from './routes/horse-video-reels.js';
 import { scrapeSportsClips } from './routes/scrape-sports-clips.js';
@@ -310,12 +309,9 @@ app.get('/cron/horses-social-all', horsesSocialAll);
 app.post('/cron/horses-social-all', horsesSocialAll);
 app.get('/cron/horses-stories', horsesStories);
 app.post('/cron/horses-stories', horsesStories);
-app.get('/cron/horse/:horseIndex', horseByIndex);
-app.post('/cron/horse/:horseIndex', horseByIndex);
-app.get('/cron/horse-batch/:horseIndex', horseBatch);
-app.post('/cron/horse-batch/:horseIndex', horseBatch);
 // Fleet Content Programme phase 1 (2026-09-05): hourly, whole fleet. The
-// horse-batch routes above are the hand-over shim; see routes/horse-by-index.ts.
+// horse-batch hand-over shim (/cron/horse/:i, /cron/horse-batch/:i) was
+// deleted on 2026-09-21; nothing had called it since 2026-09-06.
 app.get('/cron/horse-posts', horsePosts);
 app.post('/cron/horse-posts', horsePosts);
 app.get('/cron/horse-video-reels', horseVideoReels);

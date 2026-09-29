@@ -10,12 +10,18 @@
  * Checks existing video URLs before inserting. A failed lookup is unknown,
  * never permission to insert. Any failed item makes the run a partial failure.
  *
+ * Fails closed on the fleet switch before any read or write, like every other
+ * route that can put content in front of players under a content_authors
+ * profile (recertification D3, 2026-09-21). With the engine off, or the
+ * switch unreadable, the run is a logged no-op.
+ *
  * Auth: /cron/* middleware chain.
  */
 import type { Context } from 'hono';
 import Parser from 'rss-parser';
 import { getSupabase } from '../lib/supabase.js';
 import { withDeadline } from '../lib/withDeadline.js';
+import { engineEnabled } from '../lib/content-engine/Fleet.js';
 
 const POKERNEWS_CHANNEL_ID = 'UCSu1ww_wgD0XD66C1ESrIGQ';
 const RSS_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${POKERNEWS_CHANNEL_ID}`;
@@ -115,6 +121,9 @@ async function ingestLatestVideos(): Promise<Results> {
 
 export async function pokernewsVideos(c: Context) {
   try {
+    if (!(await engineEnabled())) {
+      return c.json({ success: true, skipped: 'engine_disabled', timestamp: new Date().toISOString() });
+    }
     const results = await ingestLatestVideos();
     const success = results.errors.length === 0;
     // The common cron middleware records HTTP failures as failed runs. A

@@ -84,6 +84,12 @@ describe('quality controls fail closed', () => {
     const fn = fleet.slice(fleet.indexOf('export async function engineEnabled'));
     expect(fn).toMatch(/if \(error \|\| !data\)[\s\S]*return false;/);
     expect(fn).not.toMatch(/error \|\| !data \? true/);
+    // 2026-09-21: the read lives in engineSwitch, which names the reason.
+    const read = fleet.slice(fleet.indexOf('export async function engineSwitch'));
+    const body = read.slice(0, read.indexOf('\n}\n'));
+    expect(body).toMatch(/if \(error \|\| !data\) \{[\s\S]*?state = 'unreadable';/);
+    expect(body).toMatch(/catch \(err\) \{[\s\S]*?state = 'unreadable';/);
+    expect(fleet).toMatch(/return \(await engineSwitch\(opts\)\) === 'on';/);
   });
 
   it('the master switch stops every horse social route before any mutation', () => {
@@ -91,6 +97,8 @@ describe('quality controls fail closed', () => {
       ['horses-social-all.ts', 'export async function horsesSocialAll', 'likePosts'],
       ['horses-social-friends.ts', 'export async function horsesSocialFriends', 'sendFriendRequests'],
       ['video-library-reels.ts', 'export async function videoLibraryReels', 'getSupabase'],
+      ['horse-posts.ts', 'export async function horsePosts', 'loadFleet'],
+      ['pokernews-videos.ts', 'export async function pokernewsVideos', 'ingestLatestVideos('],
     ] as const;
     for (const [name, handlerMarker, firstMutation] of routes) {
       const route = routeSource(name);
@@ -102,6 +110,22 @@ describe('quality controls fail closed', () => {
         `${name} mutates before the master gate`,
       ).toBeGreaterThan(gate);
     }
+  });
+
+  it('the publish loop asks the switch again, fresh, before every horse', () => {
+    const route = routeSource('horse-posts.ts');
+    const loop = route.slice(route.indexOf('const worker = async'));
+    const ask = loop.indexOf('await engineSwitch({ fresh: true })');
+    expect(ask).toBeGreaterThan(-1);
+    expect(ask).toBeLessThan(loop.indexOf('publishForHorse('));
+  });
+
+  it('the horse-batch shim is gone and nothing registers it', () => {
+    const shim = fileURLToPath(new URL('../../routes/horse-by-index.ts', import.meta.url));
+    expect(fs.existsSync(shim)).toBe(false);
+    const index = fs.readFileSync(fileURLToPath(new URL('../../index.ts', import.meta.url)), 'utf8');
+    expect(index).not.toMatch(/app\.(get|post)\('\/cron\/horse(-batch)?\//);
+    expect(index).not.toMatch(/routes\/horse-by-index/);
   });
 
   it('official PokerNews reels cannot fall back to an arbitrary horse author', () => {
@@ -125,6 +149,59 @@ describe('quality controls fail closed', () => {
 
     const publisher = source('HorsePublisher.ts');
     expect(publisher.match(/No fresh caption cleared the quality gate/g)).toHaveLength(2);
+  });
+});
+
+describe('fleet duplicate protection lives in the database', () => {
+  it('every social_posts insert carries the slot key in metadata, never the reserved column', () => {
+    const publisher = source('HorsePublisher.ts');
+    // Two direct inserts (news link, grounded text). The video kind writes
+    // through publish_horse_video_reel, checked below.
+    const inserts = publisher
+      .split(".from('social_posts')")
+      .slice(1)
+      .filter((s) => s.trimStart().startsWith('.insert('));
+    expect(inserts).toHaveLength(2);
+    for (const block of inserts) {
+      const body = block.slice(0, block.indexOf('.select('));
+      const metadata = body.match(/metadata: \{[\s\S]*?\}/)?.[0] ?? '';
+      expect(metadata).toMatch(/publication_key: publicationKey/);
+      // social_posts_managed_library_integrity_check reserves the column.
+      expect(body.replace(metadata, '')).not.toMatch(/publication_key/);
+      // 23505 on the key is a duplicate, handled before any ledger write.
+      expect(block.slice(block.indexOf('.maybeSingle();'))).toMatch(
+        /^\.maybeSingle\(\);\s+if \(isDuplicateSlot\(error\)\) return \{[^}]*skipped: 'duplicate_slot'/,
+      );
+    }
+  });
+
+  it('the fleet video write carries the slot key in p_metadata and reads 23505 on it as a duplicate', () => {
+    const publisher = source('HorsePublisher.ts');
+    const calls = publisher.split('await publishHorseVideoAtomically({').slice(1);
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    const metadata = call.match(/metadata: \{[\s\S]*?\n      \}/)?.[0] ?? '';
+    expect(metadata).toMatch(/publication_key: publicationKey/);
+    // The RPC has no publication_key argument; the reserved column stays NULL.
+    expect(call.slice(0, call.indexOf('});')).replace(metadata, '')).not.toMatch(/publication_key/);
+    // Handled before the generic failure return, so no brief is recorded.
+    const after = call.slice(call.indexOf('});'));
+    expect(after.indexOf("isDuplicateSlotMessage(published.error)")).toBeGreaterThan(-1);
+    expect(after.indexOf("skipped: 'duplicate_slot'")).toBeLessThan(after.indexOf('recordBrief('));
+    // A fleet write without its key is refused before the RPC.
+    const video = publisher.slice(publisher.indexOf('export async function publishVideoClip('));
+    expect(video.indexOf("scheduler === 'fleet' && !publicationKey")).toBeLessThan(
+      video.indexOf('await publishHorseVideoAtomically('),
+    );
+  });
+
+  it('the recent-post guard fails closed', () => {
+    const publisher = source('HorsePublisher.ts');
+    const guard = publisher.slice(publisher.indexOf('export async function recentPostGuard'));
+    const body = guard.slice(0, guard.indexOf('\n}\n'));
+    expect(body).toMatch(/if \(error\) \{[\s\S]*?return 'guard_unreadable';/);
+    expect(body).toMatch(/catch \(e\) \{[\s\S]*?return 'guard_unreadable';/);
+    expect(publisher).toMatch(/return \(await recentPostGuard\(profileId, hours\)\) !== 'clear';/);
   });
 });
 
