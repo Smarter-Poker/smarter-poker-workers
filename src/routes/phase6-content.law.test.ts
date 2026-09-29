@@ -34,6 +34,15 @@ describe('Phase 6 publishing laws', () => {
     expect(source).toContain(".eq('metadata->>publication_key', publicationKey)");
   });
 
+  it('writes the club feed mirror only for a page_and_feed digest, after the page post', () => {
+    const club = source.slice(source.indexOf('async function publishClubDraft'), source.indexOf('async function publishHorseDraft'));
+    const pageOnly = club.indexOf("draft.publish === 'page_only'");
+    expect(pageOnly).toBeGreaterThan(club.indexOf(".from('social_page_posts')"));
+    expect(pageOnly).toBeLessThan(club.indexOf(".from('social_posts')"));
+    expect(club).toContain("mirror: 'skipped_author_not_horse'");
+    expect(source).toContain('mirror_skipped_author_not_horse: 0');
+  });
+
   it('checks a page-post rollback and never claims it when the delete failed', () => {
     const club = source.slice(source.indexOf('async function publishClubDraft'), source.indexOf('async function publishHorseDraft'));
     expect(club).toMatch(/const \{ data: removed, error: rollbackError \} = await supa\s*\.from\('social_page_posts'\)\s*\.delete\(\)\s*\.eq\('id', pagePost\.id\)/);

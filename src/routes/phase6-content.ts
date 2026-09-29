@@ -16,9 +16,11 @@
  *   integrity_check) and is never written here.
  * - Reads that decide what is true are complete: paged past PostgREST's
  *   1,000-row cap, with a stable order, failing closed when incomplete.
- * - Only verified roster horses author or get named. A club page post renders
- *   under its author's own profile in the World Hub, so a club digest whose
- *   page owner is not a roster horse is held (club_author_not_horse).
+ * - Only verified roster horses author feed posts or get named. A club digest
+ *   is a page post, which the World Hub renders under the page's own identity,
+ *   so it is written whoever owns the page. The feed mirror under the owner's
+ *   personal profile is written only when the owner is a roster horse; for any
+ *   other owner it is skipped and counted (mirror_skipped_author_not_horse).
  * - Every run reports how many drafts it skipped and why.
  */
 import type { Context } from 'hono';
@@ -65,7 +67,7 @@ export type SkipReason =
   | 'recent'
   | 'junk'
   | 'author_not_horse'
-  | 'club_author_not_horse'
+  | 'mirror_skipped_author_not_horse'
   | 'stale_day'
   | 'failed'
   | 'rollback_failed';
@@ -78,7 +80,7 @@ export function emptySkips(): SkipCounts {
     recent: 0,
     junk: 0,
     author_not_horse: 0,
-    club_author_not_horse: 0,
+    mirror_skipped_author_not_horse: 0,
     stale_day: 0,
     failed: 0,
     rollback_failed: 0,
@@ -261,8 +263,6 @@ async function readClubPeriodFacts(
 }
 
 export interface ClubReadOptions {
-  /** Compose drafts for held clubs too, so a preview can show them. */
-  composeHeld: boolean;
   /** Real-clock yesterday; a live run reports only on it. Null in preview. */
   requiredDay: string | null;
 }
@@ -317,22 +317,16 @@ export async function readClubComposition(
       out.held.push({ reason: 'stale_day', pageId: page.id, detail: `latest stat ${latest}, report day ${through}`, draft: null });
       continue;
     }
-    const authorIsHorse = roster.has(page.owner_id);
-    if (!authorIsHorse && !options.composeHeld) {
-      out.skipped.club_author_not_horse += 1;
-      out.held.push({ reason: 'club_author_not_horse', pageId: page.id, detail: `page owner ${page.owner_id}`, draft: null });
-      continue;
-    }
     const own = recent.filter((row) => row.stat_date >= start);
     const facts = await readClubPeriodFacts(page.linked_entity_id, start, through, roster, out.notes);
     const draft = buildClubDigestDraft(page, own, { start, end: through, weekly }, facts);
-    if (!draft) continue;
-    if (!authorIsHorse) {
-      out.skipped.club_author_not_horse += 1;
-      out.held.push({ reason: 'club_author_not_horse', pageId: page.id, detail: `page owner ${page.owner_id}`, draft });
+    if (!draft) {
+      out.notes.push(`${page.id}: nothing to report for ${start}..${through}`);
       continue;
     }
-    out.drafts.push(draft);
+    // The page post renders under the page's identity whoever owns the page.
+    // Only a verified roster horse also gets the digest mirrored to its feed.
+    out.drafts.push({ ...draft, publish: roster.has(page.owner_id) ? 'page_and_feed' : 'page_only' });
   }
   return out;
 }
@@ -400,7 +394,7 @@ async function alreadyPublished(publicationKey: string): Promise<boolean> {
 }
 
 type PublishOutcome =
-  | { status: 'posted'; id: string }
+  | { status: 'posted'; id: string; mirror?: 'skipped_author_not_horse' }
   | { status: 'duplicate' }
   | { status: 'failed'; error: string }
   | { status: 'rollback_failed'; pagePostId: string; error: string };
@@ -416,6 +410,9 @@ function metadataFor(draft: Phase6Draft): Record<string, unknown> {
 }
 
 async function publishClubDraft(draft: Phase6Draft): Promise<PublishOutcome> {
+  if (draft.publish !== 'page_and_feed' && draft.publish !== 'page_only') {
+    return { status: 'failed', error: `club digest ${draft.publicationKey} carries no publish decision` };
+  }
   const supa = getSupabase();
   const metadata = metadataFor(draft);
   const { data: pagePost, error: pageError } = await supa
@@ -435,6 +432,11 @@ async function publishClubDraft(draft: Phase6Draft): Promise<PublishOutcome> {
     .maybeSingle();
   if (pageError?.code === UNIQUE_VIOLATION) return { status: 'duplicate' };
   if (pageError || !pagePost?.id) return { status: 'failed', error: `club page post failed: ${pageError?.message ?? 'missing id'}` };
+  if (draft.publish === 'page_only') {
+    // The owner is not a roster horse: the page post stands on its own under
+    // the page's identity and nothing is written under the owner's feed.
+    return { status: 'posted', id: pagePost.id, mirror: 'skipped_author_not_horse' };
+  }
   const { data: feedPost, error: feedError } = await supa
     .from('social_posts')
     .insert({
@@ -521,16 +523,20 @@ async function publishMode(mode: Phase6Mode, composition: ModeComposition): Prom
       result.errors.push(message(error));
       continue;
     }
-    // The 20-hour guard fails closed: an unreadable guard counts as recent.
-    let recent = true;
-    try {
-      recent = await postedRecently(draft.authorId);
-    } catch (error) {
-      result.notes.push(`recent-post guard unavailable for ${draft.authorId}: ${message(error)}`);
-    }
-    if (recent) {
-      result.skipped.recent += 1;
-      continue;
+    // The 20-hour guard paces a horse's own feed and fails closed: an
+    // unreadable guard counts as recent. A page-only club digest writes no
+    // feed row under anyone, so the guard does not apply to it.
+    if (draft.publish !== 'page_only') {
+      let recent = true;
+      try {
+        recent = await postedRecently(draft.authorId);
+      } catch (error) {
+        result.notes.push(`recent-post guard unavailable for ${draft.authorId}: ${message(error)}`);
+      }
+      if (recent) {
+        result.skipped.recent += 1;
+        continue;
+      }
     }
     let outcome: PublishOutcome;
     try {
@@ -538,8 +544,10 @@ async function publishMode(mode: Phase6Mode, composition: ModeComposition): Prom
     } catch (error) {
       outcome = { status: 'failed', error: message(error) };
     }
-    if (outcome.status === 'posted') result.posted += 1;
-    else if (outcome.status === 'duplicate') result.skipped.duplicate += 1;
+    if (outcome.status === 'posted') {
+      result.posted += 1;
+      if (outcome.mirror === 'skipped_author_not_horse') result.skipped.mirror_skipped_author_not_horse += 1;
+    } else if (outcome.status === 'duplicate') result.skipped.duplicate += 1;
     else if (outcome.status === 'rollback_failed') {
       result.skipped.rollback_failed += 1;
       result.rollback_failed_page_posts.push(outcome.pagePostId);
@@ -591,7 +599,6 @@ export async function composePhase6(
   const clock = options.clock ?? (() => new Date());
   const readers: Record<Phase6Mode, () => Promise<ModeComposition>> = {
     club_data_digest: () => readClubComposition(now, roster, {
-      composeHeld: options.preview,
       requiredDay: options.preview ? null : isoDay(addDays(clock(), -1)),
     }),
     local_event: () => readLocalComposition(now, horses),
@@ -614,8 +621,9 @@ export async function composePhase6(
 }
 
 function previewDraft(draft: Phase6Draft): Phase6Draft & { author_is_horse: boolean } {
-  // Every publishable draft was built for a verified roster horse.
-  return { ...draft, author_is_horse: true };
+  // Horse drafts are only ever built for verified roster horses. A club digest
+  // is authored by its page owner, who is a horse only when it is mirrored.
+  return { ...draft, author_is_horse: draft.mode !== 'club_data_digest' || draft.publish === 'page_and_feed' };
 }
 
 export async function phase6Content(c: Context) {
@@ -652,7 +660,7 @@ export async function phase6Content(c: Context) {
           reason: item.reason,
           page_id: item.pageId,
           detail: item.detail,
-          draft: item.draft ? { ...item.draft, author_is_horse: false } : null,
+          draft: item.draft ? previewDraft(item.draft) : null,
         }))])),
         samples: Object.fromEntries(modes.map((mode) => [mode, compositions.get(mode)!.drafts.slice(0, PREVIEW_LIMIT).map(previewDraft)])),
       });

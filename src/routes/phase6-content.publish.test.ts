@@ -36,6 +36,8 @@ interface DraftBody {
   publicationKey: string;
   author_is_horse: boolean;
   grounding: string[];
+  pageId?: string;
+  publish?: string;
 }
 interface ModeResultBody {
   posted: number;
@@ -210,25 +212,96 @@ describe('L-01: Phase 6 idempotency lives in metadata.publication_key', () => {
   });
 });
 
-describe('P6C-01: club digests never post under a non-horse profile', () => {
-  it('holds a digest whose page owner is not a roster horse and writes nothing', async () => {
+describe('P6C-01: a club digest is a page post; only a horse owner also gets the feed mirror', () => {
+  const DAY_KEY = `phase6:club:day:${CLUB}:2026-09-21`;
+
+  it('publishes a human-owned page digest as a page post only and counts the skipped mirror', async () => {
     const db = world({ owner: HUMAN });
     enableOnly('club_data_digest');
     const result = (await live()).results.club_data_digest!;
-    expect(result.posted).toBe(0);
-    expect(result.skipped.club_author_not_horse).toBe(1);
-    expect(result.held).toEqual([expect.objectContaining({ reason: 'club_author_not_horse', page_id: PAGE })]);
-    expect(db.writes()).toHaveLength(0);
-    // Held before the heavy member-stat read.
-    expect(db.calls.some((call) => call.table === 'club_member_daily_stats')).toBe(false);
+    expect(result.posted).toBe(1);
+    expect(result.skipped.mirror_skipped_author_not_horse).toBe(1);
+    expect(result.skipped.failed).toBe(0);
+    expect(result.errors).toEqual([]);
+    expect(result.held).toEqual([]);
+    const pagePosts = db.rows('social_page_posts');
+    expect(pagePosts).toHaveLength(1);
+    expect(pagePosts[0]).toMatchObject({ page_id: PAGE, author_id: HUMAN, is_approved: true, visibility: 'public' });
+    expect((pagePosts[0]!.metadata as Row).publication_key).toBe(DAY_KEY);
+    expect(db.rows('social_posts')).toHaveLength(0);
+    expect(db.writes()).toHaveLength(1);
   });
 
-  it('shows a held digest in preview, marked as not a horse author', async () => {
-    world({ owner: HUMAN });
+  it('keeps the page post and the feed mirror for a horse-owned page', async () => {
+    const db = world();
+    enableOnly('club_data_digest');
+    const result = (await live()).results.club_data_digest!;
+    expect(result.posted).toBe(1);
+    expect(result.skipped.mirror_skipped_author_not_horse).toBe(0);
+    const pagePosts = db.rows('social_page_posts');
+    const feed = db.rows('social_posts');
+    expect(pagePosts).toHaveLength(1);
+    expect(feed).toHaveLength(1);
+    expect(feed[0]).toMatchObject({ author_id: OWNER_HORSE });
+    expect((feed[0]!.metadata as Row).publication_key).toBe(DAY_KEY);
+    expect((feed[0]!.metadata as Row).source_post_id).toBe(pagePosts[0]!.id);
+  });
+
+  it('inserts nothing on a repeated run, and 23505 on the page post is a duplicate', async () => {
+    const db = world({ owner: HUMAN });
+    enableOnly('club_data_digest');
+    expect((await live()).results.club_data_digest!.posted).toBe(1);
+    const second = (await live()).results.club_data_digest!;
+    expect(second.posted).toBe(0);
+    expect(second.skipped.duplicate).toBe(1);
+    expect(second.skipped.failed).toBe(0);
+    expect(db.writes()).toHaveLength(1);
+    expect(db.rows('social_page_posts')).toHaveLength(1);
+
+    // A race that slips past the ledger read: the unique index answers 23505.
+    const raced = world({ owner: HUMAN });
+    raced.fail('social_page_posts', 'insert', {
+      code: '23505',
+      message: 'duplicate key value violates unique constraint "uq_social_page_posts_metadata_publication_key"',
+    }, 1);
+    const third = (await live()).results.club_data_digest!;
+    expect(third.posted).toBe(0);
+    expect(third.skipped.duplicate).toBe(1);
+    expect(third.skipped.failed).toBe(0);
+    expect(third.errors).toEqual([]);
+    expect(raced.rows('social_page_posts')).toHaveLength(0);
+    expect(raced.rows('social_posts')).toHaveLength(0);
+  });
+
+  it('does not pace a page-only digest by the owner\'s own feed, but still paces a horse owner', async () => {
+    const db = world({ owner: HUMAN });
+    enableOnly('club_data_digest');
+    h.postedRecently.mockResolvedValue(true);
+    const result = (await live()).results.club_data_digest!;
+    expect(result.posted).toBe(1);
+    expect(result.skipped.recent).toBe(0);
+    expect(h.postedRecently).not.toHaveBeenCalled();
+    expect(db.rows('social_page_posts')).toHaveLength(1);
+
+    const horse = world();
+    const paced = (await live()).results.club_data_digest!;
+    expect(paced.skipped.recent).toBe(1);
+    expect(paced.posted).toBe(0);
+    expect(horse.writes()).toHaveLength(0);
+  });
+
+  it('shows the publish decision in preview, marks a human owner as not a horse, and writes nothing', async () => {
+    const db = world({ owner: HUMAN });
     const body = await preview(TUESDAY);
-    expect(body.samples.club_data_digest).toHaveLength(0);
-    expect(body.held.club_data_digest![0]!.reason).toBe('club_author_not_horse');
-    expect(body.held.club_data_digest![0]!.draft!.author_is_horse).toBe(false);
+    expect(body.held.club_data_digest).toEqual([]);
+    expect(body.samples.club_data_digest).toHaveLength(1);
+    expect(body.samples.club_data_digest![0]).toMatchObject({ authorId: HUMAN, pageId: PAGE, publish: 'page_only', author_is_horse: false });
+    expect(body.samples.club_data_digest![0]!.content).toContain('Deep Stack Society dealt 1,000 hands on Sep 21');
+    expect(db.writes()).toHaveLength(0);
+
+    world();
+    const horse = (await preview(TUESDAY)).samples.club_data_digest![0]!;
+    expect(horse).toMatchObject({ authorId: OWNER_HORSE, publish: 'page_and_feed', author_is_horse: true });
   });
 });
 
@@ -392,7 +465,7 @@ describe('P6C-11/12 and telemetry', () => {
     const body = await live();
     for (const mode of ['club_data_digest', 'local_event', 'seasonal_local']) {
       expect(Object.keys(body.results[mode]!.skipped).sort()).toEqual([
-        'author_not_horse', 'club_author_not_horse', 'duplicate', 'failed', 'junk', 'recent', 'rollback_failed', 'stale_day',
+        'author_not_horse', 'duplicate', 'failed', 'junk', 'mirror_skipped_author_not_horse', 'recent', 'rollback_failed', 'stale_day',
       ]);
     }
     expect(body.results.local_event!.skipped.author_not_horse).toBe(1);
