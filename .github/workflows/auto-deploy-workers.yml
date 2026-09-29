@@ -35,6 +35,12 @@ on:
       - 'docker-compose.yml'
       - '.github/workflows/auto-deploy-workers.yml'
   workflow_dispatch:
+    inputs:
+      run_sports_scrape:
+        description: 'After exact-SHA deployment, run one ordinary sports clip refresh'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -51,6 +57,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Refuse a sports refresh outside protected main
+        if: github.event_name == 'workflow_dispatch' && inputs.run_sports_scrape == true
+        env:
+          REQUEST_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$REQUEST_REF" != 'refs/heads/main' ]; then
+            echo '::error::the one-shot sports refresh may run only from protected main'
+            exit 1
+          fi
 
       - name: Install the deploy key and pin the host key
         env:
@@ -107,3 +124,120 @@ jobs:
           $SSH "docker logs $SERVICE --tail 60 2>&1 || true"
           exit 1
           echo "::endgroup::"
+
+      - name: Run one exact-revision sports clip refresh
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_sports_scrape == true
+        env:
+          HOST: ${{ secrets.WORKERS_HOST }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i $HOME/.ssh/workers_ed25519 -o BatchMode=yes -o ConnectTimeout=25 root@$HOST"
+          SHORT=${SHA:0:11}
+          SERVICE=smarter-poker-workers
+
+          # Re-prove the serving revision in this guarded step. A successful
+          # deployment step from another revision is not authority to mutate.
+          REV=$($SSH "docker inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' \$(docker ps -q --filter name=$SERVICE | head -1) 2>/dev/null")
+          HEALTH=$($SSH 'curl -fsS -m 3 http://127.0.0.1:8081/health')
+          [ "$REV" = "$SHORT" ]
+          printf '%s' "$HEALTH" | grep -q '"status":"ok"'
+          printf '%s' "$HEALTH" | grep -q "\"version\":\"$SHA\""
+
+          # One request, no retry. The client runs inside the already-loaded
+          # container so CRON_SECRET is read from process.env and never copied
+          # into the workflow, host shell, command line, or retained receipt.
+          set +e
+          RESPONSE=$($SSH "docker exec $SERVICE node -e 'fetch(\"http://127.0.0.1:8081/cron/scrape-sports-clips\",{method:\"POST\",headers:{Authorization:\"Bearer \"+process.env.CRON_SECRET},signal:AbortSignal.timeout(285000)}).then(async r=>{const body=await r.text();if(!r.ok)throw new Error(\"HTTP \"+r.status);process.stdout.write(body)}).catch(e=>{console.error(\"sports scrape request failed: \"+e.message);process.exit(1)})'")
+          REQUEST_EXIT=$?
+          set -e
+          if [ "$REQUEST_EXIT" -ne 0 ]; then
+            EXPECTED_SHA="$SHA" FAILURE_CODE='request_failed' node <<'NODE'
+          const fs = require('node:fs');
+          fs.writeFileSync('sports-scrape-receipt.json', `${JSON.stringify({
+            schemaVersion: 1,
+            deployedSha: process.env.EXPECTED_SHA,
+            validation: 'failed',
+            failureCode: process.env.FAILURE_CODE,
+          }, null, 2)}\n`);
+          NODE
+            exit "$REQUEST_EXIT"
+          fi
+
+          RAW_RESPONSE="$RESPONSE" EXPECTED_SHA="$SHA" node <<'NODE'
+          const fs = require('node:fs');
+          const receiptPath = 'sports-scrape-receipt.json';
+          const integerFields = [
+            'channels_scraped', 'channels_with_clips', 'found', 'saved', 'skipped', 'repaired', 'failed',
+            'rejected_missing_title', 'oembed_fallbacks_attempted',
+            'oembed_fallbacks_resolved',
+          ];
+          const writeReceipt = (value, validation, failureCode = null) => {
+            const integer = (field) => Number.isSafeInteger(value?.[field]) && value[field] >= 0
+              ? value[field]
+              : null;
+            const timestamp = typeof value?.timestamp === 'string' && value.timestamp.length <= 64
+              ? value.timestamp
+              : null;
+            const receipt = {
+              schemaVersion: 1,
+              deployedSha: process.env.EXPECTED_SHA,
+              validation,
+              failureCode,
+              success: value?.success === true,
+              dryRun: value?.dry_run === true,
+              timestamp,
+              channelsScraped: integer('channels_scraped'),
+              channelsWithClips: integer('channels_with_clips'),
+              found: integer('found'),
+              saved: integer('saved'),
+              skipped: integer('skipped'),
+              repaired: integer('repaired'),
+              failed: integer('failed'),
+              rejectedMissingTitle: integer('rejected_missing_title'),
+              oembedFallbacksAttempted: integer('oembed_fallbacks_attempted'),
+              oembedFallbacksResolved: integer('oembed_fallbacks_resolved'),
+            };
+            fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+          };
+          const reject = (value, failureCode, message) => {
+            writeReceipt(value, 'failed', failureCode);
+            throw new Error(message);
+          };
+          let value;
+          try {
+            value = JSON.parse(process.env.RAW_RESPONSE ?? '');
+          } catch {
+            reject({}, 'malformed_json', 'sports scrape returned malformed JSON');
+          }
+          if (value?.success !== true || value?.dry_run !== false) {
+            reject(value, 'unsuccessful_response', 'sports scrape did not report an ordinary successful run');
+          }
+          for (const field of integerFields) {
+            if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+              reject(value, 'invalid_counters', `sports scrape returned invalid ${field}`);
+            }
+          }
+          if (value.found < 1 || value.failed !== 0) {
+            reject(value, 'empty_or_failed', 'sports scrape returned no usable clips or persistence failures');
+          }
+          if (value.saved + value.skipped + value.repaired !== value.found) {
+            reject(value, 'counter_mismatch', 'sports scrape counters do not reconcile');
+          }
+          writeReceipt(value, 'passed');
+          NODE
+
+          {
+            echo '### Sports clip refresh'
+            echo "Exact deployed revision \`$SHA\` completed one ordinary refresh."
+            echo 'The retained artifact contains counters only; no token, title, URL, or raw response is retained.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain sanitized sports refresh receipt
+        if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_sports_scrape == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: sports-scrape-receipt-${{ github.sha }}
+          path: sports-scrape-receipt.json
+          if-no-files-found: error
+          retention-days: 14

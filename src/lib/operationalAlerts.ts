@@ -8,6 +8,13 @@ export class OperationalAlertDeliveryError extends Error {
   }
 }
 
+/**
+ * Every operational incident is addressed to the production-alerts fleet.
+ * The inbox triages by payload.target_task_id, so a row without it is invisible
+ * to the lane that must fix it. This module is the only writer in this service.
+ */
+export const OPERATIONAL_ALERT_TARGET_TASK_ID = '01a09b86-5ba8-7290-8657-1041f13dd3ca';
+
 /** Stable across retries and processes; never includes credentials or a phone. */
 export function operationalEventKey(...identity: Array<string | number>): string {
   return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
@@ -26,6 +33,10 @@ export async function recordOperationalAlert(event: {
   severity: 'critical' | 'warning' | 'info';
   payload: Record<string, unknown>;
 }): Promise<string> {
+  const requested = event.payload.target_task_id;
+  if (requested !== undefined && requested !== OPERATIONAL_ALERT_TARGET_TASK_ID) {
+    throw new OperationalAlertDeliveryError('payload names a different target_task_id');
+  }
   try {
     const { data, error } = await getSupabase().rpc('fn_record_operational_alert', {
       p_source: event.source,
@@ -33,7 +44,7 @@ export async function recordOperationalAlert(event: {
       p_alertname: event.alertname,
       p_status: event.status,
       p_severity: event.severity,
-      p_payload: event.payload,
+      p_payload: { ...event.payload, target_task_id: OPERATIONAL_ALERT_TARGET_TASK_ID },
     });
     if (error) throw new Error(error.message);
     const receipt = String(data ?? '');

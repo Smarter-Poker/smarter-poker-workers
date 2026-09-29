@@ -49,6 +49,12 @@ export interface SourceRow {
   consecutive_failures: number;
 }
 
+export type PlatformCandidateClipsResult =
+  | { status: 'ok'; clips: SupplyClip[] }
+  | { status: 'unknown'; error: string };
+
+export const PLATFORM_CANDIDATE_LIMIT = 1_000;
+
 /**
  * How many sources one horse draws from.
  *
@@ -194,6 +200,44 @@ export async function candidateClips(
     return { clips: [], widened: true };
   }
   return { clips: normalise(data, domain), widened: true };
+}
+
+/**
+ * The bounded platform-wide candidate pool used by the scheduled Reel run.
+ *
+ * This read happens once per enabled category, not once per horse. It keeps a
+ * database transport error distinct from an authoritative empty table so the
+ * caller never relabels "could not read supply" as "there is no supply".
+ * Per-horse taste is applied later against this snapshot, then widened once
+ * to the whole snapshot if that slice has no unused verified clip.
+ */
+export async function platformCandidateClips(
+  domain: 'poker' | 'sports',
+  limit = PLATFORM_CANDIDATE_LIMIT,
+): Promise<PlatformCandidateClipsResult> {
+  const boundedLimit = Math.min(PLATFORM_CANDIDATE_LIMIT, Math.max(1, Math.floor(limit)));
+  const table = domain === 'poker' ? 'poker_clips' : 'sports_clips';
+  const select = domain === 'poker'
+    ? 'id, video_id, source_url, source, title, category, oembed_ok'
+    : 'id, video_id, source_url, source, title, category';
+  const freshness = domain === 'poker' ? 'published_at' : 'created_at';
+
+  let query = getSupabase()
+    .from(table)
+    .select(select)
+    .order(freshness, { ascending: false, nullsFirst: false })
+    .limit(boundedLimit);
+  if (domain === 'poker') {
+    query = query.eq('is_active', true).not('oembed_ok', 'is', false);
+  }
+  const { data, error } = await query;
+  if (error) {
+    return {
+      status: 'unknown',
+      error: `${table} platform pool unreadable: ${error.message}`,
+    };
+  }
+  return { status: 'ok', clips: normalise(data, domain) };
 }
 
 function normalise(rows: unknown, domain: 'poker' | 'sports'): SupplyClip[] {

@@ -30,13 +30,16 @@ import { getSupabase } from '../supabase.js';
 import { postModeEnabled } from './Fleet.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
-import { isUninformativeTitle } from './PostBrief.js';
+import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
+import { hasSpecificTake } from './Composer.js';
 import {
   candidateClips,
   newsSources,
+  platformCandidateClips,
   recordValidity,
   sliceForHorse,
   sportsShareFor,
+  type SupplyClip,
 } from './ClipSupply.js';
 import {
   assetKeyFor,
@@ -46,6 +49,13 @@ import {
   normalizePhrase,
 } from './ContentLedger.js';
 import { fleetHash } from './FleetScheduler.js';
+import {
+  publishHorseVideoAtomically,
+  readFreshSharedYouTubeVerificationIds,
+  recordYouTubeVerification,
+  type HorseVideoTopic,
+} from './HorseVideoPublication.js';
+import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -66,9 +76,12 @@ export interface PublishResult {
   profile_id: string;
   type?: string;
   postId?: string;
+  reelId?: string;
+  created?: boolean;
   caption?: string;
   collided?: boolean;
   error?: string;
+  outcome?: 'unknown';
   skipped?: 'posted_recently';
   /** Phase 2: how well the words matched the subject, and what grounded them. */
   relevance?: number;
@@ -78,6 +91,27 @@ export interface PublishResult {
   tagged?: string;
   briefSummary?: string;
 }
+
+export interface SharedHorseVideoSupply {
+  poker: SupplyClip[];
+  sports: SupplyClip[];
+}
+
+export interface SharedHorseVideoSupplyCount {
+  scanned: number;
+  verified: number;
+  /** Fresh positive assets whose stored metadata can ground a safe caption. */
+  captionable: number;
+}
+
+export type PreparedSharedHorseVideoSupply =
+  | {
+      status: 'ok';
+      supply: SharedHorseVideoSupply;
+      availableTypes: HorseVideoTopic[];
+      counts: Partial<Record<HorseVideoTopic, SharedHorseVideoSupplyCount>>;
+    }
+  | { status: 'unknown'; error: string };
 
 /** A horse that has posted inside this many hours is not due again. */
 export const RECENT_POST_GUARD_HOURS = 20;
@@ -171,9 +205,12 @@ interface LibraryClip {
  * one VM IP, and YouTube started answering 429. A 429 is not "this video is
  * gone"; treating it as one silenced the whole fleet for eight hours.
  *
- *   ok       -> oEmbed returned an embeddable iframe
- *   bad      -> oEmbed said 401/403/404 (age-gated, embed-disabled, removed)
- *   unknown  -> throttled (429), network error, or we are inside a backoff
+ *   ok       -> oEmbed returned an iframe AND pinned yt-dlp proved that the
+ *               video is public/unlisted, age-free, and playable in embeds
+ *   bad      -> either verifier proved private, paid/auth gated, age/region
+ *               restricted, embed-disabled, removed, or Made-for-Kids when
+ *               that optional yt-dlp metadata is present
+ *   unknown  -> throttled, network/runtime/parser error, or active backoff
  *
  * Results are cached in-process for a day (an optimisation, not a memory:
  * the ledger is the memory). After a 429 nothing is asked for 15 minutes.
@@ -194,6 +231,10 @@ const VALIDITY_TTL_MS = 24 * 3_600_000;
 let oembedBackoffUntil = 0;
 let consecutive403 = 0;
 export const OEMBED_BACKOFF_MS = 15 * 60_000;
+export const YOUTUBE_OEMBED_TIMEOUT_MS = 8_000;
+
+/** Bound ledger reads when one caption-ready asset is stale for this horse. */
+export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
 
 /**
  * Per-run supply telemetry, surfaced in the route's result JSON so a run
@@ -203,13 +244,92 @@ export const OEMBED_BACKOFF_MS = 15 * 60_000;
  * the statuses seen during the burst were never recorded anywhere.
  */
 const supplyStats: Record<string, number> = {};
-export function bumpSupplyStat(key: string): void {
-  supplyStats[key] = (supplyStats[key] ?? 0) + 1;
+export function bumpSupplyStat(key: string, amount = 1): void {
+  supplyStats[key] = (supplyStats[key] ?? 0) + amount;
 }
 export function takeSupplyStats(): Record<string, number> {
   const out = { ...supplyStats, oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0 };
   for (const k of Object.keys(supplyStats)) delete supplyStats[k];
   return out;
+}
+
+/**
+ * Build one immutable verification snapshot for the whole scheduled run.
+ *
+ * Each enabled category costs one bounded pool read and one service-role RPC,
+ * regardless of whether 1 or 80 horses are due. Only fresh positive registry
+ * rows survive into the snapshot. No YouTube/oEmbed/yt-dlp call exists on
+ * this path.
+ */
+export async function prepareSharedHorseVideoSupply(
+  allowedTypes: readonly HorseVideoTopic[],
+): Promise<PreparedSharedHorseVideoSupply> {
+  const requested = [...new Set(allowedTypes)].filter(
+    (kind): kind is HorseVideoTopic => kind === 'poker' || kind === 'sports',
+  );
+  const supply: SharedHorseVideoSupply = { poker: [], sports: [] };
+  const counts: Partial<Record<HorseVideoTopic, SharedHorseVideoSupplyCount>> = {};
+
+  try {
+    const pools = await Promise.all(requested.map(async (kind) => ({
+      kind,
+      pool: await platformCandidateClips(kind),
+    })));
+    for (const { kind, pool } of pools) {
+      if (pool.status === 'unknown') {
+        return { status: 'unknown', error: `${kind}: ${pool.error}` };
+      }
+      const canonical = pool.clips.filter((clip) => (
+        /^[A-Za-z0-9_-]{11}$/.test(clip.video_id)
+        && assetKeyFor(clip.source_url) === `yt:${clip.video_id}`
+      ));
+      const lookup = await readFreshSharedYouTubeVerificationIds(
+        canonical.map((clip) => clip.video_id),
+      );
+      if (lookup.status === 'unknown') {
+        return { status: 'unknown', error: `${kind}: ${lookup.error}` };
+      }
+      const verified = canonical.filter((clip) => lookup.videoIds.has(clip.video_id));
+      const captionable = verified.filter((clip) => isCaptionableSharedVideoClip(clip, kind));
+      supply[kind] = captionable;
+      counts[kind] = {
+        scanned: canonical.length,
+        verified: verified.length,
+        captionable: captionable.length,
+      };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: 'unknown', error: `shared video supply outcome unknown: ${message}` };
+  }
+
+  return {
+    status: 'ok',
+    supply,
+    availableTypes: requested.filter((kind) => supply[kind].length > 0),
+    counts,
+  };
+}
+
+/**
+ * Availability proof and caption grounding are separate contracts.
+ *
+ * A fresh public YouTube verdict proves that an embed can play; it does not
+ * turn scraper placeholders such as "Keyboard shortcuts" into a subject a
+ * horse can discuss. Keep that distinction at preflight so unsupported
+ * metadata cannot consume every horse's six-draft quality loop.
+ */
+export function isCaptionableSharedVideoClip(
+  clip: SupplyClip,
+  topic: HorseVideoTopic,
+): boolean {
+  return hasSpecificTake(briefForAsset({
+    kind: 'video',
+    title: clip.title,
+    source: clip.source,
+    domainHint: topic,
+    sportHint: clip.category,
+  }));
 }
 
 export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {
@@ -229,10 +349,20 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
     return 'unknown';
   }
   const videoId = key.slice(3);
+  const verificationStartedAt = new Date().toISOString();
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error('youtube_oembed_timeout')),
+    YOUTUBE_OEMBED_TIMEOUT_MS,
+  );
+  timeout.unref?.();
   try {
     const response = await fetch(
       `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
-      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' } },
+      {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' },
+        signal: controller.signal,
+      },
     );
     bumpSupplyStat(`yt_http_${response.status}`);
     if (response.status === 429 || response.status >= 500) {
@@ -241,31 +371,77 @@ export async function youtubeValidity(url: string | null | undefined): Promise<Y
       return 'unknown';
     }
     if (response.status === 403) {
-      // 403 is "embedding disabled" for ONE video, but three in a row from
-      // one IP is bot detection. Do not let a block read as dead videos.
+      // A 403 cannot distinguish one video's embed policy from an IP-level
+      // block. It is never durable evidence that a clip is dead; repeated
+      // 403s only activate backoff so the fleet stops amplifying the block.
       consecutive403 += 1;
       if (consecutive403 >= 3) {
         oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
         console.warn('[horse-publisher] YouTube oEmbed 403 x3; treating as a block, backing off 15 minutes');
-        return 'unknown';
       }
-      return 'bad';
+      return 'unknown';
     }
     consecutive403 = 0;
     let v: YtValidity;
     if (!response.ok) {
       v = 'bad';
+      if (response.status === 401 || response.status === 404) {
+        await recordYouTubeVerification(
+          videoId,
+          response.status === 401 ? 'embed_disabled' : 'unavailable',
+          verificationStartedAt,
+        );
+      }
     } else {
       const body = (await response.json()) as { html?: string; title?: string };
       if (body.title && body.title.trim()) oembedTitles.set(key, body.title.trim());
       v = body.html && body.html.includes('iframe') ? 'ok' : 'bad';
+      if (v === 'ok') {
+        // oEmbed cannot distinguish a free public clip from Premium,
+        // members-only, sign-in, age, or region gates. The pinned yt-dlp
+        // runtime asks for metadata only (`--skip-download`) and must agree
+        // before the shared registry may record a positive verdict.
+        const metadata = await verifyYouTubeMetadata(videoId);
+        bumpSupplyStat(`yt_metadata_${metadata.reason.replace(/[^0-9a-z]+/gi, '_').slice(0, 48)}`);
+        if (metadata.verdict === 'unknown') {
+          if (/^(?:yt_dlp_(?:transient_failure|timeout|execution_error|self_check_timeout|runtime_unavailable|version_mismatch))$/.test(metadata.reason)) {
+            oembedBackoffUntil = Date.now() + OEMBED_BACKOFF_MS;
+            bumpSupplyStat('yt_metadata_backoff_started');
+            console.warn('[horse-publisher] YouTube metadata probe unavailable; backing off 15 minutes');
+          }
+          return 'unknown';
+        }
+        if (metadata.verdict !== 'verified') {
+          await recordYouTubeVerification(
+            videoId,
+            metadata.verdict,
+            verificationStartedAt,
+          );
+          v = 'bad';
+        }
+      }
+      if (v === 'ok') {
+        const recorded = await recordYouTubeVerification(
+          videoId,
+          'verified',
+          verificationStartedAt,
+        );
+        if (!recorded) {
+          bumpSupplyStat('yt_shared_verdict_failed');
+          return 'unknown';
+        }
+      } else if (body.html?.includes('iframe') !== true) {
+        await recordYouTubeVerification(videoId, 'embed_disabled', verificationStartedAt);
+      }
     }
     validityCache.set(key, { v, at: Date.now() });
     return v;
   } catch (e) {
-    bumpSupplyStat('yt_fetch_error');
+    bumpSupplyStat(controller.signal.aborted ? 'yt_timeout_unknown' : 'yt_fetch_error');
     console.warn('[horse-publisher] YouTube oEmbed fetch error:', e instanceof Error ? e.message : e);
     return 'unknown';
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -280,12 +456,6 @@ export function _resetValidityCache(): void {
   oembedTitles.clear();
   oembedBackoffUntil = 0;
   consecutive403 = 0;
-}
-
-export function convertToEmbedUrl(url: string): string {
-  const key = assetKeyFor(url);
-  if (key && key.startsWith('yt:')) return `https://www.youtube.com/embed/${key.slice(3)}`;
-  return url;
 }
 
 /** Deterministic slice of sports sources for this horse. */
@@ -331,15 +501,71 @@ async function seedMemoryFromHistory(profileId: string): Promise<void> {
   }
 }
 
-async function postVideoClip(
+export async function publishVideoClip(
   horse: FleetHorse,
   clipType: 'poker' | 'sports',
   fleet: AuthorHorse[],
+  scheduler = 'fleet',
+  sharedSupply?: SharedHorseVideoSupply,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
+  if (!(await postModeEnabled(`${clipType}_video`))) {
+    return { ...base, success: false, error: `${clipType}_video awaits approval` };
+  }
   let clip: LibraryClip | SportsClipRow | null = null;
+  let captionCandidates: Array<LibraryClip | SportsClipRow> = [];
 
-  if (clipType === 'poker') {
+  if (scheduler === 'horse-video-reels') {
+    if (!sharedSupply) {
+      return {
+        ...base,
+        success: false,
+        outcome: 'unknown',
+        error: 'shared verified video supply unavailable',
+      };
+    }
+    const verifiedCaptionable = sharedSupply[clipType];
+    if (!verifiedCaptionable.length) {
+      return {
+        ...base,
+        success: false,
+        error: `No fresh public verified caption-ready ${clipType} clips in supply`,
+      };
+    }
+
+    const sourceNames = [...new Set(verifiedCaptionable.map((candidate) => candidate.source).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+    const mine = new Set(sliceForHorse(sourceNames, horse.profile_id));
+    const preferred = verifiedCaptionable.filter((candidate) => mine.has(candidate.source));
+    const freshFrom = async (rows: SupplyClip[]) => {
+      const keys = rows.map((candidate) => assetKeyFor(candidate.source_url)).filter(Boolean) as string[];
+      const usable = await filterUnusedAssets(keys, horse.profile_id);
+      return rows.filter((candidate) => {
+        const key = assetKeyFor(candidate.source_url);
+        return !!key
+          && usable.has(key)
+          && isCaptionableSharedVideoClip(candidate, clipType);
+      });
+    };
+    let fresh = preferred.length ? await freshFrom(preferred) : [];
+    if (!fresh.length && preferred.length !== verifiedCaptionable.length) {
+      fresh = await freshFrom(verifiedCaptionable);
+      bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
+    }
+    if (!fresh.length) {
+      return {
+        ...base,
+        success: false,
+        error: `All ${clipType} verified clips already posted`,
+      };
+    }
+    const offset = Math.floor(Math.random() * fresh.length);
+    captionCandidates = Array.from(
+      { length: Math.min(MAX_VIDEO_CAPTION_CANDIDATES, fresh.length) },
+      (_, index) => fresh[(offset + index) % fresh.length]!,
+    );
+    bumpSupplyStat(`${clipType}_shared_verified_selected`);
+  } else if (clipType === 'poker') {
     // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
     // source registry first, the whole pool only if that slice is thin. The
     // 150-literal ClipLibrary.ts array this replaced was used 114 deep in one
@@ -366,12 +592,18 @@ async function postVideoClip(
       const idx = Math.floor(Math.random() * fresh.length);
       const candidate = fresh[idx]!;
       const verdict = await youtubeValidity(candidate.source_url);
-      if (verdict !== 'bad') {
+      if (verdict === 'ok') {
         clip = candidate as unknown as LibraryClip;
         break;
       }
-      await recordValidity(candidate.id, false);
-      bumpSupplyStat('poker_clip_retired_on_use');
+      // Unknown means the verifier, shared registry, or network could not
+      // answer. Only a definitive negative may retire durable supply.
+      if (verdict === 'bad') {
+        await recordValidity(candidate.id, false);
+        bumpSupplyStat('poker_clip_retired_on_use');
+      } else {
+        bumpSupplyStat('poker_clip_unknown_on_use');
+      }
       fresh.splice(idx, 1);
     }
     if (!clip) return { ...base, success: false, error: 'No valid poker clips found' };
@@ -420,7 +652,7 @@ async function postVideoClip(
     for (let i = 0; i < 3 && fresh.length > 0; i++) {
       const idx = Math.floor(Math.random() * fresh.length);
       const candidate = fresh[idx]!;
-      if ((await youtubeValidity(candidate.source_url)) !== 'bad') {
+      if ((await youtubeValidity(candidate.source_url)) === 'ok') {
         clip = candidate;
         break;
       }
@@ -429,81 +661,195 @@ async function postVideoClip(
     if (!clip) return { ...base, success: false, error: 'No valid sports clips found' };
   }
 
+  // The legacy publisher validates one live candidate. The isolated Reel
+  // producer receives a proof snapshot and may try a small bounded sequence
+  // when a safe caption for the first asset is stale. It never makes a live
+  // YouTube request here and never relaxes the caption gate.
+  if (captionCandidates.length === 0 && clip) captionCandidates = [clip];
+
   await seedMemoryFromHistory(horse.profile_id);
 
-  // Phase 2: the caption is written from a brief of THIS clip - its title,
-  // channel and sport - not drawn from a pool keyed on a category. See
-  // PostBrief.ts for what the old path produced.
-  // Prefer the title YouTube just gave us over the one the scraper stored,
-  // and repair the row while we are here (self-healing, bounded, one write).
-  const storedTitle = (clip as LibraryClip).title || '';
-  const realTitle = cachedOembedTitle(clip.source_url);
-  let title = storedTitle;
-  if (realTitle && isUninformativeTitle(storedTitle, (clip as SportsClipRow).source ?? undefined)
-      && !isUninformativeTitle(realTitle, (clip as SportsClipRow).source ?? undefined)) {
-    title = realTitle;
-    if (clipType === 'sports' && (clip as SportsClipRow).id) {
-      const { error: fixErr } = await getSupabase()
-        .from('sports_clips')
-        .update({ title: realTitle })
-        .eq('id', (clip as SportsClipRow).id);
-      if (fixErr) console.warn('[horse-publisher] title repair failed:', fixErr.message);
-      else bumpSupplyStat('title_repaired');
-    }
-  }
-  const written = await writeCaption(
-    horse as AuthorHorse,
-    {
-      kind: 'video',
-      title,
-      source: (clip as SportsClipRow).source ?? undefined,
-      domainHint: clipType,
-      sportHint: (clip as SportsClipRow).sport_type ?? (clip as LibraryClip).category ?? null,
-    },
-    fleet,
-  );
-  if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
-  const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
+  let belowFloor = 0;
+  let stale = 0;
+  let missingSemantic = 0;
+  for (const candidate of captionCandidates) {
+    bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
 
-  const embedUrl = convertToEmbedUrl(clip.source_url);
-  const { data: post, error } = await getSupabase()
-    .from('social_posts')
-    .insert({
-      author_id: horse.profile_id,
-      content: picked.text,
-      content_type: 'video',
-      media_urls: [embedUrl],
-      visibility: 'public',
+    // Phase 2: the caption is written from a brief of THIS clip - its title,
+    // channel and sport - not drawn from a pool keyed on a category. See
+    // PostBrief.ts for what the old path produced.
+    // Prefer the title YouTube just gave us over the one the scraper stored,
+    // and repair the row while we are here (self-healing, bounded, one write).
+    const storedTitle = (candidate as LibraryClip).title || '';
+    const realTitle = cachedOembedTitle(candidate.source_url);
+    let title = storedTitle;
+    if (realTitle && isUninformativeTitle(storedTitle, (candidate as SportsClipRow).source ?? undefined)
+        && !isUninformativeTitle(realTitle, (candidate as SportsClipRow).source ?? undefined)) {
+      title = realTitle;
+      if (clipType === 'sports' && (candidate as SportsClipRow).id) {
+        const { error: fixErr } = await getSupabase()
+          .from('sports_clips')
+          .update({ title: realTitle })
+          .eq('id', (candidate as SportsClipRow).id);
+        if (fixErr) console.warn('[horse-publisher] title repair failed:', fixErr.message);
+        else bumpSupplyStat('title_repaired');
+      }
+    }
+    const written = await writeCaption(
+      horse as AuthorHorse,
+      {
+        kind: 'video',
+        title,
+        source: (candidate as SportsClipRow).source ?? undefined,
+        domainHint: clipType,
+        sportHint: (candidate as SportsClipRow).sport_type ?? (candidate as LibraryClip).category ?? null,
+      },
+      fleet,
+    );
+    if (!written.text) {
+      if (written.belowFloor) {
+        belowFloor += 1;
+        bumpSupplyStat(`${clipType}_caption_below_floor`);
+      } else {
+        stale += 1;
+        bumpSupplyStat(`${clipType}_caption_stale`);
+      }
+      continue;
+    }
+    if (!written.semanticKey) {
+      missingSemantic += 1;
+      bumpSupplyStat(`${clipType}_caption_missing_semantic`);
+      continue;
+    }
+    const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
+
+    const key = assetKeyFor(candidate.source_url);
+    if (!key?.startsWith('yt:')) {
+      return { ...base, success: false, error: 'Selected video has no canonical YouTube identity' };
+    }
+    const published = await publishHorseVideoAtomically({
+      authorId: horse.profile_id,
+      videoUrl: candidate.source_url,
+      caption: picked.text,
+      topic: clipType,
+      assetKey: key,
+      phraseNorm: picked.norm,
+      semanticKey: written.semanticKey,
       metadata: {
         clip_type: clipType,
-        clip_id: (clip as SportsClipRow).id ?? (clip as LibraryClip).video_id,
-        scheduler: 'fleet',
+        clip_id: (candidate as SportsClipRow).id ?? (candidate as LibraryClip).video_id,
+        clip_source: (candidate as SportsClipRow).source ?? null,
+        scheduler,
       },
-    })
-    .select('id')
-    .maybeSingle();
+    });
+    // A failed acknowledgement may hide a committed write. A definite RPC
+    // rejection may be a cadence or concurrent-ledger guard. Neither permits
+    // trying a second asset inside the same publication attempt.
+    if (!published.success || !published.postId || !published.reelId) {
+      return {
+        ...base,
+        success: false,
+        outcome: published.outcome,
+        error: published.error ?? 'Atomic horse video publication failed',
+      };
+    }
+    await recordBrief(published.postId, written.brief);
+    return {
+      ...base,
+      success: true,
+      postId: published.postId,
+      reelId: published.reelId,
+      created: published.created,
+      type: `${clipType}_video`,
+      caption: picked.text.slice(0, 60),
+      collided: picked.collided,
+      relevance: written.relevance,
+      grounding: written.grounding,
+      drafts: written.attempts,
+      belowFloor: written.belowFloor,
+      tagged: written.tagged?.alias,
+      briefSummary: summarise(written.brief),
+    };
+  }
 
-  if (error) return { ...base, success: false, error: error.message };
-  const postId = (post as { id: string } | null)?.id ?? null;
-  const key = assetKeyFor(clip.source_url);
-  if (key) await recordAssetUse(key, horse.profile_id, postId);
-  await recordPhrase(picked.norm, horse.profile_id, postId);
-  if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, postId);
-  if (postId) await recordBrief(postId, written.brief);
   return {
     ...base,
-    success: true,
-    postId: postId ?? undefined,
-    type: `${clipType}_video`,
-    caption: picked.text.slice(0, 60),
-    collided: picked.collided,
-    relevance: written.relevance,
-    grounding: written.grounding,
-    drafts: written.attempts,
-    belowFloor: written.belowFloor,
-    tagged: written.tagged?.alias,
-    briefSummary: summarise(written.brief),
+    success: false,
+    error: `No fresh caption cleared the quality gate (candidates=${captionCandidates.length}, below_floor=${belowFloor}, stale=${stale}, missing_semantic=${missingSemantic})`,
   };
+}
+
+/** A stable video preference order for one horse and UTC day. */
+export function videoKindOrder(
+  profileId: string,
+  now: Date,
+  allowed: readonly HorseVideoTopic[],
+): HorseVideoTopic[] {
+  const unique = [...new Set(allowed)].filter(
+    (kind): kind is HorseVideoTopic => kind === 'poker' || kind === 'sports',
+  );
+  if (unique.length < 2) return unique;
+  const roll = (fleetHash(`${profileId}:${now.toISOString().slice(0, 10)}`, 'video-kind') % 10_000) / 10_000;
+  const preferred: HorseVideoTopic = roll < sportsShareFor(profileId) ? 'sports' : 'poker';
+  return preferred === 'sports' ? ['sports', 'poker'] : ['poker', 'sports'];
+}
+
+/**
+ * Publish only an approved poker or sports video for a horse.
+ *
+ * This entry point does not read the master mixed-content engine switch. It
+ * is intentionally safe for the isolated `/cron/horse-video-reels` route:
+ * both video modes fail closed, and there is no news or grounded fallback.
+ */
+export async function publishVideoForHorse(
+  horse: FleetHorse,
+  opts: {
+    fleet?: AuthorHorse[];
+    now?: Date;
+    skipGuard?: boolean;
+    allowedTypes?: HorseVideoTopic[];
+    sharedSupply?: SharedHorseVideoSupply;
+  } = {},
+): Promise<PublishResult> {
+  const base = { horse: horse.name, profile_id: horse.profile_id };
+  if (!opts.skipGuard && (await postedRecently(horse.profile_id))) {
+    return { ...base, success: false, skipped: 'posted_recently' };
+  }
+  if (!opts.sharedSupply) {
+    return {
+      ...base,
+      success: false,
+      outcome: 'unknown',
+      error: 'shared verified video supply unavailable',
+    };
+  }
+
+  const requested = opts.allowedTypes ?? ['poker', 'sports'];
+  const approved: HorseVideoTopic[] = [];
+  for (const kind of requested) {
+    if (await postModeEnabled(`${kind}_video`)) approved.push(kind);
+  }
+  if (!approved.length) {
+    return { ...base, success: false, error: 'All horse video modes await approval' };
+  }
+
+  const errors: string[] = [];
+  for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
+    const result = await publishVideoClip(
+      horse,
+      kind,
+      opts.fleet ?? [],
+      'horse-video-reels',
+      opts.sharedSupply,
+    );
+    if (result.success || result.skipped) return result;
+    // A lost RPC acknowledgement may already represent a committed post.
+    // Do not try the alternate topic in the same run or relabel uncertainty
+    // as a definite failure; the durable author/asset retry owns recovery.
+    if (result.outcome === 'unknown') return result;
+    errors.push(`${kind}_video: ${result.error ?? 'failed'}`);
+  }
+  return { ...base, success: false, error: errors.join(' | ') };
 }
 
 async function postNewsLink(
@@ -727,8 +1073,12 @@ export async function publishForHorse(
     let result = await postNewsLink(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
     attempts.push(`${kind}_news: ${result.error}`);
-    result = await postVideoClip(horse, kind, opts.fleet ?? []);
+    result = await publishVideoClip(horse, kind, opts.fleet ?? []);
     if (result.success) return result;
+    // The mixed publisher is disabled, but retain the same lost-ACK law if it
+    // is ever re-enabled: an unknown atomic outcome may already be committed,
+    // so no alternate category or grounded fallback may publish behind it.
+    if (result.outcome === 'unknown') return result;
     attempts.push(`${kind}_video: ${result.error}`);
   }
 

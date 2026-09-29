@@ -51,4 +51,21 @@ describe('scheduled deployment observation has no release authority', () => {
       status: 'firing', payload: expect.objectContaining({ deploymentId: 'main-error' }),
     }));
   });
+
+  it('does not re-report a superseded main failure while a newer main build is in progress', async () => {
+    const old = Date.now() - 3 * 24 * 60 * 60_000;
+    const deployments = [
+      { uid: 'main-building', state: 'BUILDING', createdAt: Date.now(), meta: { githubCommitRef: 'main' } },
+      { uid: 'main-ready', state: 'READY', createdAt: Date.now() - 60_000, meta: { githubCommitRef: 'main', githubCommitSha: 'def456789' } },
+      { uid: 'main-canceled', state: 'CANCELED', createdAt: old + 1, meta: { githubCommitRef: 'main' } },
+      { uid: 'main-error', state: 'ERROR', createdAt: old, meta: { githubCommitRef: 'main', githubCommitSha: 'abc123', githubCommitMessage: 'application change' } },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ deployments }), { status: 200 })));
+    const app = new Hono();
+    app.get('/cron/deploy-error-poll', deployErrorPoll);
+    const response = await app.request('/cron/deploy-error-poll');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ action: 'ok', latestSha: 'def456789' });
+    expect(alerts.record).not.toHaveBeenCalled();
+  });
 });

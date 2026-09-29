@@ -113,6 +113,37 @@ export async function postModeEnabled(mode: string): Promise<boolean> {
   return enabled;
 }
 
+/**
+ * Read an exact set of mode rows without collapsing an outage or missing row
+ * into an intentional disable. Critical isolated routes use this authoritative
+ * snapshot so their monitor can distinguish "off" from "could not read".
+ */
+export async function readPostModeStates<const T extends string>(
+  modes: readonly T[],
+): Promise<Record<T, boolean>> {
+  const requested = [...new Set(modes)];
+  const { data, error } = await getSupabase()
+    .from('horse_post_modes')
+    .select('mode, enabled')
+    .in('mode', requested);
+  if (error) throw new Error(`horse post modes unreadable: ${error.message}`);
+
+  const found = new Map<string, boolean>();
+  for (const row of (data ?? []) as Array<{ mode?: unknown; enabled?: unknown }>) {
+    if (typeof row.mode !== 'string' || !requested.includes(row.mode as T)) continue;
+    if (found.has(row.mode) || typeof row.enabled !== 'boolean') {
+      throw new Error(`horse post mode ${row.mode} is malformed`);
+    }
+    found.set(row.mode, row.enabled);
+  }
+  const missing = requested.filter((mode) => !found.has(mode));
+  if (missing.length) throw new Error(`horse post modes missing: ${missing.join(', ')}`);
+
+  const observedAt = Date.now();
+  for (const mode of requested) modeCache.set(mode, { enabled: found.get(mode)!, at: observedAt });
+  return Object.fromEntries(requested.map((mode) => [mode, found.get(mode)!])) as Record<T, boolean>;
+}
+
 /** Test hook. */
 export function _resetPostModes(): void {
   modeCache.clear();
