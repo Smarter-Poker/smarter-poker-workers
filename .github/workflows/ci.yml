@@ -30,6 +30,27 @@ jobs:
       - name: Install deps
         run: npm install --no-audit --no-fund --legacy-peer-deps
 
+      # The weekly settlement's problem notices must never reach the owner
+      # account's inbox or phone; that copy goes to operational_alert_events.
+      # Named, and run before the full suite, so an unrelated red test or type
+      # error cannot hide it on a pull request that touches auto-settlement.ts
+      # or its routing helpers. vitest takes each name as a filter, so a renamed
+      # or deleted file would silently match nothing while the others pass:
+      # every file must exist before the run. The two route files build their
+      # fake from auto-settlement.owner-routing.harness.ts, so without it
+      # neither loads and the run fails.
+      - name: Owner settlement notices reach Production Alerts, never the owner inbox
+        run: |
+          set -eu
+          files="src/routes/auto-settlement.owner-routing.test.ts src/routes/auto-settlement.owner-inbox.test.ts src/lib/ownerOperationalRouting.test.ts src/lib/unionSettlementAlerts.test.ts"
+          for file in $files; do
+            if [ ! -f "$file" ]; then
+              echo "::error file=$file::regression test file is missing"
+              exit 1
+            fi
+          done
+          npx vitest run $files
+
       - name: Typecheck
         run: npm run typecheck
 
