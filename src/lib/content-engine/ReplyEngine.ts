@@ -29,6 +29,17 @@
  *
  * Every decision is a pure function of the thread's rows, so a run can be
  * replayed and the reason is always nameable in the log.
+ *
+ * WHOLE THREADS (2026-09-21, P2C-03). The caps are only as good as the rows
+ * they are counted over. The caller used to pass the comments of the last 48
+ * hours, so a reply at 49h dropped out of the count and a horse got a third
+ * turn. Callers must pass every comment on the post; the 48 hours belong to
+ * rule 4 alone, which reads each comment's own timestamp.
+ *
+ * DEAD ROWS (P2C-04). A deleted or flagged comment (`live: false`) still
+ * counts toward every cap and still counts as answered, because it happened;
+ * it can never be the comment a horse answers, and neither can a reply to a
+ * horse comment that is itself gone.
  */
 
 export const MAX_TURNS_PER_HORSE = 2;
@@ -44,6 +55,11 @@ export interface ThreadComment {
   created_at: string;
   /** Is the author one of ours? */
   isHorse: boolean;
+  /**
+   * False when the comment is soft-deleted or flagged. Omitted means live, so
+   * a caller that only has live rows need not set it.
+   */
+  live?: boolean;
 }
 
 export type ReplyReason = 'human_unanswered' | 'addressed' | 'question' | 'disagreement';
@@ -53,6 +69,11 @@ export interface ReplyDecision {
   reason?: ReplyReason;
   /** The comment being answered. */
   target?: ThreadComment;
+  /**
+   * Which of this horse's replies in the thread this one would be (1-based),
+   * counted over the whole thread, deleted replies included.
+   */
+  turnIndex?: number;
   /** Why we are NOT replying, for the run log. */
   skipped?:
     | 'no_incoming'
@@ -112,10 +133,12 @@ export function decideReply(
   const horseTurns = thread.filter((c) => c.isHorse && c.parent_id !== null).length;
   if (horseTurns >= MAX_HORSE_TURNS) return { reply: false, skipped: 'thread_turn_cap' };
 
-  const myIds = new Set(mine.map((c) => c.id));
-  // Everything said in answer to something this horse wrote.
+  // Everything said in answer to something this horse wrote that is still
+  // there to be seen: a live comment under a live comment of ours.
+  const isLive = (c: ThreadComment): boolean => c.live !== false;
+  const myLiveIds = new Set(mine.filter(isLive).map((c) => c.id));
   const incoming = thread
-    .filter((c) => c.parent_id && myIds.has(c.parent_id) && c.author_id !== horseId)
+    .filter((c) => c.parent_id && myLiveIds.has(c.parent_id) && c.author_id !== horseId && isLive(c))
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
   if (!incoming.length) return { reply: false, skipped: 'no_incoming' };
 
@@ -128,16 +151,19 @@ export function decideReply(
   const fresh = incoming.filter((c) => new Date(c.created_at).getTime() >= cutoff);
   if (!fresh.length) return { reply: false, skipped: 'thread_too_old' };
 
+  // The turn this reply would be, over every reply of ours in the thread.
+  const turnIndex = myReplies.length + 1;
+
   // Rule 1: an unanswered human wins over everything.
   const human = fresh.find((c) => !c.isHorse && !answered.has(c.id));
-  if (human) return { reply: true, reason: 'human_unanswered', target: human };
+  if (human) return { reply: true, reason: 'human_unanswered', target: human, turnIndex };
 
   // Rule 2: another horse needs a reason.
   for (const c of fresh) {
     if (answered.has(c.id)) continue;
-    if (addressesAlias(c.content, myAlias)) return { reply: true, reason: 'addressed', target: c };
-    if (isQuestion(c.content)) return { reply: true, reason: 'question', target: c };
-    if (isDisagreement(c.content)) return { reply: true, reason: 'disagreement', target: c };
+    if (addressesAlias(c.content, myAlias)) return { reply: true, reason: 'addressed', target: c, turnIndex };
+    if (isQuestion(c.content)) return { reply: true, reason: 'question', target: c, turnIndex };
+    if (isDisagreement(c.content)) return { reply: true, reason: 'disagreement', target: c, turnIndex };
   }
 
   const anyUnanswered = fresh.some((c) => !answered.has(c.id));

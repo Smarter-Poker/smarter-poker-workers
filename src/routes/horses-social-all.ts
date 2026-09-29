@@ -78,6 +78,8 @@ export async function horsesSocialAll(c: Context) {
       comment_stale?: number;
       comment_skipped?: number;
       reply_reasons?: Record<string, number>;
+      skip_reasons?: Record<string, Record<string, number>>;
+      stopped?: string;
     } = {
       liked: 0,
       commented: 0,
@@ -86,12 +88,28 @@ export async function horsesSocialAll(c: Context) {
       dm: 0,
       skipped: [],
       timestamp: new Date().toISOString(),
+      skip_reasons: {},
+    };
+
+    // 2026-09-21 (D2): the switch is re-read between steps as well as inside
+    // each step's loop, so an engine turned off mid-run starts no new step.
+    const stillOn = async (next: string): Promise<boolean> => {
+      if (await engineEnabled()) return true;
+      results.stopped = `engine_disabled_before_${next}`;
+      return false;
+    };
+    // Why each step did not write (caps, liveness, fail-closed reads, switch).
+    const keepSkips = (step: string, r: unknown): void => {
+      const s = (r as { skip_reasons?: Record<string, number> } | null)?.skip_reasons;
+      if (s && Object.keys(s).length) results.skip_reasons![step] = s;
     };
 
     const likeResult = await withDeadline(() => likePosts(40, true), deadline, 'likes');
     results.liked = (likeResult as { liked?: number } | null)?.liked ?? 0;
     if (!likeResult) results.skipped.push('likes');
+    keepSkips('likes', likeResult);
 
+    if (!(await stillOn('comments'))) return c.json({ success: true, ...results });
     const commentResult = await withDeadline(
       () => commentOnPosts(20, true),
       deadline,
@@ -113,7 +131,9 @@ export async function horsesSocialAll(c: Context) {
       results.comment_skipped = cr.skipped_no_content ?? 0;
     }
     if (!commentResult) results.skipped.push('comments');
+    keepSkips('comments', commentResult);
 
+    if (!(await stillOn('replies'))) return c.json({ success: true, ...results });
     const replyResult = await withDeadline(
       () => replyToComments(12),
       deadline,
@@ -124,7 +144,9 @@ export async function horsesSocialAll(c: Context) {
     // Which rule allowed each reply: the thread engine's decisions, visible.
     if (rr?.reply_reasons) results.reply_reasons = rr.reply_reasons;
     if (!replyResult) results.skipped.push('replies');
+    keepSkips('replies', replyResult);
 
+    if (!(await stillOn('reactions'))) return c.json({ success: true, ...results });
     const reactResult = await withDeadline(
       () => reactToComments(20),
       deadline,
@@ -132,13 +154,17 @@ export async function horsesSocialAll(c: Context) {
     );
     results.reacted = (reactResult as { reacted?: number } | null)?.reacted ?? 0;
     if (!reactResult) results.skipped.push('reactions');
+    keepSkips('reactions', reactResult);
 
+    if (!(await stillOn('DMs'))) return c.json({ success: true, ...results });
     const dmResult = await withDeadline(
       () => processDirectMessages(),
       deadline,
       'DMs',
     );
     if (!dmResult) results.skipped.push('DMs');
+    results.dm = (dmResult as { replied?: number } | null)?.replied ?? 0;
+    keepSkips('DMs', dmResult);
 
     return c.json({ success: true, ...results });
   } catch (err) {

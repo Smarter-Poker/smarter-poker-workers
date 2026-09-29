@@ -30,8 +30,47 @@
  *
  * Both ledgers were seeded from the last 90 days of horse posts by the
  * migration, so day one already remembers what August posted.
+ *
+ * FAILS CLOSED (2026-09-21, P2C-09). Every read here guards something that is
+ * about to be written to the feed, and each used to fail OPEN: a phrase read
+ * that errored said "never used", an asset read that errored kept the whole
+ * chunk usable, and a frame read that errored said no frame had been spoken.
+ * A ledger outage therefore published exactly the repeats the ledger exists
+ * to stop. Now an unreadable ledger means USED: the writer tries another
+ * draft, finds every draft "used", and skips. Each failed read is counted
+ * (ledgerReadFailures) so a run can report why it went quiet.
  */
 import { getSupabase } from '../supabase.js';
+
+/** Thrown where "used" cannot be expressed as a return value. */
+export class LedgerUnreadableError extends Error {
+  constructor(what: string) {
+    super(`ledger_unreadable: ${what}`);
+    this.name = 'LedgerUnreadableError';
+  }
+}
+
+const readFailures: Record<string, number> = {};
+
+function noteReadFailure(kind: 'phrase' | 'post_phrase' | 'frame' | 'asset', message: string): void {
+  readFailures[kind] = (readFailures[kind] ?? 0) + 1;
+  console.warn(`[content-ledger] ${kind} read failed; treating as used:`, message);
+}
+
+/** Failed ledger reads in this process so far, by kind. A copy. */
+export function ledgerReadFailures(): Record<string, number> {
+  return { ...readFailures };
+}
+
+/** Total failed ledger reads in this process so far. Steps report the difference. */
+export function ledgerReadFailureTotal(): number {
+  return Object.values(readFailures).reduce((a, b) => a + b, 0);
+}
+
+/** Test hook. */
+export function _resetLedgerReadFailures(): void {
+  for (const k of Object.keys(readFailures)) delete readFailures[k];
+}
 
 export const ASSET_GLOBAL_DAYS = 30;
 export const PHRASE_HORSE_DAYS = 90;
@@ -67,6 +106,12 @@ export function frameKey(family: string, group: string, index: number): string {
  * window. One query, not one per candidate: the caller is choosing between a
  * dozen frames and a round trip each would put twelve reads on the critical
  * path of every publish.
+ *
+ * THROWS LedgerUnreadableError when the ledger cannot be read. An empty set
+ * would say "nothing spoken" and a set of everything would not help either:
+ * composeHandPost deliberately reuses a frame when all are excluded. So the
+ * grounded draft is abandoned instead, and the publisher records the error
+ * for that horse (horse-posts `errors`).
  */
 export async function recentFrameKeys(family: string, group: string): Promise<Set<string>> {
   const since = new Date(Date.now() - FRAME_GLOBAL_HOURS * 3_600_000).toISOString();
@@ -77,9 +122,8 @@ export async function recentFrameKeys(family: string, group: string): Promise<Se
     .gte('used_at', since)
     .limit(200);
   if (error) {
-    // Fail open: a ledger that cannot be read must not stop a horse posting.
-    console.warn('[content-ledger] frame read failed:', error.message);
-    return new Set();
+    noteReadFailure('frame', error.message);
+    throw new LedgerUnreadableError('frame ledger read failed');
   }
   return new Set((data ?? []).map((r) => String((r as { phrase_norm: string }).phrase_norm)));
 }
@@ -125,7 +169,8 @@ export function normalizePhrase(text: string | null | undefined): string {
 
 /**
  * Of the candidate keys, return the ones this horse has never used and the
- * platform has not used inside ASSET_GLOBAL_DAYS.
+ * platform has not used inside ASSET_GLOBAL_DAYS. A chunk whose reads fail
+ * is treated as used (none of its keys are returned).
  *
  * Two bounded reads per chunk: rows inside the platform window (any horse),
  * and rows for this horse (any time). The first version read every row for
@@ -148,9 +193,10 @@ export async function filterUnusedAssets(
       supa.from('content_asset_use').select('asset_key').in('asset_key', chunk).eq('horse_id', horseId),
     ]);
     if (recent.error || mine.error) {
-      // A ledger read failing must not stop the fleet; it degrades to the
-      // pre-ledger behaviour for this call and says so.
-      console.warn('[content-ledger] asset read failed:', recent.error?.message ?? mine.error?.message);
+      // Fail closed: an asset whose history cannot be read counts as used.
+      // Keeping it would repost exactly the clips the ledger exists to stop.
+      noteReadFailure('asset', recent.error?.message ?? mine.error?.message ?? 'unknown');
+      for (const key of chunk) usable.delete(key);
       continue;
     }
     for (const row of (recent.data ?? []) as { asset_key: string }[]) usable.delete(row.asset_key);
@@ -175,7 +221,7 @@ export async function recordAssetUse(
 
 /**
  * True when the phrase was used by this horse inside PHRASE_HORSE_DAYS or by
- * any horse inside PHRASE_GLOBAL_HOURS.
+ * any horse inside PHRASE_GLOBAL_HOURS, and true when the ledger cannot say.
  *
  * Two existence queries, not one page. The first version read 50 rows for
  * the phrase with no ORDER BY and looked for a recent one among them; a
@@ -197,8 +243,8 @@ export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): P
     .gte('used_at', globalSince)
     .limit(1);
   if (recent.error) {
-    console.warn('[content-ledger] phrase read failed:', recent.error.message);
-    return false;
+    noteReadFailure('phrase', recent.error.message);
+    return true;
   }
   if ((recent.data ?? []).length > 0) return true;
 
@@ -210,13 +256,13 @@ export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): P
     .gte('used_at', horseSince)
     .limit(1);
   if (mine.error) {
-    console.warn('[content-ledger] phrase read failed:', mine.error.message);
-    return false;
+    noteReadFailure('phrase', mine.error.message);
+    return true;
   }
   return (mine.data ?? []).length > 0;
 }
 
-/** Has this unstyled sentence already been used under this exact post? */
+/** Has this unstyled sentence already been used under this exact post? True when the ledger cannot say. */
 export async function phraseUsedOnPost(phraseNorm: string, postId: string): Promise<boolean> {
   if (!phraseNorm || !postId) return false;
   const { data, error } = await getSupabase()
@@ -226,8 +272,8 @@ export async function phraseUsedOnPost(phraseNorm: string, postId: string): Prom
     .eq('post_id', postId)
     .limit(1);
   if (error) {
-    console.warn('[content-ledger] post phrase read failed:', error.message);
-    return false;
+    noteReadFailure('post_phrase', error.message);
+    return true;
   }
   return (data ?? []).length > 0;
 }
