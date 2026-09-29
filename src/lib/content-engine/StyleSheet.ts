@@ -183,6 +183,47 @@ const NUMBER_WORDS: Record<string, string> = {
   '7': 'seven', '8': 'eight', '9': 'nine', '10': 'ten', '11': 'eleven', '12': 'twelve',
 };
 
+/** What a caller may ask of render(). GroundedComposer passes nothing and renders as before. */
+export interface RenderOptions {
+  /**
+   * A question to end on. It renders LAST, after any closer, and it is the
+   * only thing that ever ends in "?". A question used to be appended after
+   * render() had already added a verdict closer and ellipsis punctuation,
+   * which published "what is your read. i keep coming back to that?" and
+   * "...what is your read…?" (P2C-10).
+   */
+  question?: string;
+  /**
+   * Rotate the closer per post instead of repeating one line. The fixed tag
+   * question "what do you make of it" closed 12 of the harness clips and the
+   * eight shared verdicts recurred across clips and horses (P2C-11).
+   */
+  varyCloser?: boolean;
+  /** End on what was said: replies take no closer at all. */
+  noCloser?: boolean;
+  /**
+   * No style opener: the first line already opens the way a person would
+   * ("fair, ...", "exactly this"). Stacking one on top published
+   * "In fairness, right, the river is the bit I keep coming back to".
+   */
+  noOpener?: boolean;
+}
+
+/** Tag questions a tag-question horse rotates through, one per post. */
+const TAG_QUESTIONS = [
+  'what do you make of it', 'how do you see it', 'anyone read it differently', 'thoughts',
+  'am I wrong here', 'what am I missing', 'anyone else see it that way', 'is it just me',
+  'is that fair', 'anyone agree',
+];
+
+/**
+ * Percent of posts on which a verdict-closer or tag-question horse closes at
+ * all. A habit is not a signature on every single post: at 100% the same
+ * closer ended every clip one horse touched.
+ */
+const VERDICT_SHARE = 35;
+const TAG_SHARE = 60;
+
 /**
  * Apply the style to finished sentences.
  *
@@ -190,12 +231,31 @@ const NUMBER_WORDS: Record<string, string> = {
  * looks. Emoji and em dashes are stripped unconditionally: house rules, and a
  * caller should not be able to smuggle either in through content.
  */
-export function render(sentences: string[], s: StyleSheet, seed: string): string {
-  let parts = sentences.map((x) => x.trim()).filter(Boolean);
-  if (parts.length === 0) return '';
+export function render(sentences: string[], s: StyleSheet, seed: string, opts: RenderOptions = {}): string {
+  const said = sentences.map((x) => x.trim()).filter(Boolean);
+  let question = opts.question?.trim().replace(/[\s.!?…]+$/, '') || undefined;
+  if (said.length === 0 && !question) return '';
+
+  // Closer after the last sentence. A question already ends the text, so it
+  // takes the closer's place rather than following it.
+  if (!opts.noCloser && !question) {
+    if (s.closer === 'verdict') {
+      if (!opts.varyCloser || fleetHash(seed, 'clx') % 100 < VERDICT_SHARE) {
+        said.push(s.lexicon.verdicts[fleetHash(seed, 'cl') % s.lexicon.verdicts.length]!);
+      }
+    } else if (s.closer === 'tag_question') {
+      if (!opts.varyCloser) question = 'what do you make of it';
+      else if (fleetHash(seed, 'tqx') % 100 < TAG_SHARE) {
+        question = TAG_QUESTIONS[fleetHash(seed, 'tq') % TAG_QUESTIONS.length]!;
+      }
+    }
+  }
+  let parts = question ? [...said, question] : said;
 
   // Opener on the first sentence.
-  if (s.opener === 'interjection') {
+  if (opts.noOpener) {
+    // The line opens itself.
+  } else if (s.opener === 'interjection') {
     const word = s.lexicon.interjections[fleetHash(seed, 'op') % s.lexicon.interjections.length]!;
     parts[0] = `${word}, ${lowerFirst(parts[0]!)}`;
   } else if (s.opener === 'marker') {
@@ -203,15 +263,6 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
     parts[0] = `${word}, ${lowerFirst(parts[0]!)}`;
   } else if (s.opener === 'address') {
     parts[0] = `${lowerFirst(parts[0]!)}`;
-  }
-
-  // Closer after the last sentence.
-  if (s.closer === 'verdict') {
-    parts.push(s.lexicon.verdicts[fleetHash(seed, 'cl') % s.lexicon.verdicts.length]!);
-  } else if (s.closer === 'tag_question') {
-    parts.push('what do you make of it');
-  } else if (s.closer === 'trailing') {
-    parts[parts.length - 1] = `${parts[parts.length - 1]}`;
   }
 
   // Numerals.
@@ -246,7 +297,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string): string
   } else {
     joined = parts.join(sep);
   }
-  if (s.closer === 'tag_question') joined = `${joined}?`;
+  if (question) joined = `${joined}?`;
   else if (s.punctuation === 'full') joined = `${joined}.`;
   else if (s.punctuation === 'ellipsis') joined = `${joined}…`;
   else if (s.punctuation === 'minimal' && parts.length > 1) joined = `${joined}.`;
@@ -308,6 +359,33 @@ export function stripBannedGlyphs(s: string): string {
     .replace(/–/g, '-')
     .replace(/\s+([,.!?])/g, '$1')
     .replace(/[ \t]{2,}/g, ' ');
+}
+
+/** Every opener this fleet uses, longest first, for comparing meaning. */
+const OPENER_PHRASES = [...new Set([...INTERJECTIONS, ...MARKERS])]
+  .map((o) => o.toLowerCase())
+  .sort((a, z) => z.length - a.length);
+
+/**
+ * Every sentence of a text as a bare comparison key: this fleet's openers
+ * taken off, case, punctuation and styling removed, so "In fairness, X." and
+ * "x…" compare equal. Used to refuse a comment that repeats any sentence of
+ * the caption above it or of a comment already under it (P2C-05).
+ */
+export function sentenceKeys(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of (text ?? '').toLowerCase().split(/[.!?…\n]+/)) {
+    let line = raw.trim();
+    for (const o of OPENER_PHRASES) {
+      if (line.startsWith(`${o}, `)) {
+        line = line.slice(o.length + 2);
+        break;
+      }
+    }
+    line = line.replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    if (line.length > 8) out.push(line);
+  }
+  return out;
 }
 
 function upperFirst(s: string): string {

@@ -24,7 +24,7 @@ import { briefForAsset, briefForPost, topicOf, softenCaps, cleanTitle, isHeadlin
 import { styleSheetFor, styleId, render, stripBannedGlyphs } from './StyleSheet.js';
 import { composeCaption, composeComment, composeReply, hasSpecificTake, relevanceOf, RELEVANCE_FLOOR } from './Composer.js';
 import { areFriends, friendsOf, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
-import { decideReply, MAX_TURNS_PER_HORSE, MAX_HORSE_TURNS, type ThreadComment } from './ReplyEngine.js';
+import { decideReply, composerReason, MAX_TURNS_PER_HORSE, MAX_HORSE_TURNS, type ThreadComment } from './ReplyEngine.js';
 import { fleetHash } from './FleetScheduler.js';
 
 function fleetIds(n = 1000): string[] {
@@ -427,10 +427,14 @@ describe('a reply only ever names a real subject', () => {
     }
   });
 
-  it('does name a public figure when the brief has one', () => {
+  it('does name a public figure when the comment it answers names one', () => {
+    // A reply answers the comment it is under (P2C-02, 2026-09-21), so the name
+    // has to come from THAT comment. "still holds?" names nothing and now gets
+    // the explicit skip instead of a line about the post.
     const b = briefForAsset({ kind: 'link', title: 'Phil Ivey Wins 11th WSOP Bracelet', source: 'CardPlayer' });
-    const texts = fleetIds(40).map((id) => composeReply(b, styleSheetFor(id), 'still holds?', 'question').text);
+    const texts = fleetIds(40).map((id) => composeReply(b, styleSheetFor(id), 'does Phil Ivey still hold up at this level?', 'question').text);
     expect(texts.some((t) => t.includes('Phil Ivey'))).toBe(true);
+    expect(composeReply(b, styleSheetFor(fleetIds(1)[0]!), 'still holds?', 'question').skip).toBe('reply_ungrounded');
   });
 });
 
@@ -605,7 +609,10 @@ describe('live comment failures cannot recur', () => {
     const byKey = new Map<string, Set<string>>();
     for (const id of ids) {
       const out = composeComment(brief, styleSheetFor(id));
-      expect(out.semanticKey).toMatch(/^comment:/);
+      // One namespace for same-post meaning (P2C-05, 2026-09-21): a caption
+      // used 'caption:' and a comment 'comment:', so a comment could restate
+      // the caption above it and the same-post check never saw it.
+      expect(out.semanticKey).toMatch(/^meaning:/);
       const texts = byKey.get(out.semanticKey!) ?? new Set<string>();
       texts.add(out.text);
       byKey.set(out.semanticKey!, texts);
@@ -743,5 +750,53 @@ describe('live caption failures cannot recur', () => {
     const brief = briefForAsset({ kind: 'video', title: '$300 all in with queens', domainHint: 'poker' });
     const style = { ...styleSheetFor(fleetIds(1)[0]!), punctuation: 'ellipsis' as const };
     expect(composeCaption(brief, style).text).not.toMatch(/\.\.\.$/);
+  });
+});
+
+describe('a reply answers the comment it is under (P2C-02, 2026-09-21)', () => {
+  // The p2-voice-c harness answered 0 of 11 humans: human_unanswered became
+  // 'addressed', whose lines ("appreciate that", "good shout") named nothing
+  // and never cleared the relevance floor.
+  const now = new Date('2026-09-21T12:00:00Z');
+  const at = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
+  const brief = briefForAsset({ kind: 'video', title: 'Suddenly my river bluff doesn’t seem so scary', source: 'Natural8', domainHint: 'poker' });
+  const threadWith = (content: string): ThreadComment[] => [
+    { id: 'c-root', post_id: 'p', parent_id: null, author_id: 'horse-1', content: 'the sizing is what sells it', created_at: at(60), isHorse: true },
+    { id: 'c-h', post_id: 'p', parent_id: 'c-root', author_id: 'human-1', content, created_at: at(5), isHorse: false },
+  ];
+
+  it('a human_unanswered decision with a concept-bearing comment yields a publishable, relevant reply', () => {
+    const d = decideReply('horse-1', 'myalias', threadWith('would you have folded the river there?'), now);
+    expect(d.reason).toBe('human_unanswered');
+    for (const id of fleetIds(60)) {
+      const r = composeReply(brief, styleSheetFor(id), d.target!.content, composerReason(d.reason!, d.target!.content));
+      expect(r.skip).toBeUndefined();
+      expect(r.text.length).toBeGreaterThan(5);
+      expect(r.relevance).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+      expect(r.text.toLowerCase()).toMatch(/river|fold/);
+    }
+  });
+
+  it('an empty or off-topic comment yields the explicit skip', () => {
+    for (const said of ['', 'nice', 'anyone know a good pizza place in Boston?']) {
+      const d = decideReply('horse-1', 'myalias', threadWith(said), now);
+      expect(d.reason).toBe('human_unanswered');
+      const r = composeReply(brief, styleSheetFor(fleetIds(1)[0]!), said, composerReason(d.reason!, said));
+      expect(r.text).toBe('');
+      expect(r.skip).toBe('reply_ungrounded');
+    }
+  });
+});
+
+describe('a private name in a link title is never echoed (P2C-12, 2026-09-21)', () => {
+  it('a comment on a link post names only public figures', () => {
+    const brief = briefForPost({
+      postId: 'p12', contentType: 'link', content: '',
+      linkTitle: "Marcus Delaney's triple barrel river bluff at the Bike",
+      linkSiteName: 'PokerNews', metadata: { news_type: 'poker' },
+    });
+    for (const id of fleetIds(80)) {
+      expect(composeComment(brief, styleSheetFor(id)).text).not.toMatch(/marcus|delaney/i);
+    }
   });
 });

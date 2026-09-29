@@ -26,7 +26,7 @@
  * everything here stays as its fallback.
  */
 import { briefForAsset, briefForPost, summarise, isUninformativeTitle, type PostBrief, type BriefSource } from './PostBrief.js';
-import { styleSheetFor, styleId, describeStyle, type StyleSheet } from './StyleSheet.js';
+import { styleSheetFor, styleId, describeStyle, sentenceKeys, type StyleSheet } from './StyleSheet.js';
 import {
   composeCaption,
   composeComment,
@@ -39,13 +39,8 @@ import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
 import { pickHandStory, pickSessionStory } from './HandStory.js';
-import {
-  composeHandPost,
-  composeSessionPost,
-  briefForHand,
-  briefForSession,
-  factsMatch,
-} from './GroundedComposer.js';
+import { lineFor, briefForSpokenHand } from './HandVoice.js';
+import { sessionLineFor, sessionGroup, briefForSpokenSession } from './SessionVoice.js';
 
 export interface WrittenText {
   text: string;
@@ -79,6 +74,14 @@ export interface WrittenText {
   groundedKind?: 'hand' | 'session';
   /** Unstyled meaning for same-post semantic de-duplication. */
   semanticKey?: string;
+  /**
+   * Why nothing was written, when the reason is known: 'reply_ungrounded'
+   * (the incoming comment raised nothing a reply can answer about),
+   * 'echoes_post' (every usable draft repeated a sentence already on the
+   * post), 'post_thread_unreadable' (the post's comments could not be read,
+   * so novelty could not be proven). Callers count it; they never publish on it.
+   */
+  skipReason?: string;
 }
 
 const MAX_DRAFTS = 6;
@@ -88,23 +91,35 @@ const MAX_DRAFTS = 6;
  * same two gates.
  */
 async function writeGated(
-  make: (variant: string) => { text: string; relevance: number; grounding: string[]; semanticKey?: string },
+  make: (variant: string) => { text: string; relevance: number; grounding: string[]; semanticKey?: string; skip?: string },
   brief: PostBrief,
   style: StyleSheet,
   horseId: string,
   postId?: string,
+  echoes?: (text: string) => boolean,
 ): Promise<Omit<WrittenText, 'brief' | 'style'>> {
   let best: { text: string; relevance: number; grounding: string[]; semanticKey?: string } | null = null;
   let attempts = 0;
   let sawFresh = false;
+  let echoed = 0;
 
   for (let i = 0; i < MAX_DRAFTS; i++) {
     attempts = i + 1;
     const draft = make(String(i));
+    // The composer refused on purpose (a reply with nothing to answer). The
+    // same input gives the same answer, so report why instead of redrafting.
+    if (draft.skip) {
+      return { text: '', relevance: 0, grounding: [], attempts, belowFloor: false, stale: false, skipReason: draft.skip };
+    }
     if (!draft.text) continue;
     if (!best || draft.relevance > best.relevance) best = draft;
 
     if (draft.relevance < RELEVANCE_FLOOR) continue;
+    // Any sentence the post or a comment under it already said (P2C-05).
+    if (echoes && echoes(draft.text)) {
+      echoed++;
+      continue;
+    }
     if (draft.semanticKey && postId && await phraseUsedOnPost(draft.semanticKey, postId)) continue;
     if (draft.semanticKey && !postId && await phraseRecentlyUsed(draft.semanticKey, horseId)) continue;
     const norm = normalizePhrase(draft.text);
@@ -134,6 +149,7 @@ async function writeGated(
     attempts,
     belowFloor: fallback.relevance < RELEVANCE_FLOOR,
     stale: !sawFresh && fallback.relevance >= RELEVANCE_FLOOR,
+    skipReason: echoed > 0 ? 'echoes_post' : undefined,
   };
 }
 
@@ -215,72 +231,95 @@ export async function writeStory(
  * (a quiet week, or only trivial pots), and the caller falls back to the
  * shared media pools.
  *
- * The freshness ledger still applies - a horse should not tell the same hand
- * twice - and `factsMatch` refuses any draft that states a number the ledger
- * does not carry.
+ * Hands and sessions are separate ways of posting with separate approval
+ * (grounded_hand, grounded_session); each branch runs only when the caller
+ * passes its own mode's decision as exactly `true`. Hands are spoken by
+ * HandVoice and days by SessionVoice, each of which refuses any sentence the
+ * row and its action log do not support. The freshness ledger still applies:
+ * a horse should not tell the same line twice.
  */
 export async function writeGrounded(
   horse: AuthorHorse,
-  allowed: { hand: boolean; session: boolean } = { hand: true, session: false },
+  // Fails closed. The only caller passes the horse_post_modes decisions; a
+  // caller that forgets them must not get an unapproved way of posting.
+  allowed: { hand: boolean; session: boolean } = { hand: false, session: false },
 ): Promise<WrittenText | null> {
-  const style = styleSheetFor(horse.profile_id);
+  // Every read below can fail, and no failure may turn into a post: an error
+  // anywhere means this horse says nothing in this slot.
+  try {
+    const style = styleSheetFor(horse.profile_id);
 
-  const hand = allowed.hand ? await pickHandStory(horse.profile_id) : null;
-  if (hand) {
-    const brief = briefForHand(hand);
-    // What the rest of the fleet has just said, in this hand's own category.
-    // One read for the whole draft loop; see FRAME_GLOBAL_HOURS for why the
-    // rendered text cannot carry this (the cards make every post unique).
-    const group = hand.street === 'preflop' ? `pre_${hand.category}` : hand.category;
-    const used = await recentFrameKeys('hand', group);
-    for (let i = 0; i < MAX_DRAFTS; i++) {
-      const draft = composeHandPost(hand, style, String(i), used);
-      if (!draft.text) continue;
-      // A post may never state a number the row does not carry.
-      if (!factsMatch(draft.text, hand)) {
-        console.warn('[voice] grounded draft rejected: facts did not match the hand');
-        continue;
+    if (allowed?.hand === true) {
+      const hand = await pickHandStory(horse.profile_id);
+      if (hand) {
+        // HandVoice (the Phase 3 replacement). The hand is SPOKEN, never
+        // printed, and every claim about the action comes from the action
+        // log (HandStory's `play`). It deliberately does NOT go through
+        // StyleSheet.render, whose per-horse openers and closers are what put
+        // "look" and "nah" in front of the rejected posts. The old
+        // composeHandPost is not reachable from here.
+        //
+        // The frame ledger is shared with the rest of the fleet: a frame
+        // another horse used in this category inside FRAME_GLOBAL_HOURS is
+        // skipped, and an exhausted pool is silence.
+        const exclude = new Set(await recentFrameKeys('voice', hand.category));
+        const seed = `${horse.profile_id}:h:${hand.handId}`;
+        for (let i = 0; i < MAX_DRAFTS; i++) {
+          const spoken = lineFor(hand, seed, exclude);
+          if (!spoken) break;
+          if (await phraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
+            exclude.add(spoken.key);
+            continue;
+          }
+          return {
+            text: spoken.text,
+            brief: briefForSpokenHand(hand),
+            style,
+            relevance: 1,
+            grounding: [`hand:${hand.handId}`, `category:${hand.category}`, spoken.key],
+            attempts: i + 1,
+            belowFloor: false,
+            stale: false,
+            frameKey: spoken.key,
+            groundedKind: 'hand',
+          };
+        }
       }
-      const norm = normalizePhrase(draft.text);
-      if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
-      return {
-        text: draft.text,
-        brief,
-        style,
-        relevance: 1,
-        grounding: draft.grounding,
-        attempts: i + 1,
-        belowFloor: false,
-        stale: false,
-        frameKey: draft.frameKey,
-        groundedKind: 'hand',
-      };
     }
-  }
 
-  const session = allowed.session ? await pickSessionStory(horse.profile_id) : null;
-  if (session) {
-    const brief = briefForSession(session);
-    const group = session.netBb > 5 ? 'up' : session.netBb < -5 ? 'down' : 'flat';
-    const used = await recentFrameKeys('session', group);
-    for (let i = 0; i < MAX_DRAFTS; i++) {
-      const draft = composeSessionPost(session, style, String(i), used);
-      if (!draft.text) continue;
-      const norm = normalizePhrase(draft.text);
-      if (await phraseRecentlyUsed(norm, horse.profile_id)) continue;
-      return {
-        text: draft.text,
-        brief,
-        style,
-        relevance: 1,
-        grounding: draft.grounding,
-        attempts: i + 1,
-        belowFloor: false,
-        stale: false,
-        frameKey: draft.frameKey,
-        groundedKind: 'session',
-      };
+    if (allowed?.session === true) {
+      const session = await pickSessionStory(horse.profile_id);
+      if (session) {
+        // SessionVoice: the day said as a player says it. No big blinds, no
+        // hand count, no StyleSheet filler. The old composeSessionPost is not
+        // reachable from here.
+        const exclude = new Set(await recentFrameKeys('sessionvoice', sessionGroup(session)));
+        const seed = `${horse.profile_id}:s:${session.day}:${session.variant}:${session.format}`;
+        for (let i = 0; i < MAX_DRAFTS; i++) {
+          const spoken = sessionLineFor(session, seed, exclude);
+          if (!spoken) break;
+          if (await phraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
+            exclude.add(spoken.key);
+            continue;
+          }
+          return {
+            text: spoken.text,
+            brief: briefForSpokenSession(session),
+            style,
+            relevance: 1,
+            grounding: [`session:${session.day}`, `variant:${session.variant}`, `format:${session.format}`, spoken.key],
+            attempts: i + 1,
+            belowFloor: false,
+            stale: false,
+            frameKey: spoken.key,
+            groundedKind: 'session',
+          };
+        }
+      }
     }
+  } catch (e) {
+    console.warn('[voice] grounded draft skipped:', e instanceof Error ? e.message : String(e));
+    return null;
   }
 
   return null;
@@ -356,14 +395,71 @@ export async function writeComment(
   const stored = await loadBrief(post.postId);
   const brief = stored ?? briefForPost(post);
   const style = styleSheetFor(horse.profile_id);
+  // Everything already said on this post: the text above it and every comment
+  // under it. 13 of 35 harness comments restated a sentence of the caption
+  // they sat under (p2-voice-c, 2026-09-21). If the thread cannot be read we
+  // cannot prove the comment is new, so the horse stays quiet (fail closed).
+  const said = await sentencesSaidOn(post);
+  if (!said) {
+    return {
+      text: '',
+      relevance: 0,
+      grounding: [],
+      attempts: 0,
+      belowFloor: false,
+      stale: false,
+      brief,
+      style,
+      briefWasStored: Boolean(stored),
+      skipReason: 'post_thread_unreadable',
+    };
+  }
   const core = await writeGated(
     (variant) => composeComment(brief, style, variant),
     brief,
     style,
     horse.profile_id,
     post.postId,
+    (text) => sentenceKeys(text).some((k) => said.has(k)),
   );
   return { ...core, brief, style, briefWasStored: Boolean(stored) };
+}
+
+/** Most comments one post can carry before we stop trying to read them all. */
+const THREAD_READ_MAX = 5000;
+const THREAD_PAGE = 1000;
+
+/**
+ * Sentence keys of everything already said on a post, or null when that
+ * cannot be established. Paged, because PostgREST returns at most 1,000 rows
+ * per request and a truncated read would look exactly like a complete one.
+ */
+async function sentencesSaidOn(post: BriefSource): Promise<Set<string> | null> {
+  const said = new Set<string>(sentenceKeys(post.content ?? ''));
+  if (!post.postId) return said;
+  try {
+    const supa = getSupabase();
+    for (let from = 0; from < THREAD_READ_MAX; from += THREAD_PAGE) {
+      const { data, error } = await supa
+        .from('social_comments')
+        .select('content')
+        .eq('post_id', post.postId)
+        .order('created_at', { ascending: true })
+        .range(from, from + THREAD_PAGE - 1);
+      if (error) {
+        console.warn('[voice] thread read failed:', error.message);
+        return null;
+      }
+      const rows = (data ?? []) as Array<{ content?: string | null }>;
+      for (const row of rows) for (const k of sentenceKeys(row.content ?? '')) said.add(k);
+      if (rows.length < THREAD_PAGE) return said;
+    }
+    // More comments than we will read: novelty cannot be proven.
+    return null;
+  } catch (e) {
+    console.warn('[voice] thread read threw:', e instanceof Error ? e.message : e);
+    return null;
+  }
 }
 
 /** A reply to a specific incoming comment. Short by design. */

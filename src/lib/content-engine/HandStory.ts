@@ -41,7 +41,52 @@ export type HandCategory =
   | 'big_fold'
   | 'cooler'
   | 'stackoff'
+  /**
+   * A loss the reviewer tagged as the player's own kind of spot (a river bet
+   * that got called, a weak kicker that went too far, a cold call that grew).
+   * Told in a neutral voice: never as bad luck, never as a cooler.
+   */
+  | 'tough_spot'
   | 'grind';
+
+export type Street = 'preflop' | 'flop' | 'turn' | 'river';
+
+/**
+ * What the horse actually did in the hand, read from the action log
+ * (`horse_hand_reviews.actions`), never from the board or the tags.
+ *
+ * WHY (2026-09-21 recertification, P3C-03..P3C-09): the first HandVoice only
+ * knew the board, the net and the tags, so it said "held up" about pots won
+ * without a showdown, "committed the stack on the river" when the money went
+ * in on the flop (a board is always dealt out after an all-in), and "the full
+ * stack" when the player checked the turn and river. Every one of those
+ * claims is a fact about the ACTION, so the action log is where they come
+ * from.
+ */
+export interface HandPlay {
+  /** The hand reached a showdown with the horse still in it. */
+  showdown: boolean;
+  /**
+   * The street on which the horse's own stack went all in (its own all-in,
+   * as a bet, a raise or a call for less). Null when it never did.
+   */
+  stackInStreet: Street | null;
+  /**
+   * The street on which the pot went all in with the horse in it: its own
+   * all-in, or a call of somebody else's all-in. Null when neither happened.
+   */
+  allInStreet: Street | null;
+  /** The street the horse folded on, or null. */
+  foldStreet: Street | null;
+  /** Streets on which the horse bet or raised (an all-in that raised counts). */
+  aggressionStreets: Street[];
+  /** The horse bet or raised on the river. */
+  riverAggression: boolean;
+  /** 1 for a normal hand, 2 or 3 when the board was run more than once. */
+  runouts: number;
+  /** Where the hand was decided for the horse: its fold, its all-in, or the last betting street. */
+  decisiveStreet: Street;
+}
 
 export interface HandFacts {
   handId: string;
@@ -62,8 +107,14 @@ export interface HandFacts {
   holeNotation: string;
   /** "Kc 7s Js 4c 2s", or empty when the hand ended before a flop. */
   boardNotation: string;
-  /** How far the hand went. */
-  street: 'preflop' | 'flop' | 'turn' | 'river';
+  /**
+   * How far the BOARD went. Not when the money went in: an all-in is always
+   * dealt out to five cards. Anything a sentence says about a street comes
+   * from `play`, never from this.
+   */
+  street: Street;
+  /** What the horse did, from the action log. */
+  play: HandPlay;
   /** Human-readable stake, when the format has one. */
   stake?: string;
 }
@@ -125,22 +176,196 @@ function streetOf(board: Card[]): HandFacts['street'] {
  * plus the result. The tag vocabulary is the engine's own (40 tags as of
  * 2026-09-06); a tag ending `_won` is the winning side of the same spot.
  */
-export function categorise(leaks: string[], isWin: boolean, netBb: number): HandCategory {
+export function categorise(leaks: string[], isWin: boolean, netBb: number, play?: HandPlay): HandCategory {
   const has = (frag: string) => leaks.some((t) => t.includes(frag));
+  const cooler = COOLER_TAGS.some(has);
+  // A loss tagged with anything other than a fold or a cooler is a spot the
+  // reviewer put on the player (a called river bet, a weak kicker, a cold
+  // call that grew). It is told neutrally, never as a bad beat (P3C-08).
+  const ownSpot = !isWin && !cooler && leaks.some((t) => !FOLD_TAGS.some((f) => t.includes(f)));
+
+  if (play) {
+    // The action log outranks the tags. A horse that folded folded, and a
+    // stack-off with no all-in in the log is not told as one (P3C-05).
+    if (play.foldStreet) return 'big_fold';
+    if (isWin && play.riverAggression && (has('river_aggr') || has('river_raise'))) return 'river_aggression';
+    if (!isWin && cooler) return 'cooler';
+    if (ownSpot) return 'tough_spot';
+    if (!isWin && netBb <= -60) return 'bad_beat';
+    if (has('stackoff') && play.allInStreet) return 'stackoff';
+    if (isWin && netBb >= 60) return 'big_win';
+    return 'grind';
+  }
 
   if (has('big_fold')) return 'big_fold';
   if (has('river_aggr') && isWin) return 'river_aggression';
   if (has('river_raise') && isWin) return 'river_aggression';
 
   // The classic coolers: a strong hand that was second best.
-  if (!isWin && (has('dominated_straight') || has('underfull') || has('nonnut_flush') ||
-      has('second_nut_flush') || has('straight_into_flush') || has('plo_set'))) {
-    return 'cooler';
-  }
+  if (!isWin && cooler) return 'cooler';
+  if (ownSpot) return 'tough_spot';
   if (!isWin && netBb <= -60) return 'bad_beat';
   if (has('stackoff')) return 'stackoff';
   if (isWin && netBb >= 60) return 'big_win';
   return 'grind';
+}
+
+const COOLER_TAGS = ['dominated_straight', 'underfull', 'nonnut_flush', 'second_nut_flush', 'straight_into_flush', 'plo_set'];
+const FOLD_TAGS = ['big_fold', 'big_bet_fold', 'bet_fold_line'];
+
+const STREETS: readonly Street[] = ['preflop', 'flop', 'turn', 'river'];
+const isStreet = (s: unknown): s is Street => typeof s === 'string' && (STREETS as readonly string[]).includes(s);
+const VOLUNTARY = new Set(['fold', 'check', 'call', 'bet', 'raise', 'all_in']);
+
+interface ActionEntry {
+  seat?: unknown;
+  stage?: unknown;
+  action?: unknown;
+  amount?: unknown;
+  userId?: unknown;
+  publicNode?: { currentBet?: unknown; seats?: unknown } | null;
+}
+
+/** A finite number, or null. Never a guess. */
+function finite(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The horse's stack behind before this action, from the table snapshot. */
+function stackBefore(a: ActionEntry): number | null {
+  const seats = a.publicNode?.seats;
+  const seat = finite(a.seat);
+  if (!Array.isArray(seats) || seat === null) return null;
+  for (const s of seats) {
+    if (Array.isArray(s) && finite(s[0]) === seat) return finite(s[1]);
+  }
+  return null;
+}
+
+/**
+ * The horse's side of the hand, from the action log. Returns null when the
+ * log cannot establish it (missing, malformed, or the horse never acts in
+ * it): a hand whose action cannot be read is not a hand the horse talks
+ * about. Fail closed.
+ *
+ * The log's own vocabulary (checked against production 2026-09-21): stages
+ * preflop, flop, turn, river, plus pineapple_discard and showdown; actions
+ * sb, bb, ante, bomb_ante, post, fold, check, call, bet, raise, all_in,
+ * return, discard, and `rit_board_N:<cards>` for each extra runout. An
+ * all_in amount is the street total it made; `publicNode.currentBet` is the
+ * bet it faced.
+ */
+export function derivePlay(horseId: string, actions: unknown): HandPlay | null {
+  if (!horseId || !Array.isArray(actions) || actions.length === 0) return null;
+
+  const players = new Set<string>();
+  const seen = new Set<string>();
+  const folded = new Set<string>();
+  const allInPlayers = new Set<string>();
+  const aggression = new Set<Street>();
+  // Per street: whether the bet standing right now is somebody's all-in.
+  const standingAllIn = new Map<Street, boolean>();
+  let horseActed = false;
+  let foldStreet: Street | null = null;
+  let stackInStreet: Street | null = null;
+  let allInStreet: Street | null = null;
+  let runouts = 1;
+  let lastBettingStreet: Street | null = null;
+
+  for (const raw of actions) {
+    if (!raw || typeof raw !== 'object') return null;
+    const a = raw as ActionEntry;
+    const act = typeof a.action === 'string' ? a.action : '';
+    const rit = act.match(/^rit_board_(\d+)/);
+    if (rit) {
+      runouts = Math.max(runouts, Number(rit[1]));
+      continue;
+    }
+    if (!isStreet(a.stage)) continue;
+    const street = a.stage;
+    const who = typeof a.userId === 'string' ? a.userId : '';
+    if (!who) {
+      // A decision nobody made is a log that cannot be read.
+      if (VOLUNTARY.has(act)) return null;
+      continue;
+    }
+    // Blinds, antes and returned bets are not decisions. A seat counts as in
+    // the hand once it makes one (an ante is logged as dead money, so it says
+    // nothing about who was dealt in or who is still in at the end).
+    if (who !== 'system') seen.add(who);
+    if (!VOLUNTARY.has(act)) continue;
+    players.add(who);
+    lastBettingStreet = street;
+
+    const amount = finite(a.amount);
+    const facing = finite(a.publicNode?.currentBet);
+    // An all-in raises the bet only when its street total beats the bet it
+    // faced AND somebody still in the hand has chips left to face it. Moving
+    // in over an all-in with nobody else behind is a call: the engine hands
+    // the excess straight back. Without a snapshot none of it is assumed.
+    const othersBehind = [...seen].some((p) => p !== who && !folded.has(p) && !allInPlayers.has(p));
+    const raisingAllIn = act === 'all_in' && amount !== null && facing !== null && amount > facing && othersBehind;
+    if (act === 'all_in') allInPlayers.add(who);
+
+    if (who !== horseId) {
+      if (act === 'fold') folded.add(who);
+      if (act === 'bet' || act === 'raise') standingAllIn.set(street, false);
+      if (raisingAllIn) standingAllIn.set(street, true);
+      continue;
+    }
+
+    horseActed = true;
+    if (act === 'fold') {
+      folded.add(who);
+      if (!foldStreet) foldStreet = street;
+      continue;
+    }
+    if (foldStreet) return null; // the log has the horse acting after it folded
+    if (act === 'bet' || act === 'raise') {
+      aggression.add(street);
+      standingAllIn.set(street, false);
+    }
+    if (act === 'all_in') {
+      if (!stackInStreet) stackInStreet = street;
+      if (!allInStreet) allInStreet = street;
+      if (raisingAllIn) {
+        aggression.add(street);
+        standingAllIn.set(street, true);
+      }
+    }
+    if (act === 'call') {
+      const before = stackBefore(a);
+      const emptied = before !== null && amount !== null && amount >= before;
+      if (emptied && !stackInStreet) stackInStreet = street;
+      if ((standingAllIn.get(street) === true || emptied) && !allInStreet) allInStreet = street;
+    }
+  }
+
+  if (!horseActed || !lastBettingStreet) return null;
+  const live = [...players].filter((p) => !folded.has(p));
+  const showdown = !foldStreet && live.includes(horseId) && live.length >= 2;
+  return {
+    showdown,
+    stackInStreet,
+    allInStreet,
+    foldStreet,
+    aggressionStreets: STREETS.filter((s) => aggression.has(s)),
+    riverAggression: aggression.has('river'),
+    runouts,
+    decisiveStreet: foldStreet ?? allInStreet ?? lastBettingStreet,
+  };
+}
+
+/**
+ * Why a grounded story was not told, counted per reason for the run report.
+ * Observation only: nothing reads it to decide anything.
+ */
+export const storySkips: Record<string, number> = {};
+function skip(reason: string): null {
+  storySkips[reason] = (storySkips[reason] ?? 0) + 1;
+  return null;
 }
 
 interface ReviewRow {
@@ -206,7 +431,7 @@ export async function pickHandStory(
 
   if (error) {
     console.warn('[hand-story] read failed:', error.message);
-    return null;
+    return skip('hand_read_failed');
   }
   const rows = (data ?? []) as ReviewRow[];
   if (!rows.length) return null;
@@ -220,8 +445,42 @@ export async function pickHandStory(
   candidates.sort((a, b) => Math.abs(num(b.net_bb)) - Math.abs(num(a.net_bb)));
   const top = candidates.slice(0, Math.min(12, candidates.length));
   const seed = opts.seed ?? new Date().toISOString().slice(0, 10);
-  const row = top[fleetHash(`${horseId}:${seed}`, 'handpick') % top.length]!;
+  const start = fleetHash(`${horseId}:${seed}`, 'handpick') % top.length;
+  const ordered = [...top.slice(start), ...top.slice(0, start)];
 
+  // The action log, for the slice only: a log carries a table snapshot per
+  // action, so reading it for all 400 rows would move megabytes per pick.
+  const { data: logs, error: logError } = await getSupabase()
+    .from('horse_hand_reviews')
+    .select('id, actions')
+    .in('id', ordered.map((r) => r.id));
+  if (logError) {
+    console.warn('[hand-story] action read failed:', logError.message);
+    return skip('hand_actions_read_failed');
+  }
+  const actionsById = new Map(
+    ((logs ?? []) as Array<{ id: string | number; actions: unknown }>).map((l) => [String(l.id), l.actions]),
+  );
+
+  for (const row of ordered) {
+    const play = derivePlay(horseId, actionsById.get(String(row.id)));
+    if (!play) {
+      skip('hand_actions_unreadable');
+      continue;
+    }
+    const isWin = Boolean(row.is_win);
+    // A win the horse folded, or a loss with neither a fold nor a showdown,
+    // is a log that disagrees with the row. Neither is told.
+    if ((isWin && play.foldStreet) || (!isWin && !play.foldStreet && !play.showdown)) {
+      skip('hand_actions_disagree');
+      continue;
+    }
+    return factsFrom(row, play);
+  }
+  return null;
+}
+
+function factsFrom(row: ReviewRow, play: HandPlay): HandFacts {
   const hole = asCards(row.hole_cards);
   const board = asCards(row.board);
   const bigBlind = num(row.big_blind);
@@ -243,10 +502,11 @@ export async function pickHandStory(
     potBb,
     isWin,
     leaks,
-    category: categorise(leaks, isWin, netBb),
+    category: categorise(leaks, isWin, netBb, play),
     holeNotation: holeText(hole),
     boardNotation: boardText(board),
     street: streetOf(board),
+    play,
     stake: stakeOf(format, bigBlind),
   };
 }
@@ -273,7 +533,7 @@ export async function pickSessionStory(
 
   if (error) {
     console.warn('[hand-story] session read failed:', error.message);
-    return null;
+    return skip('session_read_failed');
   }
   const rows = (data ?? []) as Array<{ day: string; game_variant: string | null; format: string | null; hands: number | null; net_bb: number | string | null }>;
   const usable = rows.filter((r) => num(r.hands) >= minHands);
