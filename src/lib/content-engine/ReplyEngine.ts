@@ -171,8 +171,21 @@ export function decideReply(
 }
 
 /** The Composer's reason parameter, from ours. */
-export function composerReason(r: ReplyReason): 'addressed' | 'question' | 'disagreement' {
+export function composerReason(
+  r: ReplyReason,
+  incoming?: string,
+): 'addressed' | 'question' | 'disagreement' {
   if (r === 'question') return 'question';
   if (r === 'disagreement') return 'disagreement';
+  // A human is answered for what they SAID, not for the rule that picked
+  // them. human_unanswered always became 'addressed', whose lines ("appreciate
+  // that", "good shout") carried nothing of the comment and never cleared the
+  // relevance floor, so no human was ever answered (P2C-02). The Composer
+  // reads the comment either way; this keeps the two in step when the caller
+  // passes the text.
+  if (incoming !== undefined) {
+    if (isQuestion(incoming)) return 'question';
+    if (isDisagreement(incoming)) return 'disagreement';
+  }
   return 'addressed';
 }

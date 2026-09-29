@@ -90,7 +90,11 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   all_in: ['all in', 'all-in', 'shove', 'shoved', 'jam', 'jammed'],
   final_table: ['final table', 'ft bubble'],
   heads_up: ['heads up', 'heads-up'],
-  bracelet: ['bracelet', 'wsop', 'world series'],
+  // 'wsop' and 'world series' name the SERIES, not a bracelet. Read as one,
+  // "The BEST & WORST Hands From WSOP Canada" was captioned "a bracelet changes
+  // how the rest of a career reads" (p2-voice-c, 2026-09-21). They are a
+  // tournament; a bracelet has to be named.
+  bracelet: ['bracelet', 'bracelets'],
   main_event: ['main event'],
   river: ['river', 'rivered'],
   turn: ['turn card', 'turned'],
@@ -110,7 +114,7 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   satellite: ['satellite', 'sattie'],
   high_stakes: ['high stakes', 'nosebleed', 'nosebleeds'],
   cash_game: ['cash game', 'cash games'],
-  tournament: ['tournament', 'mtt', 'tourney'],
+  tournament: ['tournament', 'tournaments', 'mtt', 'tourney', 'wsop', 'world series'],
   plo: ['plo', 'omaha', 'pot limit omaha'],
   short_deck: ['short deck', 'six plus', '6+'],
   study: ['study', 'studying', 'review', 'leak', 'leaks'],
@@ -179,8 +183,7 @@ const POKER_SOURCE = /poker|upswing|cardplayer|wsop|pokernews|hustler|triton|pok
  * the "person" Call Strong Enough), so in that mode only these, or a
  * possessive, count. Lower-cased for matching.
  */
-const KNOWN_PEOPLE = [
-  // poker
+const KNOWN_POKER_PEOPLE = [
   'garrett adelstein', 'phil ivey', 'daniel negreanu', 'phil hellmuth', 'tom dwan',
   'patrik antonius', 'doug polk', 'jason koon', 'bryn kenney', 'justin bonomo',
   'stephen chidwick', 'fedor holz', 'dan smith', 'nick petrangelo', 'alex foxen',
@@ -190,7 +193,10 @@ const KNOWN_PEOPLE = [
   'andrew neeme', 'brad owen', 'johnnie vibes', 'nik airball', 'santhosh suvarna',
   'phil galfond', 'linus loeliger', 'isaac haxton', 'seth davies', 'chris moneymaker',
   'chris brewer', 'jungleman', 'dan cates', 'matt berkey', 'nick schulman',
-  // sport
+  'kelly minkin',
+];
+
+const KNOWN_SPORT_PEOPLE = [
   'lebron james', 'stephen curry', 'kevin durant', 'giannis antetokounmpo',
   'nikola jokic', 'luka doncic', 'jayson tatum', 'joel embiid', 'anthony edwards',
   'shai gilgeous-alexander', 'victor wembanyama', 'jimmy butler', 'kawhi leonard',
@@ -199,7 +205,37 @@ const KNOWN_PEOPLE = [
   'tyreek hill', 'ceedee lamb', 'aaron judge', 'shohei ohtani', 'mookie betts',
   'connor mcdavid', 'lionel messi', 'cristiano ronaldo', 'erling haaland',
   'kylian mbappe', 'jon jones', 'islam makhachev', 'caitlin clark', 'angel reese',
+  // Named in real clip titles and missed (p2-voice-c fixtures, 2026-09-21).
+  'kristaps porzingis', 'tyrese maxey', 'jaylen brown', 'paul george', 'trae young',
+  'paolo banchero', 'tom brady',
 ];
+
+const KNOWN_PEOPLE = [...KNOWN_POKER_PEOPLE, ...KNOWN_SPORT_PEOPLE];
+
+/** How a known name is written when a horse says it. */
+const KNOWN_DISPLAY: Record<string, string> = {
+  'lebron james': 'LeBron James',
+  'ceedee lamb': 'CeeDee Lamb',
+  'shai gilgeous-alexander': 'Shai Gilgeous-Alexander',
+};
+
+function displayName(known: string): string {
+  return KNOWN_DISPLAY[known] ?? known.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+/**
+ * Which world a public figure belongs to, or null when we cannot positively
+ * identify the name. Only a name that answers here may ever be the subject of
+ * a horse's sentence: a capitalised word is not a person ("Suddenly",
+ * "Streamer", "Oct."), and a name we cannot identify might belong to a member
+ * of this club.
+ */
+export function publicFigureDomain(name: string): 'poker' | 'sports' | null {
+  const k = name.trim().toLowerCase();
+  if (KNOWN_POKER_PEOPLE.includes(k)) return 'poker';
+  if (KNOWN_SPORT_PEOPLE.includes(k)) return 'sports';
+  return null;
+}
 
 /** Words that look like names but are not. */
 const NOT_A_NAME = new Set([
@@ -211,6 +247,26 @@ const NOT_A_NAME = new Set([
   'shorts', 'highlights', 'video', 'clip', 'must', 'see', 'never', 'ever', 'again',
   'poker', 'basketball', 'football', 'baseball', 'hockey', 'soccer', 'nba', 'nfl', 'mlb',
   'espn', 'sportscenter', 'breaking', 'news', 'update', 'report', 'vs', 'game',
+  // Each of these was extracted from a real title as a "person", and some were
+  // then named as the actor in a comment (p2-voice-c, 2026-09-21).
+  // Sentence-initial adverbs and fillers:
+  'suddenly', 'finally', 'literally', 'actually', 'honestly', 'basically', 'apparently',
+  'seriously', 'officially', 'definitely', 'absolutely', 'probably', 'maybe', 'still',
+  'just', 'even', 'only', 'also', 'here', 'there', 'listen', 'imagine', 'remember',
+  'meanwhile', 'somehow', 'anyway', 'yes', 'no', 'not', 'every', 'all', 'some', 'your',
+  'my', 'our', 'their', "what's", 'whats', "it's", 'its', "that's", 'thats', 'bro', 'guys',
+  // Generic nouns that head real titles:
+  'streamer', 'stream', 'livestream', 'history', 'draft', 'global', 'scouting', 'summer',
+  'league', 'season', 'playoffs', 'finals', 'chip', 'chair', 'pass', 'light', 'behind',
+  'player', 'players', 'pro', 'pros', 'coach', 'fans', 'crowd', 'team', 'squad', 'family',
+  'birthday', 'weekend', 'part', 'episode', 'ep', 'podcast', 'interview', 'recap',
+  'tips', 'strategy', 'advice', 'mindset', 'secret', 'truth', 'priorities', 'moments',
+  'series', 'event', 'main', 'day', 'night', 'week', 'year', 'influencer', 'egos',
+  // Months and days, with their abbreviations:
+  'january', 'jan', 'february', 'feb', 'march', 'mar', 'april', 'apr', 'june', 'jun',
+  'july', 'jul', 'august', 'aug', 'september', 'sept', 'sep', 'october', 'oct',
+  'november', 'nov', 'december', 'dec', 'monday', 'tuesday', 'wednesday', 'thursday',
+  'friday', 'saturday', 'sunday',
 ]);
 
 /** Never the head of a key phrase. */
@@ -267,10 +323,21 @@ export function softenCaps(s: string): string {
     .join(' ');
 }
 
+/**
+ * Text a concept must never be read out of. "POT LIMIT OMAHA FOREVER" is a
+ * game, not a pot; read as one it produced "a pot that size makes every
+ * decision feel louder" under a PLO stream (p2-voice-c, 2026-09-21).
+ */
+const CONCEPT_MASKS: Record<string, RegExp> = {
+  pot: /\bpot[\s-]*limit\b/g,
+};
+
 function matchConcepts(text: string, table: Record<string, string[]>): string[] {
-  const lc = ` ${text.toLowerCase()} `;
+  const base = ` ${text.toLowerCase()} `;
   const found: string[] = [];
   for (const [key, terms] of Object.entries(table)) {
+    const mask = CONCEPT_MASKS[key];
+    const lc = mask ? base.replace(mask, ' ') : base;
     for (const t of terms) {
       // Word-boundary match so 'pot' does not fire inside 'spot'.
       const re = new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i');
@@ -300,16 +367,14 @@ export function isHeadlineCase(title: string): boolean {
  * Raise") every word is capitalised and the same rule invents people; there we
  * accept only a known name or an explicit possessive.
  */
-function extractPeople(title: string): string[] {
+function extractPeople(title: string, source?: string | null): string[] {
   const headline = isHeadlineCase(title);
   const lc = title.toLowerCase();
   const out: string[] = [];
 
   // Known names work in both modes and are the strongest signal.
   for (const known of KNOWN_PEOPLE) {
-    if (lc.includes(known)) {
-      out.push(known.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '));
-    }
+    if (lc.includes(known)) out.push(displayName(known));
   }
 
   // Possessives name a person in any casing: "Garrett Adelstein's $60K bluff".
@@ -317,12 +382,13 @@ function extractPeople(title: string): string[] {
   if (poss) {
     for (const p of poss) {
       const name = p.replace(/'s$/, '').trim();
-      if (!NOT_A_NAME.has(name.toLowerCase()) && !(name.toLowerCase() in TEAMS)) out.push(name);
+      const words = name.toLowerCase().split(/\s+/);
+      if (words.some((w) => NOT_A_NAME.has(w)) || name.toLowerCase() in TEAMS) continue;
+      out.push(name);
     }
   }
 
   if (!headline) {
-    const tokens = title.split(/[\s,:;!?]+/).filter(Boolean);
     let run: string[] = [];
     const flush = () => {
       if (run.length) {
@@ -330,26 +396,45 @@ function extractPeople(title: string): string[] {
         const lower = name.toLowerCase();
         const ok =
           run.length >= 2 ||
-          (run.length === 1 && name.length >= 4 && !NOT_A_NAME.has(lower) && !(lower in TEAMS) && !PHRASE_STOP.has(lower));
+          (name.length >= 4 && !(lower in TEAMS) && !PHRASE_STOP.has(lower));
         if (ok) out.push(name);
       }
       run = [];
     };
-    for (const tok of tokens) {
-      const bare = tok.replace(/[^A-Za-z'.-]/g, '');
-      const isCapped = /^[A-Z][a-z'.-]+$/.test(bare);
-      if (isCapped && !NOT_A_NAME.has(bare.toLowerCase()) && !(bare.toLowerCase() in TEAMS)) run.push(bare);
-      else flush();
-    }
+    const tokens = title.split(/\s+/).filter(Boolean);
+    tokens.forEach((raw, i) => {
+      // A list names several people, never one. "Bronny, Ziaire, and the
+      // squad" became the person "Bronny Ziaire", "Paul George/Your" another,
+      // and "NFL History: Jim Marshall" the person "History Jim Marshall"
+      // (p2-voice-c, 2026-09-21). A run of capitals ends at any punctuation.
+      raw.split('/').forEach((piece, j) => {
+        if (j > 0) flush();
+        const bare = piece.replace(/[^A-Za-z'.-]/g, '').replace(/\.+$/, '');
+        const lower = bare.toLowerCase();
+        const capped = /^[A-Z][a-z'.-]+$/.test(bare);
+        // Every title starts with a capital, so a lone sentence-initial adverb
+        // is not a name: "Suddenly my river bluff doesn't seem so scary".
+        const leadingAdverb = i === 0 && j === 0 && lower.length >= 6 && lower.endsWith('ly');
+        if (capped && !NOT_A_NAME.has(lower) && !(lower in TEAMS) && !leadingAdverb) run.push(bare);
+        else flush();
+      });
+      const letters = raw.replace(/[^A-Za-z]/g, '');
+      const endsClause =
+        /[,:;!?|&()"]$|\.\.+$/.test(raw) ||
+        (/\.$/.test(raw) && letters.length > 2 && !/^(jr|sr|st|dr|mr|mrs|ms)$/i.test(letters));
+      if (endsClause) flush();
+    });
     flush();
   }
 
+  const src = (source ?? '').trim().toLowerCase();
   const seen = new Set<string>();
   const unique = out.filter((n) => {
     const k = n.toLowerCase();
     if (seen.has(k)) return false;
     seen.add(k);
-    return true;
+    // The channel is who posted the clip, not somebody in it (P2C-07).
+    return !(src && src.includes(k));
   });
   return unique.sort((a, b) => b.split(' ').length - a.split(' ').length).slice(0, 3);
 }
@@ -360,7 +445,7 @@ function publicNamesIn(text: string): string[] {
   const out: string[] = [];
   for (const known of KNOWN_PEOPLE) {
     if (lc.includes(known)) {
-      out.push(known.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '));
+      out.push(displayName(known));
     }
   }
   return out.slice(0, 2);
@@ -587,7 +672,14 @@ export function briefForAsset(input: {
   }
 
   const concepts = domain === 'poker' ? pokerConcepts : domain === 'sports' ? sportConcepts : [...pokerConcepts, ...sportConcepts];
-  const { teams, sport: teamSport } = extractTeams(haystack);
+  // Teams come from the TITLE. The channel is who uploaded the clip: reading
+  // it here made the Warriors channel the dunker in "Kristaps Porzingis DUNKS
+  // From His First Season in The Bay" (P2C-07). The channel still tells us
+  // the sport.
+  const srcLc = (source ?? '').toLowerCase();
+  const fromTitle = extractTeams(title);
+  const teams = fromTitle.teams.filter((t) => !srcLc.includes(t.toLowerCase()));
+  const teamSport = fromTitle.sport ?? extractTeams(source ?? '').sport;
   let sport: Sport | undefined = teamSport;
   if (!sport) {
     const hinted = (input.sportHint ?? '').toLowerCase();
@@ -602,7 +694,7 @@ export function briefForAsset(input: {
   // A title that says nothing cannot name anybody either: "Keyboard
   // shortcuts" yielded the person "Keyboard", and a horse then asked
   // "anyone else watch Keyboard do this".
-  const people = empty ? [] : extractPeople(title);
+  const people = empty ? [] : extractPeople(title, source);
   const amounts = extractAmounts(title);
   const tone = detectTone(title, concepts);
 
@@ -678,6 +770,14 @@ export function briefForPost(src: BriefSource): PostBrief {
       domainHint,
     });
     brief.postId = src.postId;
+    // A shared link or clip can name anybody, a member of this club included.
+    // A horse may only say the name of a public figure we can positively
+    // identify, the rule text posts already follow (P2C-12).
+    const named = brief.people;
+    brief.people = named.filter((p) => publicFigureDomain(p) !== null);
+    if (brief.keyPhrase && named.includes(brief.keyPhrase) && !brief.people.includes(brief.keyPhrase)) {
+      brief.keyPhrase = brief.people[0] ?? brief.teams[0];
+    }
     // The author's own caption is evidence too: it carries the tone.
     const caption = firstLine(src.content);
     if (caption && caption !== title) {
@@ -743,6 +843,82 @@ export function briefForPost(src: BriefSource): PostBrief {
     claim: text.length > 0 ? text.slice(0, 240) : undefined,
     confidence,
     builtFrom: ['content'],
+  };
+}
+
+/**
+ * Poker verbs a reply can answer about. Kept out of POKER_CONCEPTS on purpose:
+ * "call" or "bet" in a headline is no evidence the headline is poker, but under
+ * a poker post "would you have called there?" is about a call.
+ */
+const POKER_ACTIONS: Record<string, string[]> = {
+  call: ['called', 'calling', 'snap call', 'snap called', 'call there', 'call that', 'the call',
+    // "disagree, I think that was a bad call" under a poker post was skipped as
+    // reply_ungrounded on every post in the harness (2026-09-29).
+    'bad call', 'good call', 'that call', 'this call', 'call down', 'called down'],
+  raise: ['raise', 'raised', 'raising', 're-raise', 'reraise'],
+  bet: ['betting', 'overbet', 'value bet', 'sizing', 'bet sizing', 'barrel', 'barreled', 'barrelled'],
+};
+const SPORT_ACTIONS: Record<string, string[]> = {
+  shot: ['shot', 'shots', 'jumper', 'layup', 'fadeaway', 'floater'],
+  pass: ['pass', 'passes', 'passing'],
+  foul: ['foul', 'fouled', 'flagrant'],
+  refs: ['ref', 'refs', 'referee', 'referees', 'officiating'],
+};
+/** Terms too ordinary in conversation to ground a reply on ("did you read it"). */
+const CONVERSATIONAL = new Set([
+  'read', 'review', 'turned', 'roll', 'tell', 'tells', 'save', 'saves', 'stop', 'finish',
+  'record', 'signs', 'hurt', 'balance', 'jam', 'three', 'threes', 'catch', 'grab', 'td',
+  'ko', 'goal', 'contract', 'trade', 'range', 'study', 'studying',
+]);
+function conversational(table: Record<string, string[]>): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [k, terms] of Object.entries(table)) {
+    const kept = terms.filter((t) => !CONVERSATIONAL.has(t));
+    if (kept.length) out[k] = kept;
+  }
+  return out;
+}
+const REPLY_TABLES: Record<'poker' | 'sports', Record<string, string[]>> = {
+  poker: conversational({ ...POKER_CONCEPTS, ...POKER_ACTIONS }),
+  sports: conversational({ ...SPORT_CONCEPTS, ...SPORT_ACTIONS }),
+};
+
+/**
+ * What an incoming comment is about, read the way a post is read (P2C-02).
+ *
+ * A reply used to be written from the POST's brief alone, so "nice one, where
+ * was this played?" got "appreciate that": it named nothing, scored 0 against
+ * the relevance floor and was dropped, so no human was ever answered. A reply
+ * is now built from what the comment itself raised, in the post's own world,
+ * and a comment that raised nothing a sentence can be grounded on gets an
+ * explicit skip instead of filler.
+ *
+ * Only a public figure of the post's world is ever named back: a human's
+ * comment can carry anybody's name, a club member's included.
+ */
+export function briefForComment(text: string, post: Pick<PostBrief, 'domain' | 'postId'>): PostBrief {
+  const clean = softenCaps(cleanTitle(text ?? ''));
+  const domain = post.domain;
+  const table = domain === 'poker' || domain === 'sports' ? REPLY_TABLES[domain] : null;
+  const concepts = table ? matchConcepts(clean, table) : [];
+  const people = table ? publicNamesIn(clean).filter((p) => publicFigureDomain(p) === domain) : [];
+  let confidence = 0;
+  if (concepts.length) confidence += 0.5;
+  if (people.length) confidence += 0.5;
+  return {
+    postId: post.postId,
+    kind: 'text',
+    domain,
+    title: '',
+    people,
+    teams: [],
+    concepts,
+    amounts: [],
+    tone: detectTone(clean, concepts),
+    isQuestion: /\?\s*$/.test(clean),
+    confidence,
+    builtFrom: ['incoming_comment'],
   };
 }
 
