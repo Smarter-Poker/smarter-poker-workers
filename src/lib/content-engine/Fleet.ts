@@ -5,6 +5,14 @@
  * PostgREST default page of 1,000, which is exactly the fleet size today and
  * one horse from being a silent truncation) decides who exists.
  *
+ * A row is on the roster only when its profile says it is a horse
+ * (profiles.is_horse) and that horse can be seen (profiles.avatar_url is
+ * set, the same test fn_horses_not_social_ready applies). Recertification,
+ * 2026-09-21: the roster used to trust content_authors.profile_id alone, so
+ * a hand-written row pointing at a person's profile would have posted as
+ * that person, and a newborn horse posted before it had a face. Production
+ * had 1,000 horses on the roster before this filter and 1,000 after it.
+ *
  * engineEnabled() is the kill switch. content_settings.engine_enabled had a
  * column, an admin control and no reader on the live path: the only way to
  * stop the fleet was to edit the dispatcher and redeploy Hetzner. Every
@@ -37,32 +45,89 @@ export async function loadFleet(): Promise<FleetHorse[]> {
     out.push(...rows);
     if (rows.length < PAGE) break;
   }
-  return out;
+  const ready = await postingReadyHorseIds();
+  return out.filter((h) => ready.has(h.profile_id));
 }
 
-let cachedSwitch: { value: boolean; at: number } | null = null;
+/**
+ * Profile ids that may post: profiles.is_horse is true and avatar_url is set.
+ *
+ * Read completely, keyset-paged on the primary key, so no page clamp decides
+ * who is a horse and a profile created mid-read cannot shift a page. This is
+ * an allowlist: a horse missing from it is skipped, never a person included.
+ * An unreadable page throws, and the caller posts nothing, because a roster
+ * that cannot be established is not a roster.
+ */
+export async function postingReadyHorseIds(): Promise<Set<string>> {
+  const supa = getSupabase();
+  const ids = new Set<string>();
+  let after: string | null = null;
+  for (;;) {
+    let query = supa
+      .from('profiles')
+      .select('id')
+      .eq('is_horse', true)
+      .not('avatar_url', 'is', null);
+    if (after !== null) query = query.gt('id', after);
+    const { data, error } = await query.order('id', { ascending: true }).limit(PAGE);
+    if (error) throw new Error(`horse profile read failed: ${error.message}`);
+    const rows = (data ?? []) as Array<{ id: string }>;
+    for (const row of rows) ids.add(row.id);
+    if (rows.length < PAGE) break;
+    after = rows[rows.length - 1]!.id;
+  }
+  return ids;
+}
+
+export type EngineSwitchState = 'on' | 'off' | 'unreadable';
+
+let cachedSwitch: { state: EngineSwitchState; at: number; seq: number } | null = null;
+let switchReads = 0;
 const SWITCH_TTL_MS = 30_000;
 
-export async function engineEnabled(): Promise<boolean> {
+/**
+ * True only when content_settings.engine_enabled reads exactly true.
+ *
+ * `fresh` skips the 30-second cache. A publish run can last nine minutes, so
+ * horse-posts asks again before every horse: turning the engine off stops a
+ * run in flight, not only the next one.
+ */
+export async function engineEnabled(opts: { fresh?: boolean } = {}): Promise<boolean> {
+  return (await engineSwitch(opts)) === 'on';
+}
+
+/** The switch with the reason: a run that stops says whether it was told to. */
+export async function engineSwitch(opts: { fresh?: boolean } = {}): Promise<EngineSwitchState> {
   const now = Date.now();
-  if (cachedSwitch && now - cachedSwitch.at < SWITCH_TTL_MS) return cachedSwitch.value;
-  const { data, error } = await getSupabase()
-    .from('content_settings')
-    .select('engine_enabled')
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  // Fail closed. A kill switch that turns itself ON when its control table
-  // cannot be read is not a kill switch. A missed run is recoverable; an
-  // uncontrolled fleet is not.
-  if (error || !data) {
-    console.warn('[fleet] engine switch unreadable; treating the fleet as OFF');
-    cachedSwitch = { value: false, at: now };
-    return false;
+  if (!opts.fresh && cachedSwitch && now - cachedSwitch.at < SWITCH_TTL_MS) return cachedSwitch.state;
+  const seq = ++switchReads;
+  let state: EngineSwitchState;
+  try {
+    const { data, error } = await getSupabase()
+      .from('content_settings')
+      .select('engine_enabled')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    // Fail closed. A kill switch that turns itself ON when its control table
+    // cannot be read is not a kill switch. A missed run is recoverable; an
+    // uncontrolled fleet is not.
+    if (error || !data) {
+      console.warn('[fleet] engine switch unreadable; treating the fleet as OFF');
+      state = 'unreadable';
+    } else {
+      state = (data as { engine_enabled: boolean | null }).engine_enabled === true ? 'on' : 'off';
+    }
+  } catch (err) {
+    console.warn('[fleet] engine switch read threw; treating the fleet as OFF:', err instanceof Error ? err.message : err);
+    state = 'unreadable';
   }
-  const value = (data as { engine_enabled: boolean | null }).engine_enabled === true;
-  cachedSwitch = { value, at: now };
-  return value;
+  // Only the newest read may set the cache. Reads overlap (one route's entry
+  // check, another route's loop check); an ON answer that started before an
+  // OFF answer must not land last and turn the fleet back on for 30 seconds.
+  // A caller whose read was overtaken gets the newer answer.
+  if (!cachedSwitch || seq > cachedSwitch.seq) cachedSwitch = { state, at: now, seq };
+  return cachedSwitch.state;
 }
 
 /** Test hook. */

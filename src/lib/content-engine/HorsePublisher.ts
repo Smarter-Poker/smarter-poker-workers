@@ -2,11 +2,21 @@
  * HorsePublisher: publish one post for one horse.
  *
  * Extracted from routes/horse-by-index.ts on 2026-09-05 so that the hourly
- * fleet route (routes/horse-posts.ts) and the legacy batch route share ONE
- * publish path. The batch route stays registered only for the hand-over
- * window between the workers deploy and the dispatcher deploy; both paths
- * carry the same 20-hour guard, so a horse reached by both in the same hour
- * still posts once.
+ * fleet route (routes/horse-posts.ts) and the legacy batch route shared ONE
+ * publish path. The batch route was deleted on 2026-09-21 (recertification
+ * G1: nothing had called it since 2026-09-06); horse-posts is the only caller.
+ *
+ * DUPLICATES ARE REFUSED BY THE DATABASE, NOT BY THIS PROCESS (recertification
+ * F1 and F2, 2026-09-21). Every post this file inserts carries
+ * metadata.publication_key = 'fleet:<profile id>:<slot>', where the slot is
+ * the local date and hour at which FleetScheduler opened the horse's posting
+ * window. The unique index uq_social_posts_metadata_publication_key lets one
+ * insert per horse per slot succeed; a second run inside the same window gets
+ * 23505, which is counted as a duplicate and writes no ledger rows. The
+ * 20-hour recent-post guard stays as the cheap first check and fails closed:
+ * when it cannot be read the horse is skipped and the reason is counted. The
+ * social_posts.publication_key COLUMN is not used; a CHECK reserves it for
+ * the video library.
  *
  * What changed from the batch-era body, and why:
  *   - Dedup reads the content ledgers (ContentLedger.ts), not an unordered
@@ -48,7 +58,7 @@ import {
   recordPhrase,
   normalizePhrase,
 } from './ContentLedger.js';
-import { fleetHash } from './FleetScheduler.js';
+import { fleetHash, isDueForPost, localClock } from './FleetScheduler.js';
 import {
   publishHorseVideoAtomically,
   readFreshSharedYouTubeVerificationIds,
@@ -70,6 +80,14 @@ export interface FleetHorse {
   specialty?: string | null;
 }
 
+/**
+ * Why nothing was published when that was the right answer rather than a
+ * failure: the horse posted inside the guard window, the guard could not be
+ * read (fail closed), another run already filled this slot (23505 on the slot
+ * key), or the horse has no scheduled slot open.
+ */
+export type PublishSkip = 'posted_recently' | 'guard_unreadable' | 'duplicate_slot' | 'no_slot';
+
 export interface PublishResult {
   success: boolean;
   horse: string;
@@ -82,7 +100,9 @@ export interface PublishResult {
   collided?: boolean;
   error?: string;
   outcome?: 'unknown';
-  skipped?: 'posted_recently';
+  skipped?: PublishSkip;
+  /** metadata.publication_key this attempt used or collided with. */
+  publicationKey?: string;
   /** Phase 2: how well the words matched the subject, and what grounded them. */
   relevance?: number;
   grounding?: string[];
@@ -115,6 +135,59 @@ export type PreparedSharedHorseVideoSupply =
 
 /** A horse that has posted inside this many hours is not due again. */
 export const RECENT_POST_GUARD_HOURS = 20;
+
+/**
+ * The scheduled slot a fleet post fills: the horse's LOCAL date and the hour
+ * at which FleetScheduler opened its posting window, for example
+ * '2026-09-21T14'. Null when the horse is not due at `now`.
+ *
+ * It names the schedule, not the clock. Every run inside one three-hour
+ * window (a slow run and the next hourly fire, or a retry) names the same
+ * slot, so they build the same publication key and only one can insert.
+ */
+export function fleetSlotId(
+  profileId: string,
+  timezone: string | null | undefined,
+  now: Date,
+): string | null {
+  const due = isDueForPost(profileId, timezone, now);
+  if (!due.due || due.dueHour === undefined) return null;
+  const clock = localClock(now, timezone);
+  // isDueForPost tries today's window first. A window that opened late
+  // yesterday is still open just after midnight, and then its hour is later
+  // than the local hour now.
+  const day = due.dueHour <= clock.hour ? clock.dayKey : previousDayKey(clock.dayKey);
+  return `${day}T${String(due.dueHour).padStart(2, '0')}`;
+}
+
+/** Civil-date arithmetic, so a 23-hour or 25-hour DST day cannot skew the key. */
+function previousDayKey(dayKey: string): string {
+  const [y, m, d] = dayKey.split('-').map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
+
+/** metadata.publication_key of a fleet post: one per horse per slot. */
+export function fleetPublicationKey(profileId: string, slotId: string): string {
+  return `fleet:${profileId}:${slotId}`;
+}
+
+/**
+ * Postgres unique_violation. On a fleet insert only the slot-key index can
+ * raise it (the other unique indexes on social_posts cover video_library
+ * rows), so it means another run already published this horse's slot.
+ */
+function isDuplicateSlot(error: { code?: string } | null | undefined): boolean {
+  return error?.code === '23505';
+}
+
+/**
+ * The atomic video RPC reports a definite failure as a message, not a code.
+ * A duplicate on the slot index inside it names that index; the RPC's own
+ * 23505 ('horse has already used this video asset') is not a slot clash.
+ */
+function isDuplicateSlotMessage(message: string | undefined): boolean {
+  return !!message && /duplicate key value/i.test(message) && /publication_key/.test(message);
+}
 
 const rssParser = new Parser({
   headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
@@ -470,20 +543,45 @@ async function getHorseSources(profileId: string): Promise<string[]> {
   return assigned;
 }
 
-/** Has this horse posted inside the guard window? */
-export async function postedRecently(profileId: string, hours = RECENT_POST_GUARD_HOURS): Promise<boolean> {
+export type RecentPostGuard = 'clear' | 'posted_recently' | 'guard_unreadable';
+
+/**
+ * Has this horse posted inside the guard window?
+ *
+ * FAILS CLOSED. Until 2026-09-21 a failed read answered "no" and the post
+ * went ahead, so a database blip was the one moment the guard vanished. An
+ * unreadable guard now answers 'guard_unreadable'; the caller skips the horse
+ * and counts the reason.
+ */
+export async function recentPostGuard(
+  profileId: string,
+  hours = RECENT_POST_GUARD_HOURS,
+): Promise<RecentPostGuard> {
   const since = new Date(Date.now() - hours * 3_600_000).toISOString();
-  const { data, error } = await getSupabase()
-    .from('social_posts')
-    .select('id')
-    .eq('author_id', profileId)
-    .gte('created_at', since)
-    .limit(1);
-  if (error) {
-    console.warn('[horse-publisher] recent-post guard read failed:', error.message);
-    return false;
+  try {
+    const { data, error } = await getSupabase()
+      .from('social_posts')
+      .select('id')
+      .eq('author_id', profileId)
+      .gte('created_at', since)
+      .limit(1);
+    if (error) {
+      console.warn('[horse-publisher] recent-post guard read failed; skipping the horse:', error.message);
+      return 'guard_unreadable';
+    }
+    return (data ?? []).length > 0 ? 'posted_recently' : 'clear';
+  } catch (e) {
+    console.warn('[horse-publisher] recent-post guard read threw; skipping the horse:', e instanceof Error ? e.message : e);
+    return 'guard_unreadable';
   }
-  return (data ?? []).length > 0;
+}
+
+/**
+ * True when the horse must not post now: it posted inside the window, or the
+ * window could not be read. Phase 6 imports this and gets the same answer.
+ */
+export async function postedRecently(profileId: string, hours = RECENT_POST_GUARD_HOURS): Promise<boolean> {
+  return (await recentPostGuard(profileId, hours)) !== 'clear';
 }
 
 async function seedMemoryFromHistory(profileId: string): Promise<void> {
@@ -507,6 +605,12 @@ export async function publishVideoClip(
   fleet: AuthorHorse[],
   scheduler = 'fleet',
   sharedSupply?: SharedHorseVideoSupply,
+  /**
+   * The fleet slot key for metadata.publication_key (fleetPublicationKey).
+   * The fleet path must pass it; a fleet write without it is refused before
+   * the RPC. The isolated horse-video-reels publisher carries no slot key yet.
+   */
+  publicationKey?: string,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!(await postModeEnabled(`${clipType}_video`))) {
@@ -667,6 +771,12 @@ export async function publishVideoClip(
   // YouTube request here and never relaxes the caption gate.
   if (captionCandidates.length === 0 && clip) captionCandidates = [clip];
 
+  // Fail closed: a fleet write without its slot key would sit outside the
+  // duplicate protection every other fleet post carries.
+  if (scheduler === 'fleet' && !publicationKey) {
+    return { ...base, success: false, error: 'fleet video publication requires a slot key' };
+  }
+
   await seedMemoryFromHistory(horse.profile_id);
 
   let belowFloor = 0;
@@ -740,8 +850,19 @@ export async function publishVideoClip(
         clip_id: (candidate as SportsClipRow).id ?? (candidate as LibraryClip).video_id,
         clip_source: (candidate as SportsClipRow).source ?? null,
         scheduler,
+        // Durable slot protection. publish_horse_video_reel merges p_metadata
+        // into the row, so the key lands where the unique index on
+        // metadata->>'publication_key' reads it; an overlapping fleet run
+        // raises 23505 inside the RPC. The reserved column is never set.
+        ...(publicationKey ? { publication_key: publicationKey } : {}),
       },
     });
+    // Another run already published this horse's slot: the slot index
+    // raised 23505 inside the RPC, whose transaction rolled back, so no
+    // ledger row exists for this attempt. A duplicate, not a failure.
+    if (!published.success && isDuplicateSlotMessage(published.error)) {
+      return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
+    }
     // A failed acknowledgement may hide a committed write. A definite RPC
     // rejection may be a cadence or concurrent-ledger guard. Neither permits
     // trying a second asset inside the same publication attempt.
@@ -856,6 +977,7 @@ async function postNewsLink(
   horse: FleetHorse,
   newsType: 'poker' | 'sports',
   fleet: AuthorHorse[],
+  publicationKey: string,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
 
@@ -912,11 +1034,12 @@ async function postNewsLink(
         link_url: article.link,
         link_title: article.title,
         link_site_name: source.name,
-        metadata: { news_type: newsType, scheduler: 'fleet' },
+        metadata: { news_type: newsType, scheduler: 'fleet', publication_key: publicationKey },
       })
       .select('id')
       .maybeSingle();
 
+    if (isDuplicateSlot(error)) return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
     if (error) return { ...base, success: false, error: error.message };
     const postId = (post as { id: string } | null)?.id ?? null;
     const key = assetKeyFor(article.link);
@@ -951,7 +1074,7 @@ async function postNewsLink(
  * a sentence from a pool with nothing behind it. A hand recap is the opposite
  * of that: it is the most specific thing the fleet can publish.
  */
-async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
+async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<PublishResult> {
   // Hand and session posts are separate ways of posting and therefore need
   // separate approval. The old implementation checked grounded_hand once,
   // then silently fell through to the unrevised session writer when no hand
@@ -979,11 +1102,13 @@ async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
         grounded: true,
         grounded_type: groundedType,
         grounding: written.grounding,
+        publication_key: publicationKey,
       },
     })
     .select('id')
     .maybeSingle();
 
+  if (isDuplicateSlot(error)) return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
   if (error) return { ...base, success: false, error: error.message };
   const postId = (post as { id: string } | null)?.id ?? null;
   await recordPhrase(normalizePhrase(written.text), horse.profile_id, postId);
@@ -1009,16 +1134,23 @@ async function postGrounded(horse: FleetHorse): Promise<PublishResult> {
 /**
  * Publish one post for this horse. 75/25 poker/sports with streak
  * prevention (three of a kind forces a switch), news first, video fallback.
- * Honours the recent-post guard so the hourly fleet route and the legacy
- * batch route cannot double up.
+ *
+ * `slot` is the FleetScheduler slot the caller found the horse due for
+ * (fleetSlotId). Without one the slot is worked out from the clock, and a
+ * horse with no open slot does not post: a post without a slot key has no
+ * durable duplicate protection.
  */
 export async function publishForHorse(
   horse: FleetHorse,
-  opts: { skipGuard?: boolean; fleet?: AuthorHorse[] } = {},
+  opts: { skipGuard?: boolean; fleet?: AuthorHorse[]; slot?: string | null } = {},
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
-  if (!opts.skipGuard && (await postedRecently(horse.profile_id))) {
-    return { ...base, success: false, skipped: 'posted_recently' };
+  const slot = opts.slot ?? fleetSlotId(horse.profile_id, horse.timezone, new Date());
+  if (!slot) return { ...base, success: false, skipped: 'no_slot' };
+  const publicationKey = fleetPublicationKey(horse.profile_id, slot);
+  if (!opts.skipGuard) {
+    const guard = await recentPostGuard(horse.profile_id);
+    if (guard !== 'clear') return { ...base, success: false, skipped: guard, publicationKey };
   }
 
   // Phase 4: how much sport this horse posts is a trait of the horse, not a
@@ -1063,18 +1195,21 @@ export async function publishForHorse(
   // it texture. The split is a hash of the horse and the day, so it is stable
   // across a retry and varies across the fleet.
   const groundedFirst = fleetHash(`${horse.profile_id}:${new Date().toISOString().slice(0, 10)}`, 'grounded') % 100 < 60;
+  // A skip ends the attempt. A duplicate slot means another run already
+  // published this horse's slot, and every other kind would collide on the
+  // same key.
   if (groundedFirst) {
-    const grounded = await postGrounded(horse);
-    if (grounded.success) return grounded;
+    const grounded = await postGrounded(horse, publicationKey);
+    if (grounded.success || grounded.skipped) return grounded;
     attempts.push(`grounded: ${grounded.error}`);
   }
 
   for (const kind of [preferred, other]) {
-    let result = await postNewsLink(horse, kind, opts.fleet ?? []);
-    if (result.success) return result;
+    let result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey);
+    if (result.success || result.skipped) return result;
     attempts.push(`${kind}_news: ${result.error}`);
-    result = await publishVideoClip(horse, kind, opts.fleet ?? []);
-    if (result.success) return result;
+    result = await publishVideoClip(horse, kind, opts.fleet ?? [], 'fleet', undefined, publicationKey);
+    if (result.success || result.skipped) return result;
     // The mixed publisher is disabled, but retain the same lost-ACK law if it
     // is ever re-enabled: an unknown atomic outcome may already be committed,
     // so no alternate category or grounded fallback may publish behind it.
@@ -1085,8 +1220,8 @@ export async function publishForHorse(
   // The media pools are exhausted for this horse. Its own poker is the
   // fallback that never is.
   if (!groundedFirst) {
-    const grounded = await postGrounded(horse);
-    if (grounded.success) return grounded;
+    const grounded = await postGrounded(horse, publicationKey);
+    if (grounded.success || grounded.skipped) return grounded;
     attempts.push(`grounded: ${grounded.error}`);
   }
 

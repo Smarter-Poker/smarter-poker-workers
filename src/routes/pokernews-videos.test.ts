@@ -4,6 +4,9 @@ import { Hono } from 'hono';
 const io = vi.hoisted(() => ({ feed: vi.fn(), query: vi.fn(), writes: vi.fn() }));
 vi.mock('rss-parser', () => ({ default: class { parseURL = io.feed; } }));
 vi.mock('../lib/supabase.js', () => ({ getSupabase: () => ({ from: io.query }) }));
+// The route now fails closed on the fleet switch (pokernews-videos.gate.test.ts);
+// these receipts are about a run with the switch on.
+vi.mock('../lib/content-engine/Fleet.js', () => ({ engineEnabled: async () => true }));
 import { pokernewsVideos } from './pokernews-videos.js';
 
 const item = (n: number) => ({ link: `https://www.youtube.com/watch?v=video${n}`, title: `Video ${n}`, isoDate: '2026-09-13T06:00:00Z' });

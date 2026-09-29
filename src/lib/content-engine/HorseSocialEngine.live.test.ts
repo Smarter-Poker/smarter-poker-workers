@@ -91,7 +91,8 @@ function seedRoster(count: number): void {
       specialty: null,
       personality: {},
     });
-    profiles.push({ id: pid(i), username: `horse${i}`, full_name: `Horse ${i}`, is_horse: true });
+    // A roster horse is a profile that is a horse and has an avatar (Fleet.loadFleet, A7/B1).
+    profiles.push({ id: pid(i), username: `horse${i}`, full_name: `Horse ${i}`, is_horse: true, avatar_url: `https://img.example/${i}.png` });
   }
   db.seed('content_authors', authors);
   db.seed('profiles', profiles);
@@ -430,7 +431,10 @@ describe('A2 and A3: friend requests', () => {
 
   it('counts an unreadable real-user list instead of ignoring it', async () => {
     seedRoster(3);
-    db.fail((op) => op.table === 'profiles' && op.kind === 'select');
+    // Only the real-user read fails. The roster also reads profiles (horses with
+    // an avatar, Fleet.loadFleet); that read must keep working here, or the step
+    // stops earlier with roster_unreadable, which is its own fail-closed case.
+    db.fail((op) => op.table === 'profiles' && op.kind === 'select' && !op.filters.includes('not.is:avatar_url'));
 
     const result = await sendFriendRequests(10);
 

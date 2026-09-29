@@ -105,6 +105,8 @@ describe('a comment through the real writer', () => {
       id: 'ca-1', name: 'Horse 1', alias: 'horse1', profile_id: 'h-1', timezone: 'America/New_York',
       is_active: true, location: null, stakes: null, specialty: null, personality: {}, avatar_url: null,
     }]);
+    // The roster keeps only profiles that are horses with an avatar (Fleet.loadFleet).
+    db.seed('profiles', [{ id: 'h-1', username: 'horse1', full_name: 'Horse 1', is_horse: true, avatar_url: 'https://img.example/1.png' }]);
     db.seed('social_posts', [{ id: 'post-1', author_id: 'u-1', content_type: 'text', content: 'Called off with ace high on the river last night', created_at: new Date().toISOString() }]);
   }
 

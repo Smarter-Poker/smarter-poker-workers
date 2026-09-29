@@ -106,6 +106,34 @@ const BRIDGE_LIMIT = 40;
  * Brian Christopher Slots, Lady Luck HQ, The Big Jackpot - and a slots pull in
  * a poker feed is exactly the off-key content this phase is about.
  */
+const HORSE_PAGE = 500;
+
+/**
+ * Every horse profile id, ascending, read completely (keyset pages under the
+ * 1,000-row PostgREST clamp). A reel's author is horses[hash % length], so an
+ * unordered or clamped list would move a video between horses from run to
+ * run and silently leave horse 1,001 out. A read that fails part-way returns
+ * nothing, never a partial list.
+ */
+async function allHorseIds(): Promise<string[]> {
+  const supabase = getSupabase();
+  const ids: string[] = [];
+  let after: string | null = null;
+  for (;;) {
+    let query = supabase.from('profiles').select('id').eq('is_horse', true);
+    if (after !== null) query = query.gt('id', after);
+    const { data, error } = await query.order('id', { ascending: true }).limit(HORSE_PAGE);
+    if (error) {
+      console.warn('[video-library-reels] horse author read failed:', error.message);
+      return [];
+    }
+    const rows = (data ?? []) as Array<{ id: string }>;
+    ids.push(...rows.map((r) => r.id));
+    if (rows.length < HORSE_PAGE) return ids;
+    after = rows[rows.length - 1]!.id;
+  }
+}
+
 export async function bridgeLibraryToReels(dryRun: boolean): Promise<{
   candidates: number;
   created: number;
@@ -114,12 +142,10 @@ export async function bridgeLibraryToReels(dryRun: boolean): Promise<{
 }> {
   const supabase = getSupabase();
 
-  const [{ byName: poker, rawNames }, { data: horseRows }] = await Promise.all([
-    pokerChannelIndex(),
-    supabase.from('profiles').select('id').eq('is_horse', true).limit(1000),
-  ]);
-  const horses = ((horseRows ?? []) as Array<{ id: string }>).map((h) => h.id);
-  if (!poker.size || !horses.length) return { candidates: 0, created: 0, skipped_existing: 0, authors: 0 };
+  const { byName: poker, rawNames } = await pokerChannelIndex();
+  if (!poker.size) return { candidates: 0, created: 0, skipped_existing: 0, authors: 0 };
+  const horses = await allHorseIds();
+  if (!horses.length) return { candidates: 0, created: 0, skipped_existing: 0, authors: 0 };
 
   // Filter to poker sources IN THE QUERY, not after. The library's slots
   // channels publish daily, so they dominate any "newest N" window: reading
