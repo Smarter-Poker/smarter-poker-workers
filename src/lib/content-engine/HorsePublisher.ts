@@ -181,10 +181,22 @@ function isDuplicateSlot(error: { code?: string } | null | undefined): boolean {
 }
 
 /**
- * The atomic video RPC reports a definite failure as a message, not a code.
- * A duplicate on the slot index inside it names that index; the RPC's own
- * 23505 ('horse has already used this video asset') is not a slot clash.
+ * The atomic video RPC's definite failure, read as a slot clash or not.
+ *
+ * A duplicate on the slot index inside the RPC names that index in its
+ * message; the RPC's own 23505 ('horse has already used this video asset')
+ * does not, so the code alone cannot tell them apart. With a code, it must be
+ * unique_violation and the message must name the index. Without one (an
+ * older result shape), the message alone decides, as before.
  */
+function isDuplicateSlotPublication(published: { code?: string; error?: string }): boolean {
+  const message = published.error ?? '';
+  if (!/publication_key/.test(message)) return false;
+  if (published.code) return published.code === '23505';
+  return isDuplicateSlotMessage(message);
+}
+
+/** The message-only fallback: Postgres's unique_violation text naming the slot index. */
 function isDuplicateSlotMessage(message: string | undefined): boolean {
   return !!message && /duplicate key value/i.test(message) && /publication_key/.test(message);
 }
@@ -607,8 +619,10 @@ export async function publishVideoClip(
   sharedSupply?: SharedHorseVideoSupply,
   /**
    * The fleet slot key for metadata.publication_key (fleetPublicationKey).
-   * The fleet path must pass it; a fleet write without it is refused before
-   * the RPC. The isolated horse-video-reels publisher carries no slot key yet.
+   * Both producers pass it: the fleet path (publishForHorse) and the isolated
+   * horse-video-reels publisher (publishVideoForHorse) name the same
+   * FleetScheduler slot, so one horse gets one post per slot across both. A
+   * video write without it is refused before the RPC.
    */
   publicationKey?: string,
 ): Promise<PublishResult> {
@@ -771,10 +785,11 @@ export async function publishVideoClip(
   // YouTube request here and never relaxes the caption gate.
   if (captionCandidates.length === 0 && clip) captionCandidates = [clip];
 
-  // Fail closed: a fleet write without its slot key would sit outside the
-  // duplicate protection every other fleet post carries.
-  if (scheduler === 'fleet' && !publicationKey) {
-    return { ...base, success: false, error: 'fleet video publication requires a slot key' };
+  // Fail closed: a video write without its slot key would sit outside the
+  // duplicate protection every other scheduled post carries, whichever
+  // producer is writing.
+  if (!publicationKey) {
+    return { ...base, success: false, error: `${scheduler} video publication requires a slot key` };
   }
 
   await seedMemoryFromHistory(horse.profile_id);
@@ -852,15 +867,15 @@ export async function publishVideoClip(
         scheduler,
         // Durable slot protection. publish_horse_video_reel merges p_metadata
         // into the row, so the key lands where the unique index on
-        // metadata->>'publication_key' reads it; an overlapping fleet run
-        // raises 23505 inside the RPC. The reserved column is never set.
-        ...(publicationKey ? { publication_key: publicationKey } : {}),
+        // metadata->>'publication_key' reads it; an overlapping run of either
+        // producer raises 23505 inside the RPC. The reserved column is never set.
+        publication_key: publicationKey,
       },
     });
     // Another run already published this horse's slot: the slot index
     // raised 23505 inside the RPC, whose transaction rolled back, so no
     // ledger row exists for this attempt. A duplicate, not a failure.
-    if (!published.success && isDuplicateSlotMessage(published.error)) {
+    if (!published.success && isDuplicateSlotPublication(published)) {
       return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
     }
     // A failed acknowledgement may hide a committed write. A definite RPC
@@ -921,6 +936,14 @@ export function videoKindOrder(
  * This entry point does not read the master mixed-content engine switch. It
  * is intentionally safe for the isolated `/cron/horse-video-reels` route:
  * both video modes fail closed, and there is no news or grounded fallback.
+ *
+ * `slot` is the FleetScheduler slot the caller found the horse due for
+ * (fleetSlotId), the same slot the fleet route names for the same horse at
+ * the same time. The write carries fleetPublicationKey(profile, slot) in
+ * p_metadata, so when both producers are on, the second insert for one
+ * horse's slot fails on the publication-key index and is counted as a
+ * duplicate, not published twice. Without an open slot nothing is read or
+ * written: a post without a slot key has no durable duplicate protection.
  */
 export async function publishVideoForHorse(
   horse: FleetHorse,
@@ -930,11 +953,15 @@ export async function publishVideoForHorse(
     skipGuard?: boolean;
     allowedTypes?: HorseVideoTopic[];
     sharedSupply?: SharedHorseVideoSupply;
+    slot?: string | null;
   } = {},
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
+  const slot = opts.slot ?? fleetSlotId(horse.profile_id, horse.timezone, opts.now ?? new Date());
+  if (!slot) return { ...base, success: false, skipped: 'no_slot' };
+  const publicationKey = fleetPublicationKey(horse.profile_id, slot);
   if (!opts.skipGuard && (await postedRecently(horse.profile_id))) {
-    return { ...base, success: false, skipped: 'posted_recently' };
+    return { ...base, success: false, skipped: 'posted_recently', publicationKey };
   }
   if (!opts.sharedSupply) {
     return {
@@ -962,6 +989,7 @@ export async function publishVideoForHorse(
       opts.fleet ?? [],
       'horse-video-reels',
       opts.sharedSupply,
+      publicationKey,
     );
     if (result.success || result.skipped) return result;
     // A lost RPC acknowledgement may already represent a committed post.

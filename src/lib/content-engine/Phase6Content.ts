@@ -66,6 +66,15 @@ export interface LocalHorse {
   state: string | null;
 }
 
+/**
+ * Where a club digest goes. The page post renders under the page's own
+ * identity in the World Hub, so it is written whoever owns the page.
+ * 'page_and_feed': the owner is a verified roster horse and the digest is also
+ * mirrored to that horse's feed. 'page_only': the owner is not a roster horse
+ * and nothing is written under their personal feed.
+ */
+export type ClubDigestPublish = 'page_and_feed' | 'page_only';
+
 export interface Phase6Draft {
   mode: Phase6Mode;
   authorId: string;
@@ -75,6 +84,8 @@ export interface Phase6Draft {
   pageId?: string;
   linkUrl?: string;
   grounding: string[];
+  /** club_data_digest only: the publish decision the route made for the page owner. */
+  publish?: ClubDigestPublish;
   /** Normalized city|state the draft is about (local modes). */
   place?: string;
   /** Normalized venue the draft is about (local_event). */

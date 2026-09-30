@@ -177,9 +177,36 @@ describe('atomic horse video publication', () => {
     rpc.mockResolvedValue({ data: null, error: { code: '23514', message: 'reel mirror missing' } });
     await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
       success: false,
+      code: '23514',
       error: 'atomic horse video publication failed: reel mirror missing',
     });
     expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the Postgres code so a caller can tell a slot duplicate from the RPC own 23505', async () => {
+    rpc.mockResolvedValueOnce({
+      data: null,
+      error: {
+        code: '23505',
+        message: 'duplicate key value violates unique constraint "uq_social_posts_metadata_publication_key"',
+      },
+    });
+    await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
+      success: false,
+      code: '23505',
+      error: 'atomic horse video publication failed: duplicate key value violates unique constraint "uq_social_posts_metadata_publication_key"',
+    });
+
+    rpc.mockResolvedValueOnce({
+      data: null,
+      error: { code: '23505', message: 'horse has already used this video asset' },
+    });
+    await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
+      success: false,
+      code: '23505',
+      error: 'atomic horse video publication failed: horse has already used this video asset',
+    });
+    expect(rpc).toHaveBeenCalledTimes(2);
   });
 
   it('retains an unknown outcome when the RPC acknowledgement is lost', async () => {

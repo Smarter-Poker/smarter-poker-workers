@@ -86,6 +86,14 @@ export async function contentSupplyWatchdog(c: Context) {
 
   // 4. Are the sources themselves alive? Individual channels go away, which
   //    is ordinary; half of them going away at once means we broke something.
+  //
+  //    The share is taken over the sources that have resolved at least once
+  //    (last_ok_at IS NOT NULL), not over every registered row. A handle that
+  //    never resolved (a channel that does not exist, no channel id) is not a
+  //    channel the resolver or the parser broke; it never worked. On
+  //    2026-09-29 thirty such rows kept this alarming (54 active of 111
+  //    registered) while every source that ever worked was healthy (50 active
+  //    of 77 ever resolved). The raw counts stay in the facts for the record.
   const { count: totalSources } = await supa
     .from('content_sources')
     .select('*', { count: 'exact', head: true })
@@ -95,11 +103,27 @@ export async function contentSupplyWatchdog(c: Context) {
     .select('*', { count: 'exact', head: true })
     .eq('domain', 'poker')
     .eq('is_active', true);
+  const { count: everResolved } = await supa
+    .from('content_sources')
+    .select('*', { count: 'exact', head: true })
+    .eq('domain', 'poker')
+    .not('last_ok_at', 'is', null);
+  const { count: activeEverResolved } = await supa
+    .from('content_sources')
+    .select('*', { count: 'exact', head: true })
+    .eq('domain', 'poker')
+    .eq('is_active', true)
+    .not('last_ok_at', 'is', null);
   facts.poker_sources_total = totalSources ?? 0;
   facts.poker_sources_active = activeSources ?? 0;
-  if ((totalSources ?? 0) > 0 && (activeSources ?? 0) / (totalSources ?? 1) < LIMITS.DEAD_SOURCE_SHARE) {
+  facts.poker_sources_ever_resolved = everResolved ?? 0;
+  facts.poker_sources_active_ever_resolved = activeEverResolved ?? 0;
+  if (
+    (everResolved ?? 0) > 0
+    && (activeEverResolved ?? 0) / (everResolved ?? 1) < LIMITS.DEAD_SOURCE_SHARE
+  ) {
     problems.push(
-      `only ${activeSources} of ${totalSources} poker sources still active - the resolver or the feed parser is broken, not the channels`,
+      `only ${activeEverResolved} of ${everResolved} poker sources that ever resolved are still active - the resolver or the feed parser is broken, not the channels`,
     );
   }
 

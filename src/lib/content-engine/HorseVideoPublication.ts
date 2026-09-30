@@ -61,6 +61,13 @@ export interface HorseVideoPublicationResult {
   created?: boolean;
   outcome?: 'unknown';
   error?: string;
+  /**
+   * The Postgres SQLSTATE of a definite RPC failure, when the database gave
+   * one. A publisher tells a slot clash (23505 on the publication-key index)
+   * from the RPC's own 23505 ('horse has already used this video asset') by
+   * this code plus the index the message names, not by the message alone.
+   */
+  code?: string;
 }
 
 function firstRow<T>(data: unknown): T | null {
@@ -228,7 +235,7 @@ export async function publishHorseVideoAtomically(
         error: `atomic horse video publication outcome unknown: ${message}`,
       };
     }
-    return { success: false, error: `atomic horse video publication failed: ${error.message}` };
+    return { success: false, code, error: `atomic horse video publication failed: ${error.message}` };
   }
 
   const row = firstRow<PublicationRow>(data);
