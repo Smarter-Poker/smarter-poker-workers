@@ -125,17 +125,47 @@ function emptyComposition(): ModeComposition {
 }
 
 /**
+ * A read the database cancelled for running too long (statement_timeout, 8s
+ * on the service role in production) is repeated after a pause, at most
+ * twice. Every Phase 6 read is idempotent and `build` makes a fresh query per
+ * page, so a repeat is safe. First live run, 2026-09-30 09:20Z: the local
+ * events read was cancelled during a one-minute burst of game-engine lock
+ * contention, while the same query takes under 200 ms on a quiet server. Any
+ * other error, and a third timeout, still fail the read. Tests shorten the
+ * pauses through this object.
+ */
+export const PHASE6_READ_RETRY = { pauses_ms: [5_000, 10_000] };
+
+function isStatementTimeout(error: unknown): boolean {
+  return /statement timeout/i.test(message(error));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * A complete read or an error. `build` must return a fresh, totally ordered
  * query for each page (see pagedSelect). Reaching `max` is treated as
  * incomplete even when the probe says otherwise, so a capped read can never
- * pass for a whole one.
+ * pass for a whole one. A statement timeout is repeated per PHASE6_READ_RETRY
+ * and each repeat is written to `notes` so the run reports it.
  */
-async function readAll<T>(label: string, build: Parameters<typeof pagedSelect>[0], max: number): Promise<T[]> {
-  let result: PagedResult<T>;
-  try {
-    result = await pagedSelect<T>(build, max);
-  } catch (error) {
-    throw new Error(`${label} read failed: ${message(error)}`);
+async function readAll<T>(label: string, build: Parameters<typeof pagedSelect>[0], max: number, notes?: string[]): Promise<T[]> {
+  let result: PagedResult<T> | null = null;
+  let attempt = 0;
+  while (result === null) {
+    attempt += 1;
+    try {
+      result = await pagedSelect<T>(build, max);
+    } catch (error) {
+      const pause = PHASE6_READ_RETRY.pauses_ms[attempt - 1];
+      if (pause === undefined || !isStatementTimeout(error)) {
+        throw new Error(`${label} read failed${attempt > 1 ? ` on attempt ${attempt}` : ''}: ${message(error)}`);
+      }
+      notes?.push(`${label} read timed out on attempt ${attempt}; repeating after ${pause} ms`);
+      await sleep(pause);
+    }
   }
   if (result.truncated || result.rows.length >= max) {
     throw new Error(`${label} read incomplete: reached the ${max}-row ceiling`);
@@ -227,6 +257,7 @@ async function readClubPeriodFacts(
         .order('table_id', { ascending: true })
         .order('user_id', { ascending: true }),
       MEMBER_STATS_MAX_ROWS,
+      notes,
     );
   } catch (error) {
     notes.push(`${clubId}: biggest pot and leader dropped (${message(error)})`);
@@ -290,6 +321,7 @@ export async function readClubComposition(
       .not('linked_entity_id', 'is', null)
       .order('id', { ascending: true }),
     CLUB_PAGES_MAX_ROWS,
+    out.notes,
   );
   if (pages.length === 0) return out;
   const clubIds = [...new Set(pages.map((page) => page.linked_entity_id))];
@@ -304,6 +336,7 @@ export async function readClubComposition(
       .order('club_id', { ascending: true })
       .order('stat_date', { ascending: true }),
     CLUB_STATS_MAX_ROWS,
+    out.notes,
   );
   for (const page of pages) {
     const recent = stats.filter((row) => row.club_id === page.linked_entity_id);
@@ -349,6 +382,7 @@ export async function readLocalComposition(now: Date, horses: RosterHorse[]): Pr
       .order('source', { ascending: true })
       .order('native_id', { ascending: true }),
     EVENT_WINDOW_MAX_ROWS,
+    out.notes,
   );
   const homes = new Set(horses.map((horse) => placeKey(horse.city, horse.state)).filter(Boolean));
   out.skipped.junk = events.filter((event) => homes.has(placeKey(event.city, event.state))

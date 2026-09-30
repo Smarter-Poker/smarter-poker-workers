@@ -28,7 +28,7 @@ vi.mock('../lib/content-engine/ContentLedger.js', () => ({
   recordPhrase: h.recordPhrase,
 }));
 
-import { phase6Content } from './phase6-content.js';
+import { PHASE6_READ_RETRY, phase6Content } from './phase6-content.js';
 
 interface DraftBody {
   authorId: string;
@@ -43,6 +43,7 @@ interface ModeResultBody {
   posted: number;
   skipped: Record<string, number>;
   errors: string[];
+  notes: string[];
   rollback_failed_page_posts: string[];
   held: Array<{ reason: string; page_id?: string }>;
 }
@@ -471,5 +472,70 @@ describe('P6C-11/12 and telemetry', () => {
     expect(body.results.local_event!.skipped.author_not_horse).toBe(1);
     const authors = [...(h.db as FakeDb).inserts('social_posts')].map((row) => row.author_id);
     expect(authors).not.toContain('not-a-horse');
+  });
+});
+
+describe('L-13: a read the database cancels for running too long is repeated, bounded, and reported', () => {
+  const TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const productionPauses = PHASE6_READ_RETRY.pauses_ms;
+
+  beforeEach(() => {
+    PHASE6_READ_RETRY.pauses_ms = [1, 1];
+  });
+
+  afterEach(() => {
+    PHASE6_READ_RETRY.pauses_ms = productionPauses;
+  });
+
+  it('ships two pauses in production, the second longer than the first', () => {
+    expect(productionPauses).toHaveLength(2);
+    expect(productionPauses[0]!).toBeGreaterThanOrEqual(1_000);
+    expect(productionPauses[1]!).toBeGreaterThan(productionPauses[0]!);
+  });
+
+  it('reads local events on the second attempt after one statement timeout, posts, and notes the repeat', async () => {
+    const db = world();
+    enableOnly('local_event');
+    db.fail('unified_events_calendar', 'select', TIMEOUT, 1);
+    const result = (await live()).results.local_event!;
+    expect(result.errors).toEqual([]);
+    expect(result.posted).toBe(1);
+    expect(result.skipped.failed).toBe(0);
+    expect(result.notes.filter((note) => note.startsWith('local events read timed out on attempt 1;'))).toHaveLength(1);
+    expect(db.calls.filter((call) => call.table === 'unified_events_calendar' && call.op === 'select').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('gives up after the third timeout and reports which attempt failed', async () => {
+    const db = world();
+    enableOnly('local_event');
+    db.fail('unified_events_calendar', 'select', TIMEOUT, 3);
+    const result = (await live()).results.local_event!;
+    expect(result.posted).toBe(0);
+    expect(result.skipped.failed).toBe(1);
+    expect(result.errors).toEqual(['local events read failed on attempt 3: canceling statement due to statement timeout']);
+    // A composition that fails keeps no notes; the attempt count travels in the error text instead.
+    expect(db.calls.filter((call) => call.table === 'unified_events_calendar' && call.op === 'select')).toHaveLength(3);
+    expect(db.writes()).toHaveLength(0);
+  });
+
+  it('does not repeat a read that fails for any other reason', async () => {
+    const db = world();
+    enableOnly('local_event');
+    db.fail('unified_events_calendar', 'select', { code: '42501', message: 'permission denied for view unified_events_calendar' }, 1);
+    const result = (await live()).results.local_event!;
+    expect(result.posted).toBe(0);
+    expect(result.errors).toEqual(['local events read failed: permission denied for view unified_events_calendar']);
+    expect(result.notes.some((note) => note.includes('timed out'))).toBe(false);
+    expect(db.calls.filter((call) => call.table === 'unified_events_calendar' && call.op === 'select')).toHaveLength(1);
+  });
+
+  it('repeats a club stats read the same way, so the digest still posts', async () => {
+    const db = world();
+    enableOnly('club_data_digest');
+    db.fail('club_hand_daily', 'select', TIMEOUT, 1);
+    const result = (await live()).results.club_data_digest!;
+    expect(result.errors).toEqual([]);
+    expect(result.posted).toBe(1);
+    expect(result.notes.filter((note) => note.startsWith('club stats read timed out on attempt 1;'))).toHaveLength(1);
   });
 });
