@@ -38,6 +38,7 @@
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
 import { postModeEnabled } from './Fleet.js';
+import { topicsFor } from './SocialTopics.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
 import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
@@ -1062,6 +1063,7 @@ async function postNewsLink(
         link_url: article.link,
         link_title: article.title,
         link_site_name: source.name,
+        ...topicsFor('news'),
         metadata: { news_type: newsType, scheduler: 'fleet', publication_key: publicationKey },
       })
       .select('id')
@@ -1124,6 +1126,7 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
       content: written.text,
       content_type: 'text',
       visibility: 'public',
+      ...topicsFor(groundedType === 'session' ? 'grounded_session' : 'grounded_hand'),
       metadata: {
         clip_type: 'poker',
         scheduler: 'fleet',

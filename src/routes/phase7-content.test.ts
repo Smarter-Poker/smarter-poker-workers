@@ -596,12 +596,20 @@ describe('story step', () => {
       visibility: 'public',
       link_url: null,
       topic: 'poker',
+      topics: ['poker', 'story'],
       metadata: { scheduler: 'phase7', phase7_mode: 'throwback_hand', publication_key: draft.publication_key, grounding: draft.grounding },
     });
     expect(Object.prototype.hasOwnProperty.call(written, 'publication_key')).toBe(false);
     expect(h.recordPhrase).toHaveBeenCalledTimes(2);
     expect(h.recordPhrase).toHaveBeenCalledWith(draft.text, 'horse-a', expect.any(String));
     expect(h.draftStories).toHaveBeenCalledWith('throwback_hand', expect.objectContaining({ now: NOW, fleet: expect.any(Array) }), expect.any(Number));
+  });
+
+  it('states the story topic: poker first, tournament as a facet of a live tournament story, story last', () => {
+    expect(storyInsert('live_tournament_story', storyFor('live_tournament_story', 'horse-a'))).toMatchObject({ topic: 'poker', topics: ['poker', 'tournament', 'story'] });
+    for (const mode of ['throwback_hand', 'human_thread', 'rail_human'] as const) {
+      expect(storyInsert(mode, storyFor(mode, 'horse-a'))).toMatchObject({ topic: 'poker', topics: ['poker', 'story'] });
+    }
   });
 
   it('counts a key already on the feed as duplicate before writing, and a 23505 on insert as duplicate, never failure', async () => {

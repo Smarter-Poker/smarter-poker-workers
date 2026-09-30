@@ -207,6 +207,8 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(post.content).not.toContain('–');
     expect(post.content).not.toMatch(/\bon the flop\b|\bon the turn\b|\briver\b/i);
     expect(post.metadata).toMatchObject({ grounded: true, grounded_type: 'hand' });
+    // Phase 8: the writer states the topic it knows; the database derives the rest.
+    expect(inserts[0]!.row).toMatchObject({ topic: 'poker', topics: ['poker', 'hand'] });
     expect(post.metadata.grounding).toEqual(['hand:573264', 'category:stackoff', spoken.key]);
     expect('publication_key' in post).toBe(false);
 
@@ -262,6 +264,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(post.content).not.toContain('—');
     expect(post.content).not.toContain('–');
     expect(post.metadata).toMatchObject({ grounded: true, grounded_type: 'session' });
+    expect(inserts[0]!.row).toMatchObject({ topic: 'poker', topics: ['poker', 'session'] });
     expect(post.metadata.grounding).toEqual(['session:2026-09-20', 'variant:pineapple', 'format:cash', spoken.key]);
     expect(spoken.key).toMatch(/^frame:sessionvoice:up:\d+$/);
     expect('publication_key' in post).toBe(false);

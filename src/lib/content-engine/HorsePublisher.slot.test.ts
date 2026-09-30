@@ -342,6 +342,8 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
         expect((row.metadata as Record<string, unknown>).publication_key).toBe(`fleet:${id}:${SLOT}`);
         // The column is reserved for the video library by a CHECK constraint.
         expect(Object.prototype.hasOwnProperty.call(row, 'publication_key')).toBe(false);
+        // Phase 8: a news link states its topic; the database derives the rest.
+        if (c.contentType === 'link') expect(row).toMatchObject({ topic: 'poker', topics: ['poker', 'news'] });
       }
       expect(ledger.recordPhrase).not.toHaveBeenCalled();
       expect(ledger.recordAssetUse).not.toHaveBeenCalled();
@@ -386,6 +388,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(r).toMatchObject({ success: true, postId: 'post-1' });
     const row = db.inserts.find((x) => x.table === 'social_posts')!.row;
     expect((row.metadata as Record<string, unknown>).publication_key).toBe(`fleet:${id}:${SLOT}`);
+    expect(row).toMatchObject({ content_type: 'link', topic: 'poker', topics: ['poker', 'news'] });
     expect(ledger.recordPhrase).toHaveBeenCalled();
     expect(ledger.recordAssetUse).toHaveBeenCalled();
   });
