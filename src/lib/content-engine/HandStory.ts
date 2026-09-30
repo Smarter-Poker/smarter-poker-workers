@@ -382,7 +382,7 @@ interface ReviewRow {
   leak_tags: string[] | null;
 }
 
-function asCards(v: unknown): Card[] {
+export function asCards(v: unknown): Card[] {
   if (!Array.isArray(v)) return [];
   return v
     .filter((c): c is Card => !!c && typeof c === 'object' && 'rank' in (c as object))
@@ -395,7 +395,7 @@ function num(v: unknown): number {
 }
 
 /** Stakes, only where the row can actually support the claim. */
-function stakeOf(format: string, bigBlind: number): string | undefined {
+export function stakeOf(format: string, bigBlind: number): string | undefined {
   // Only where the halved blind is a stake somebody actually posts. A 0.25
   // big blind produced "0.125/0.25", which is not a game that exists.
   if (!bigBlind || format === 'tournament' || bigBlind < 1) return undefined;

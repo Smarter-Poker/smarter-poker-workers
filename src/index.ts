@@ -56,6 +56,7 @@ import { scrapePokerClips } from './routes/scrape-poker-clips.js';
 import { revalidatePokerClips } from './routes/revalidate-poker-clips.js';
 import { contentSupplyWatchdog } from './routes/content-supply-watchdog.js';
 import { phase6Content } from './routes/phase6-content.js';
+import { phase7Content } from './routes/phase7-content.js';
 import { memoryMatrixDailyChallenge } from './routes/memory-matrix-daily-challenge.js';
 import { pokerNews } from './routes/poker-news.js';
 import { venueTournaments } from './routes/venue-tournaments.js';
@@ -273,6 +274,11 @@ app.post('/cron/content-supply-watchdog', contentSupplyWatchdog);
 // approval-gated; preview=1 composes samples without writing.
 app.get('/cron/phase6-content', phase6Content);
 app.post('/cron/phase6-content', phase6Content);
+// Fleet Content Programme Phase 7: interactive poker content. Reveals run
+// whenever the engine is on; each puzzle kind and story mode is
+// approval-gated by its own horse_post_modes row; preview=1 writes nothing.
+app.get('/cron/phase7-content', phase7Content);
+app.post('/cron/phase7-content', phase7Content);
 app.get('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.post('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.get('/cron/poker-news', pokerNews);
