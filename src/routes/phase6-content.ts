@@ -30,6 +30,7 @@ import { engineEnabled, loadFleet, postModeEnabled } from '../lib/content-engine
 import { postedRecently } from '../lib/content-engine/HorsePublisher.js';
 import { normalizePhrase, recordPhrase } from '../lib/content-engine/ContentLedger.js';
 import { fleetHash } from '../lib/content-engine/FleetScheduler.js';
+import { topicsFor } from '../lib/content-engine/SocialTopics.js';
 import {
   buildClubDigestDraft,
   buildLocalEventDraft,
@@ -479,6 +480,7 @@ async function publishClubDraft(draft: Phase6Draft): Promise<PublishOutcome> {
       content_type: 'text',
       media_urls: [],
       visibility: 'public',
+      ...topicsFor(draft.mode),
       metadata: { ...metadata, source: 'social_page_post', source_page_id: draft.pageId, source_post_id: pagePost.id },
     })
     .select('id')
@@ -513,6 +515,7 @@ async function publishHorseDraft(draft: Phase6Draft): Promise<PublishOutcome> {
       media_urls: [],
       visibility: 'public',
       link_url: draft.linkUrl ?? null,
+      ...topicsFor(draft.mode),
       metadata: metadataFor(draft),
     })
     .select('id')

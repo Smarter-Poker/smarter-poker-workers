@@ -179,6 +179,24 @@ describe('L-01: Phase 6 idempotency lives in metadata.publication_key', () => {
     }
   });
 
+  it('every feed insert states its topic (poker) and the facet of its mode; a page post carries none', async () => {
+    const db = world();
+    enableOnly('club_data_digest', 'local_event', 'seasonal_local');
+    await live();
+    const feed = db.inserts('social_posts');
+    expect(feed).toHaveLength(3);
+    for (const row of feed) {
+      const mode = String((row.metadata as Row).phase6_mode);
+      expect(row.topic).toBe('poker');
+      expect(row.topics).toEqual(['poker', mode === 'club_data_digest' ? 'club' : 'local']);
+    }
+    expect(feed.map((row) => (row.topics as string[])[1]).sort()).toEqual(['club', 'local', 'local']);
+    for (const row of db.inserts('social_page_posts')) {
+      expect(Object.prototype.hasOwnProperty.call(row, 'topic')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(row, 'topics')).toBe(false);
+    }
+  });
+
   it('counts a 23505 unique violation on insert as a duplicate, not a failure', async () => {
     const db = world();
     enableOnly('local_event');
@@ -243,7 +261,7 @@ describe('P6C-01: a club digest is a page post; only a horse owner also gets the
     const feed = db.rows('social_posts');
     expect(pagePosts).toHaveLength(1);
     expect(feed).toHaveLength(1);
-    expect(feed[0]).toMatchObject({ author_id: OWNER_HORSE });
+    expect(feed[0]).toMatchObject({ author_id: OWNER_HORSE, topic: 'poker', topics: ['poker', 'club'] });
     expect((feed[0]!.metadata as Row).publication_key).toBe(DAY_KEY);
     expect((feed[0]!.metadata as Row).source_post_id).toBe(pagePosts[0]!.id);
   });
@@ -409,6 +427,7 @@ describe('P6C-06/03: the whole event window, without junk', () => {
     const result = (await live()).results.local_event!;
     expect(result.posted).toBe(1);
     expect((db.inserts('social_posts')[0]!.metadata as Row).publication_key).toBe('phase6:local:daily:vegas-late');
+    expect(db.inserts('social_posts')[0]).toMatchObject({ topic: 'poker', topics: ['poker', 'local'] });
   });
 
   it('rejects scraped class names before drafting and counts them as junk', async () => {

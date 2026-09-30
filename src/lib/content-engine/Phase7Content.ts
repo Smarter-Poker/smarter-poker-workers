@@ -31,6 +31,7 @@ import { engineSwitch, loadFleet, postModeEnabled } from './Fleet.js';
 import { recentPostGuard, type FleetHorse, type RecentPostGuard } from './HorsePublisher.js';
 import { fleetHash } from './FleetScheduler.js';
 import { normalizePhrase, recordPhrase } from './ContentLedger.js';
+import { storyTopicKind, topicsFor } from './SocialTopics.js';
 import {
   composePuzzle,
   puzzleKey,
@@ -633,7 +634,11 @@ export function storyMetadata(mode: StoryMode, draft: StoryDraft): Record<string
   };
 }
 
-/** The Phase 6 horse insert (phase6-content.ts publishHorseDraft), plus the draft's topic. */
+/**
+ * The Phase 6 horse insert (phase6-content.ts publishHorseDraft), plus the topic
+ * and topics of the story: the primary is always poker and a tournament story
+ * carries tournament as a facet (Phase 8 topics rule, SocialTopics.ts).
+ */
 export function storyInsert(mode: StoryMode, draft: StoryDraft): Record<string, unknown> {
   return {
     author_id: draft.horse.profile_id,
@@ -642,7 +647,7 @@ export function storyInsert(mode: StoryMode, draft: StoryDraft): Record<string, 
     media_urls: [],
     visibility: 'public',
     link_url: null,
-    topic: draft.topic,
+    ...topicsFor(storyTopicKind(draft.topic)),
     metadata: storyMetadata(mode, draft),
   };
 }
