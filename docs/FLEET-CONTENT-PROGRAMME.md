@@ -401,6 +401,26 @@ posting mode are enabled.
 - One-tap "share this hand" for humans producing the same clip.
 - Generative b-roll experiment on a rented GPU, behind a quality gate.
 
+Phase 9.1 as built, the workers side (2026-09-30): `GET/POST
+/cron/phase9-content` (`src/routes/phase9-content.ts`) is the hourly pick
+for the renderer. It reads the master switch and the `horse_post_modes`
+row `hand_clip` first, both failing closed (`engine_disabled`,
+`engine_unreadable`, `mode_disabled`, `mode_unreadable`) and reading no
+reviews when either says stop. The pool is the newest 2,000 winning rows of
+`horse_hand_reviews` played in the last 24 hours (bounded on `played_at`,
+the table's only time index), ranked by pot in big blinds then `created_at`,
+pots under 20 big blinds dropped; hands the horse already has a
+`hand_clip_jobs` row for are excluded with one IN read; the first of up to
+10 candidates whose horse has an open fleet slot (`fleetSlotId` over
+`content_authors.timezone`) is enqueued as one `hand_clip_jobs` row (kind
+`horse`, style `felt-720p`, `auto_publish` true, the slot's
+`fleet:<horse>:<slot>` publication key, a caption from the row only:
+"Hand review: No Limit Hold'em, big blind 5. Pot 201.0 BB, won from seat
+3."). A 23505 on the insert is counted as a duplicate; `?dry_run=1` (or
+`?preview=1`) computes the pick and writes nothing. The mode row ships
+disabled; the renderer, its queue and the publish function are the World
+Hub's Phase 9.1 (`/api/cron/render-hand-clips`).
+
 ### Phase 10: one engine, measured
 
 - Delete the World Hub JS mirror, `archive/cron`, the Grok/`seeded_content`
