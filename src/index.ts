@@ -73,6 +73,7 @@ import { freerollQualificationSync } from './routes/freeroll-qualification-sync.
 import { collusionScan } from './routes/collusion-scan.js';
 import { triviaTournaments } from './routes/trivia-tournaments.js';
 import { triviaTournamentRounds } from './routes/trivia-tournament-rounds.js';
+import { triviaNightlyTournament } from './routes/trivia-nightly-tournament.js';
 import { horsesSocialFriends } from './routes/horses-social-friends.js';
 import { tourScheduleScraperHandler } from './routes/tour-schedule-scraper.js';
 // Phase X4 — settlement-chain detectors (every 5 / 1 min)
@@ -315,6 +316,10 @@ app.get('/cron/trivia-tournaments', triviaTournaments);
 app.post('/cron/trivia-tournaments', triviaTournaments);
 app.get('/cron/trivia-tournament-rounds', triviaTournamentRounds);
 app.post('/cron/trivia-tournament-rounds', triviaTournamentRounds);
+// Phase 6 nightly tournament owner (OpenClaw job ships disabled; 503 until
+// TRIVIA_TOURNAMENTS_ENABLED is exactly 'true' on this host).
+app.get('/cron/trivia-nightly-tournament', triviaNightlyTournament);
+app.post('/cron/trivia-nightly-tournament', triviaNightlyTournament);
 app.get('/cron/horses-social-friends', horsesSocialFriends);
 app.post('/cron/horses-social-friends', horsesSocialFriends);
 app.get('/cron/horses-social-all', horsesSocialAll);
