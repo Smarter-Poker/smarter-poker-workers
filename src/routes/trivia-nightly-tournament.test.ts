@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   NIGHTLY_ACQUIRE_RPC,
+  NIGHTLY_MIN_POLL_MS,
   NIGHTLY_RELEASE_RPC,
   NIGHTLY_TICK_RPC,
   runNightlyTournamentOwner,
@@ -14,7 +15,8 @@ function harness(script: Record<string, Array<{ data?: unknown; error?: { messag
   let clock = 0;
   const rpc: NightlyRpc = async (fn, args) => {
     calls.push({ fn, args });
-    const next = script[fn]?.shift() ?? { data: { success: true } };
+    const next = script[fn]?.shift()
+      ?? (fn === NIGHTLY_RELEASE_RPC ? { data: { released: true } } : { data: { success: true } });
     return { data: next.data ?? null, error: next.error ?? null };
   };
   return {
@@ -29,7 +31,9 @@ function harness(script: Record<string, Array<{ data?: unknown; error?: { messag
   };
 }
 
-const OWNER = { data: { owner: true, run_id: 'run-1', fencing_token: 7 } };
+const OWNER_RUN_ID = '00000000-0000-4000-8000-000000000001';
+const STANDBY_RUN_ID = '00000000-0000-4000-8000-000000000002';
+const OWNER = { data: { owner: true, run_id: OWNER_RUN_ID, fencing_token: 7 } };
 
 describe('release controls', () => {
   it('only exact lowercase true enables, horses need both', () => {
@@ -43,10 +47,24 @@ describe('release controls', () => {
 
 describe('runNightlyTournamentOwner', () => {
   it('stands by without ticking when another owner holds the lease', async () => {
-    const h = harness({ [NIGHTLY_ACQUIRE_RPC]: [{ data: { owner: false, run_id: 'run-2' } }] });
+    const h = harness({ [NIGHTLY_ACQUIRE_RPC]: [{ data: { owner: false, run_id: STANDBY_RUN_ID } }] });
     const out = await runNightlyTournamentOwner(h.deps);
     expect(out.status).toBe(200);
     expect(out.body.standby).toBe(true);
+    expect(h.calls.map((c) => c.fn)).toEqual([NIGHTLY_ACQUIRE_RPC]);
+  });
+
+  it.each([
+    null,
+    {},
+    { owner: false },
+    { owner: false, run_id: 'not-a-uuid' },
+    { owner: true, run_id: OWNER_RUN_ID },
+    { owner: true, run_id: OWNER_RUN_ID, fencing_token: -1 },
+  ])('rejects a malformed lease response without ticking (%j)', async (data) => {
+    const h = harness({ [NIGHTLY_ACQUIRE_RPC]: [{ data }] });
+    const out = await runNightlyTournamentOwner(h.deps);
+    expect(out).toEqual({ status: 500, body: { ok: false, error: 'invalid_lease_response' } });
     expect(h.calls.map((c) => c.fn)).toEqual([NIGHTLY_ACQUIRE_RPC]);
   });
 
@@ -63,7 +81,7 @@ describe('runNightlyTournamentOwner', () => {
     expect(out.status).toBe(200);
     expect(out.body.ticks).toBe(3);
     const ticks = h.calls.filter((c) => c.fn === NIGHTLY_TICK_RPC);
-    expect(ticks.every((c) => c.args.p_fencing_token === 7 && c.args.p_run_id === 'run-1')).toBe(true);
+    expect(ticks.every((c) => c.args.p_fencing_token === 7 && c.args.p_run_id === OWNER_RUN_ID)).toBe(true);
     expect(ticks[0].args.p_horses_enabled).toBe(true);
     expect(h.calls.at(-1)?.fn).toBe(NIGHTLY_RELEASE_RPC);
   });
@@ -84,6 +102,41 @@ describe('runNightlyTournamentOwner', () => {
     const out = await runNightlyTournamentOwner(h.deps);
     expect(out.status).toBe(500);
     expect(out.body.alerts).toEqual([{ code: 'start_late' }]);
+  });
+
+  it('fails after one tick when the database returns an invalid poll interval', async () => {
+    const h = harness({
+      [NIGHTLY_ACQUIRE_RPC]: [OWNER],
+      [NIGHTLY_TICK_RPC]: [{ data: { healthy: true, next_poll_ms: NIGHTLY_MIN_POLL_MS - 1 } }],
+    });
+    const out = await runNightlyTournamentOwner(h.deps);
+    expect(out.status).toBe(500);
+    expect(out.body.ticks).toBe(1);
+    expect(out.body.errors).toEqual([{ step: 'tick', error: 'invalid_next_poll_ms' }]);
+    expect(h.calls.filter((c) => c.fn === NIGHTLY_TICK_RPC)).toHaveLength(1);
+    expect(h.calls.at(-1)?.fn).toBe(NIGHTLY_RELEASE_RPC);
+  });
+
+  it('reports a lease-release RPC error instead of returning false success', async () => {
+    const h = harness({
+      [NIGHTLY_ACQUIRE_RPC]: [OWNER],
+      [NIGHTLY_TICK_RPC]: [{ data: { healthy: true, next_poll_ms: 60_000 } }],
+      [NIGHTLY_RELEASE_RPC]: [{ error: { message: 'release transport failed' } }],
+    });
+    const out = await runNightlyTournamentOwner(h.deps);
+    expect(out.status).toBe(500);
+    expect(out.body.errors).toEqual([{ step: 'release', error: 'release transport failed' }]);
+  });
+
+  it('requires the database to confirm that the lease was released', async () => {
+    const h = harness({
+      [NIGHTLY_ACQUIRE_RPC]: [OWNER],
+      [NIGHTLY_TICK_RPC]: [{ data: { healthy: true, next_poll_ms: 60_000 } }],
+      [NIGHTLY_RELEASE_RPC]: [{ data: { released: false } }],
+    });
+    const out = await runNightlyTournamentOwner(h.deps);
+    expect(out.status).toBe(500);
+    expect(out.body.errors).toEqual([{ step: 'release', error: 'release_not_confirmed' }]);
   });
 
   it('stops immediately when fenced out by a newer owner and does not release its lease', async () => {
