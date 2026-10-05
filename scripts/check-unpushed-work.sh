@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-#  EVERY GUARD IN THIS ESTATE WATCHES GITHUB. NOTHING WATCHED THIS MACHINE.
+#  READ-ONLY LOCAL WORK AUDIT
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # WHY THIS EXISTS (2026-08-23)
 #
-# report-stuck-prs.sh names pull requests that cannot merge. estate-integrity.sh
-# checks rulesets and shared files. publish-watchdog.sh asks production what it
-# is serving. Every one of them queries GitHub - so all of them are blind to the
-# one failure that actually loses work: a commit that never REACHED GitHub.
+# Remote checks cannot see a commit that never reached GitHub. This command is
+# manual and read-only: it reports local-only commits and tracked edits, but it
+# never pushes, opens a pull request, changes labels, retries, or reconciles.
 #
 # Found today, by hand: TEN commits across SEVEN branches, sitting in worktrees
 # for between nine and nineteen hours. Real feature work - the union Spin
@@ -99,13 +98,14 @@ cat >&2 <<MSG
   WORK ON THIS MACHINE THAT GITHUB HAS NEVER SEEN
 $FINDINGS
 
-  None of this is protected by anything. Branch protection, the autopilot and
-  every watchdog in this estate operate on what has been pushed. A commit that
+  None of this is protected by remote branch rules because it was not pushed.
+  A commit that
   never left this Mac is one \`git reset --hard\` from gone, and the Antigravity
   sync loop runs that reset on a timer.
 
-  Push it:   cd <the tree above> && git push -u origin HEAD
-  Then stop. The autopilot opens the pull request and merges it.
+  Inspect each tree. If the work is intended to ship, create a current branch,
+  push it normally, and let the event-driven proposal and protected-merge chain
+  evaluate it. This audit never takes that action for you.
   ─────────────────────────────────────────────────────────────────────────
 
 MSG

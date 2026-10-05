@@ -1,258 +1,87 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# AGENT OPEN PR — the missing first link of the Autopilot chain.
+# AGENT OPEN PR — trusted consumer of an unprivileged branch proposal signal.
 #
-# Agent Autopilot's contract is "an agent's job ends when it opens a PR".
-# But several agent sandboxes can reach github.com (git) while api.github.com
-# is proxy-blocked, so they can PUSH a branch and then cannot PROPOSE it.
-# Until now their only route was report-stuck-prs.sh's orphan sweep, which by
-# design waits STUCK_AFTER_H (3h) before opening the PR — a 3-hour deploy
-# stall for work that is already green.
-#
-# This closes the gap: creating ANY branch opens the PR immediately.
-# Autopilot's `pull_request: opened` job then enables squash auto-merge, and
-# GitHub lands it when the required checks pass. No polling, no --admin, no
-# human clicking a button.
-#
-# TOKEN NOTE (same rule as agent-autopilot.yml): GH_PAT before GITHUB_TOKEN.
-# A PR created by GITHUB_TOKEN emits no pull_request events, so ci.yml and
-# Autopilot's fast path would never fire for it and the PR would sit
-# check-less and unmergeable. GH_PAT makes the opened PR behave exactly like
-# one a human opened. If only GITHUB_TOKEN is available the PR still gets
-# created (better stranded-visible than invisible) and the 10-minute sweep
-# picks it up.
-#
-# OUTPUT NOTE (2026-09-03): the run's log goes to the job summary and nowhere
-# else. This workflow used to force-push its log to a `ci-marker/*` branch;
-# every one of those pushes was a failed Vercel deployment. The step below
-# says why, and why that branch must never come back.
+# `workflow_run` executes this file from the default branch. The upstream
+# signal has contents:read only and never receives a credential. This consumer
+# validates the repository and branch metadata, mints a short-lived GitHub App
+# token, and performs one idempotent operation: open the missing pull request.
+# Native pull_request_target then invokes Agent Autopilot. No sweep or fallback
+# token is needed.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Agent Open PR
 
 on:
-  # `create` AND `push` (2026-09-03). Between 2026-08-23 and today this was
-  # `create` only, for cost: it had fired on every push to agent/**, about 2.1
-  # pushes per branch, nineteen runs an hour, half of them booting a hosted
-  # runner to learn the pull request already existed, each billed as a whole
-  # minute. `create` fires once, when the branch is born, and the autopilot
-  # sweep was named as the net for the case where that one firing is missed.
-  #
-  # Two things changed. The job now runs on the estate's own runner
-  # (`vars.CI_RUNNER`), so a twenty-second run costs twenty seconds of a box
-  # we already pay for. And the net turned out to be a `schedule:` job that
-  # GitHub was delivering about one time in ten - so a branch born at main's
-  # own sha (an interrupted first push, an agent pushing twice, a worktree
-  # pushed before its first commit) had nothing to open a pull request for at
-  # `create`, got nothing at `push`, and waited on a sweep that was not coming.
-  # Measured 2026-09-03: fix/a-pin-that-reads-a-file-runs-when-that-file-changes
-  # was pushed with a real commit at 01:23 and still had no pull request at
-  # 01:40, with the sweep last seen at 23:40.
-  #
-  # So both events ask the same two questions - is there an open pull request,
-  # and is there anything to put in one - and the second guard is what keeps
-  # `push` from opening empty pull requests or duplicates.
-  create:
-  push:
-    branches-ignore:
-      - main
-      - 'backup/**'
-      - 'ci-marker/**'
-      - 'build/**'
-      - 'dependabot/**'
-      - 'renovate/**'
-      - '*autofix/**'
-      - 'revert-*'
+  workflow_run:
+    workflows: ['Agent Branch Proposal']
+    types: [completed]
 
 permissions:
-  # contents: read is enough: this job checks out and reads history. It held
-  # contents: write for a `ci-marker/*` result branch until 2026-09-03; that
-  # branch is gone (see the end of the step below) and the write bit went
-  # with it.
   contents: read
   pull-requests: write
 
 concurrency:
-  group: agent-open-pr-${{ github.ref }}
-  # cancel-in-progress: TRUE, changed 2026-09-04 after measuring it.
-  #
-  # This workflow fires on BOTH `create` and `push`, and pushing a new branch
-  # raises both. With `false` the second run QUEUED BEHIND THE FIRST, so
-  # opening a pull request cost two runner slots and two waits instead of one.
-  #
-  # Measured in a three-agent concurrent push test: pushes completed in 5-17
-  # SECONDS, and the pull requests did not appear for **2.6 minutes**, with six
-  # `Agent Open PR` jobs (two per branch) queued against eight runners while CI
-  # wanted them too.
-  #
-  # Cancelling is safe here because the job is idempotent - it checks whether a
-  # PR is already open and does nothing if so - and because losing the race
-  # costs nothing: the `*/30` autopilot sweep opens anything this misses, and
-  # any later push re-fires it.
-  #
-  # Both triggers are kept. `push` covers an agent pushing a branch; `create`
-  # covers a branch made through the API with no push, which is how some agents
-  # in this estate work.
+  group: agent-open-pr-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:
   open-pr:
-    # `create` fires for tags as well as branches, and for every branch in the
-    # repo - the `on:` block for `create` takes no filters, so it goes here.
-    # ANY BRANCH, not only agent/* (2026-09-02). CLAUDE.md 11.0 tells every
-    # agent to claim a worktree as `fix/<slug>`, and the AGENT-PLAYBOOK says the
-    # job ends when a pull request exists. This gate only opened one for
-    # `agent/*`, so an agent that did exactly what the docs said pushed a
-    # `fix/...` branch and got nothing - and on 2026-09-02, when every PAT on
-    # the Mac was revoked at once, that was three agents' finished work
-    # stranded with no route to main. The docs and the automation disagreed and
-    # the docs won, silently.
-    #
-    # Excluded: the default branch, and the namespaces that are never proposals
-    # (backups, CI markers, dependabot, reverts). Everything else is somebody's
-    # work waiting to ship, and a pull request is how it ships.
     if: >-
-      github.ref_type == 'branch'
-      && github.ref_name != github.event.repository.default_branch
-      && !startsWith(github.ref_name, 'backup/')
-      && !startsWith(github.ref_name, 'ci-marker/')
-      && !startsWith(github.ref_name, 'build/')
-      && !startsWith(github.ref_name, 'dependabot/')
-      && !startsWith(github.ref_name, 'renovate/')
-      && !contains(github.ref_name, 'autofix/')
-      && !startsWith(github.ref_name, 'revert-')
-    name: Open a PR for this branch
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && github.event.workflow_run.head_branch != github.event.repository.default_branch
+      && !startsWith(github.event.workflow_run.head_branch, 'backup/')
+      && !startsWith(github.event.workflow_run.head_branch, 'ci-marker/')
+      && !startsWith(github.event.workflow_run.head_branch, 'build/')
+      && !startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+      && !startsWith(github.event.workflow_run.head_branch, 'preview/')
+      && !startsWith(github.event.workflow_run.head_branch, 'renovate/')
+      && !startsWith(github.event.workflow_run.head_branch, 'revert-')
+    name: Open the missing PR for this branch
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
+      - name: Checkout reviewed default-branch automation
         uses: actions/checkout@v4
         with:
-          # Full history: `gh pr create --fill` computes its title/body from
-          # `base...head`, and a depth-1 checkout has no base ref — the run
-          # fails with "unknown revision origin/main". Same lesson
-          # agent-apply-patch.yml already carries.
-          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
 
-      - name: Mint a GitHub App installation token
-        # Same order of preference as agent-autopilot.yml, for the same
-        # reasons: the App first (no expiry cliff, full PR scopes), GH_PAT
-        # second, GITHUB_TOKEN last (works, but emits no pull_request events,
-        # so the sweep has to rescue the PR on its next pass).
+      - name: Mint the GitHub App installation token
         id: app-token
-        if: vars.AUTOPILOT_APP_ID != ''
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.AUTOPILOT_APP_ID }}
           private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
 
-      - name: Open the pull request if none exists
+      - name: Open the pull request if it is missing
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          GH_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SIGNAL_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          set -uo pipefail
-          LOG=/tmp/open-pr.log
-          {
-            echo "run: $GITHUB_RUN_ID at $(date -u +%FT%TZ) for $BRANCH"
-            DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>&1) \
-              && echo "default branch: $DEFAULT_BRANCH" \
-              || { echo "repo view FAILED: $DEFAULT_BRANCH"; DEFAULT_BRANCH=main; }
-            EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length' 2>&1) \
-              || { echo "pr list FAILED: $EXISTING"; EXISTING=0; }
-            AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..origin/$BRANCH" 2>/dev/null || echo 1)  # unknown = try; gh refuses an empty PR itself
-            if [ "$EXISTING" != "0" ]; then
-              echo "A PR for $BRANCH is already open — nothing to do."
-            elif [ "$AHEAD" = "0" ]; then
-              echo "$BRANCH has no commits beyond $DEFAULT_BRANCH yet — nothing to open a PR for. The next push will ask again."
-            # --fill takes title/body from the branch's commits, which is where
-            # agents already write their summaries. If the preferred token
-            # cannot create PRs (the fine-grained PAT lacks that scope on some
-            # repos), fall through to GITHUB_TOKEN rather than failing silently.
-            elif OUT=$(gh pr create --repo "$REPO" --head "$BRANCH" --base "$DEFAULT_BRANCH" --fill 2>&1); then
-              echo "opened: $OUT"
-            else
-              echo "preferred token could not open the PR: $OUT"
-              OUT2=$(GH_TOKEN="$GH_TOKEN_FALLBACK" gh pr create --repo "$REPO" --head "$BRANCH" --base "$DEFAULT_BRANCH" --fill 2>&1) \
-                && echo "opened with GITHUB_TOKEN (sweep must rescue events): $OUT2" \
-                || echo "GITHUB_TOKEN also FAILED: $OUT2"
-            fi
-          } | tee "$LOG"
+          set -euo pipefail
+          [[ "$SIGNAL_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo '::error::Branch proposal did not carry one lowercase full SHA.'; exit 1; }
 
-          {
-            echo '### Agent Open PR'
-            echo
-            echo '```'
-            cat "$LOG"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # THE RESULT GOES TO THE JOB SUMMARY, NOT TO A BRANCH (2026-09-03).
-          #
-          # Until today this step published $LOG by force-pushing an ORPHAN
-          # commit to `ci-marker/agent-open-pr-result`, "where a git-only agent
-          # can read it". Nothing in the estate ever read it: not one script,
-          # workflow or document fetched that ref. It had a cost nobody was
-          # counting. Vercel's GitHub App builds EVERY branch push on a linked
-          # repo; an orphan commit holding one text file has no app to build;
-          # so every pull request in World Hub, PepNationLab and Commander
-          # produced one failed deployment, in 7 to 16 seconds. Measured
-          # 2026-09-03: every ERROR on all three Vercel projects was this one
-          # ref. A skip-ci tag in the commit message did not help (Vercel
-          # honours it on its own CI path, not on GitHub App deployments), and
-          # a vercel.json guard only stops the build after the deployment has
-          # already been created.
-          #
-          # The ref was also a shared write: two branches pushed within seconds
-          # of each other raced on its lock, and a retry loop lived here only
-          # to hide that.
-          #
-          # So: no branch. The log goes to the run's job summary, which the
-          # Actions UI and `gh run view <id>` both show. A git-only agent has a
-          # better witness than any marker: `git ls-remote origin
-          # 'refs/pull/*/head'` lists the head sha of every pull request, and a
-          # branch whose sha appears there HAS one. The pull request is the
-          # real output; the marker was only ever a copy of this log.
-          #
-          # NEVER bring the branch push back. A new reader of this log gets the
-          # summary or a pull request comment, not a ref.
-      # ── ARM AUTO-MERGE HERE, NOT IN A SWEEP ──────────────────────────────
-      #
-      # Measured 2026-09-04: pull requests sat 9.6, 3.6, 1.8 and 1.9 minutes
-      # AFTER every check had already gone green. That is dead time - nothing
-      # is running, nothing is being decided.
-      #
-      # The cause is above, and this file already admits it: "opened with
-      # GITHUB_TOKEN (sweep must rescue events)". **A pull request created with
-      # GITHUB_TOKEN does not fire `pull_request` workflows** - GitHub blocks
-      # that to prevent a workflow triggering itself. So agent-autopilot's
-      # `pull_request: opened` job never runs for these, and the PR waits for
-      # the next `*/30` sweep: an average of fifteen minutes.
-      #
-      # Arming it here removes the dependency on the event entirely. GitHub
-      # then merges the instant the required checks pass, which is what
-      # auto-merge is for. The sweep stays as the net for anything this misses.
-      #
-      # This does NOT weaken a gate: auto-merge still waits for every required
-      # check, and a red check never merges.
-      - name: Arm squash auto-merge immediately
-        if: always()
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
-        run: |
-          set -uo pipefail
-          NUM=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [ -z "$NUM" ] || [ "$NUM" = "null" ]; then
-            echo "no open PR for $BRANCH - nothing to arm."; exit 0
-          fi
-          if gh pr merge "$NUM" --repo "$REPO" --squash --auto 2>/tmp/am.log; then
-            echo "auto-merge armed on #$NUM - it will land the moment the required checks pass."
-          else
-            # Not fatal. A draft PR, a clean-status repo, or a token without the
-            # scope all land here, and the */30 sweep still catches it.
-            echo "could not arm auto-merge on #$NUM (the sweep remains the net):"
-            cat /tmp/am.log || true
+          EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+            --json number --jq 'length')
+          if [ "$EXISTING" != "0" ]; then
+            echo "A PR for $BRANCH is already open; no duplicate was created."
+            exit 0
           fi
 
+          AHEAD=$(gh api "repos/$REPO/compare/${DEFAULT_BRANCH}...${BRANCH}" --jq '.ahead_by')
+          if [ "$AHEAD" = "0" ]; then
+            echo "$BRANCH has no commit beyond $DEFAULT_BRANCH; nothing to propose."
+            exit 0
+          fi
+
+          TITLE=$(gh api "repos/$REPO/commits/$SIGNAL_SHA" \
+            --jq '.commit.message | split("\n")[0]')
+          [ -n "$TITLE" ] || TITLE="Propose $BRANCH"
+          gh pr create --repo "$REPO" --head "$BRANCH" --base "$DEFAULT_BRANCH" \
+            --title "$TITLE" \
+            --body "Opened by the reviewed Agent Open PR workflow from branch proposal signal $SIGNAL_SHA. Required checks and protected squash auto-merge remain authoritative."

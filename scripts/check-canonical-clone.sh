@@ -39,20 +39,15 @@ set -euo pipefail
 ROOT=$(git rev-parse --path-format=absolute --git-common-dir); ROOT=${ROOT%/.git}
 REAL=$(cd "$ROOT" && pwd -P)
 
-# A worktree is ALWAYS fine, whichever clone owns it.
-#
-# 2026-08-23, and this was wrong for ten minutes on main: the test used $REAL,
-# which comes from --git-common-dir and therefore points at the OWNING CLONE,
-# not at the worktree. So every worktree of the second clone failed it, and this
-# guard blocked twelve live Antigravity worktrees from committing at all.
-#
-# --show-toplevel is the worktree's own path, which is what the rule is actually
-# about. The rule is "do not commit in a second clone's ROOT". A worktree pushes
-# to the same remote and carries the same hooks, so which clone spawned it does
-# not matter.
-TOP=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-TOP=$(cd "$TOP" 2>/dev/null && pwd -P || echo "")
-case "$TOP" in *"/.agent-trees/"*) exit 0 ;; esac
+# Detect isolation from Git metadata, not a directory spelling. Owner-approved
+# SSD worktrees live under /Volumes/SmarterWork/agent-work; a real clone can
+# also be named .agent-trees without being isolated. Resolve physical paths
+# so aliases do not turn the same Git directory into two apparent identities.
+WORKTREE_GIT_DIR=$(git rev-parse --path-format=absolute --git-dir)
+WORKTREE_GIT_REAL=$(cd "$WORKTREE_GIT_DIR" && pwd -P)
+COMMON_GIT_DIR=$(git rev-parse --path-format=absolute --git-common-dir)
+COMMON_GIT_REAL=$(cd "$COMMON_GIT_DIR" && pwd -P)
+[ "$WORKTREE_GIT_REAL" != "$COMMON_GIT_REAL" ] && exit 0
 
 REMOTE=$(git config --get remote.origin.url 2>/dev/null || echo "")
 case "$REMOTE" in
