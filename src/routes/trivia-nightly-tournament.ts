@@ -31,6 +31,8 @@ export const NIGHTLY_RELEASE_RPC = 'trivia_tournament_scheduler_release';
 export const NIGHTLY_LEASE_SECONDS = 60;
 export const NIGHTLY_BUDGET_MS = 45_000;
 export const NIGHTLY_MAX_STEPS = 400;
+export const NIGHTLY_MIN_POLL_MS = 250;
+export const NIGHTLY_MAX_POLL_MS = 300_000;
 
 type Env = Record<string, string | undefined>;
 type RpcResult = { data: unknown; error: { message: string } | null };
@@ -71,6 +73,16 @@ export interface OwnerOutcome {
   body: Record<string, unknown>;
 }
 
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function parseFencingToken(value: unknown): number | null {
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 export async function runNightlyTournamentOwner(deps: OwnerDeps): Promise<OwnerOutcome> {
   const started = deps.now();
   const budget = deps.budgetMs ?? NIGHTLY_BUDGET_MS;
@@ -81,20 +93,28 @@ export async function runNightlyTournamentOwner(deps: OwnerDeps): Promise<OwnerO
   if (acquired.error) {
     return { status: 500, body: { ok: false, error: 'lease_unavailable', detail: acquired.error.message } };
   }
-  const lease = (acquired.data ?? {}) as { owner?: boolean; run_id?: string; fencing_token?: number };
-  if (lease.owner !== true || !lease.run_id || lease.fencing_token == null) {
-    return { status: 200, body: { ok: true, owner: false, standby: true, runId: lease.run_id ?? null } };
+  const lease = acquired.data as { owner?: unknown; run_id?: unknown; fencing_token?: unknown } | null;
+  if (!lease || (lease.owner !== true && lease.owner !== false) || !isUuid(lease.run_id)) {
+    return { status: 500, body: { ok: false, error: 'invalid_lease_response' } };
+  }
+  if (lease.owner === false) {
+    return { status: 200, body: { ok: true, owner: false, standby: true, runId: lease.run_id } };
+  }
+  const fencingToken = parseFencingToken(lease.fencing_token);
+  if (fencingToken === null) {
+    return { status: 500, body: { ok: false, error: 'invalid_lease_response' } };
   }
 
   let ticks = 0;
   let last: TickResult | null = null;
   let tickError: string | null = null;
+  let releaseError: string | null = null;
   let fenced = false;
   try {
     for (;;) {
       const tick = await deps.rpc(NIGHTLY_TICK_RPC, {
         p_run_id: lease.run_id,
-        p_fencing_token: lease.fencing_token,
+        p_fencing_token: fencingToken,
         p_horses_enabled: tournamentHorsesReleased(deps.env),
         p_max_steps: NIGHTLY_MAX_STEPS,
       });
@@ -105,13 +125,29 @@ export async function runNightlyTournamentOwner(deps: OwnerDeps): Promise<OwnerO
         break;
       }
       last = (tick.data ?? {}) as TickResult;
-      const next = Number.isFinite(Number(last.next_poll_ms)) ? Number(last.next_poll_ms) : 60_000;
+      const next = Number(last.next_poll_ms);
+      if (!Number.isFinite(next) || next < NIGHTLY_MIN_POLL_MS || next > NIGHTLY_MAX_POLL_MS) {
+        tickError = 'invalid_next_poll_ms';
+        break;
+      }
       if (next >= 60_000 || deps.now() - started + next > budget) break;
       await deps.sleep(next);
     }
   } finally {
     if (!fenced) {
-      await deps.rpc(NIGHTLY_RELEASE_RPC, { p_run_id: lease.run_id, p_fencing_token: lease.fencing_token });
+      try {
+        const released = await deps.rpc(NIGHTLY_RELEASE_RPC, {
+          p_run_id: lease.run_id,
+          p_fencing_token: fencingToken,
+        });
+        if (released.error) {
+          releaseError = released.error.message;
+        } else if ((released.data as { released?: unknown } | null)?.released !== true) {
+          releaseError = 'release_not_confirmed';
+        }
+      } catch (err) {
+        releaseError = err instanceof Error ? err.message : String(err);
+      }
     }
   }
 
@@ -119,17 +155,20 @@ export async function runNightlyTournamentOwner(deps: OwnerDeps): Promise<OwnerO
     // Another owner took over; this invocation stops without acting further.
     return { status: 200, body: { ok: true, owner: false, fenced: true, ticks } };
   }
-  const healthy = tickError === null && last?.healthy === true;
+  const errors = Array.isArray(last?.errors) ? [...last.errors] : [];
+  if (tickError) errors.push({ step: 'tick', error: tickError });
+  if (releaseError) errors.push({ step: 'release', error: releaseError });
+  const healthy = tickError === null && releaseError === null && last?.healthy === true;
   return {
     status: healthy ? 200 : 500,
     body: {
       ok: healthy,
       owner: true,
-      fencingToken: lease.fencing_token,
+      fencingToken,
       ticks,
       healthy: last?.healthy ?? false,
       alerts: last?.alerts ?? [],
-      errors: tickError ? [{ step: 'tick', error: tickError }] : (last?.errors ?? []),
+      errors,
       actions: last?.actions ?? {},
       ms: deps.now() - started,
     },
