@@ -1,492 +1,66 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# AGENT AUTOPILOT — the merge button, moved server-side.
+# AGENT AUTOPILOT — event-driven protected merge authority.
 #
-# WHY THIS EXISTS
-# Every regression post-mortem in this repo ends at the same place: an agent
-# hand-rolling the merge. The failure modes we actually observed, in one day:
-#
-#   * `wait_and_merge.sh` polled CI in a loop and finished with `gh pr merge
-#     --merge`. Merge commits are DISABLED on this repo, so the final API call
-#     failed silently and the PR sat open for hours while the agent reported
-#     success.
-#   * The next agent worked around that with `gh pr merge --squash --admin`.
-#     `--admin` bypasses required status checks — which is precisely how red
-#     code reached main four times.
-#   * Agents simply forgot. All five open PRs had auto-merge disabled.
-#
-# The fix is to stop asking agents to merge at all. An agent's job ends when it
-# opens a PR. This workflow enables squash auto-merge on it, keeps it fresh
-# against a fast-moving main, and GitHub merges it the moment the required
-# checks are green. No polling. No `--admin`. No human clicking a button.
-#
-# TOKEN NOTE (important, do not "simplify" this):
-# GITHUB_TOKEN is the LAST resort, never the choice. A merge produced by
-# GITHUB_TOKEN does NOT trigger downstream workflows, so a GITHUB_TOKEN
-# auto-merge would land the commit on main and then never fire
-# `publish-club-arena.yml` — merged but never published, which is
-# indistinguishable from a regression.
-#
-# The order of preference is:
-#
-#   1. A GitHub App installation token, minted fresh on every run.
-#   2. `GH_PAT`.
-#   3. `GITHUB_TOKEN`, with a warning, because it cannot publish.
-#
-# WHY THE APP IS FIRST: `GH_PAT` expires 2026-11-19 20:14:28 UTC. On that date
-# every PR in every repo stops auto-merging and nothing publishes, while agents
-# carry on reporting success — a scheduled outage with no alarm attached.
-# Installation tokens are minted per run and last an hour, so there is no
-# expiry date to miss. That removes the cliff rather than moving it.
-#
-# It activates the moment the two settings exist and is inert until then, so
-# this file is safe to land before the App is created:
-#
-#   vars.AUTOPILOT_APP_ID              the App's numeric id (not a secret)
-#   secrets.AUTOPILOT_APP_PRIVATE_KEY  the full PEM, BEGIN/END lines included
-#
-# The App needs Contents: R/W, Pull requests: R/W, Workflows: R/W, and
-# Metadata + Checks: Read — Checks because the current fine-grained PAT cannot
-# read check runs on some repos, which is why `gh pr checks` 403s there today.
+# This workflow always executes reviewed default-branch code on a fresh hosted
+# runner. It never checks out pull-request code and receives no PAT fallback.
+# The GitHub App token is minted for one run and the job fails closed when that
+# authority is unavailable. There is no timer, reconciler, branch refresher,
+# empty-commit writer, stuck-run canceller, or admin merge path.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Agent Autopilot
-# RUNNER (2026-09-03): `vars.CI_RUNNER` routes both jobs to the estate's own
-# runners where the repository has them (Club Arena: estate-ci-1/2, World Hub:
-# estate-ci-3). A repo without the variable runs on ubuntu-latest exactly as
-# before. Measured 2026-09-02: this workflow was ~30 hosted wall-minutes a day
-# PER REPO - the sweep every 30 minutes plus a run per pull-request event -
-# the largest hosted item left after the CI suites moved. Byte-identical in all
-# seven repos (estate-integrity), so the fallback is what makes one file fit all.
 
 on:
-  pull_request:
-    # NO `synchronize` (removed 2026-09-01, cost audit). Auto-merge is enabled
-    # ONCE per PR and stays armed across branch pushes - GitHub does not
-    # disarm it on a new commit - so re-running this job on every push to the
-    # branch re-enabled something already enabled. Agents push ~2.1 times per
-    # branch; synchronize was most of this workflow's 3,292 August runs. The
-    # */30 sweep below still catches the rare PR whose auto-merge was
-    # genuinely disarmed (conflict resolved by force-push, reopened race).
-    types: [opened, reopened, ready_for_review]
-  # NO push TRIGGER. Removed 2026-08-23.
-  #
-  # It fired a full sweep on every merge to main. Club Arena merges about
-  # nineteen times an hour, so main alone drove nineteen sweeps an hour in that
-  # repo and eight in World Hub - roughly 27 billed minutes an hour across the
-  # estate, since a job is billed as a whole minute however short it is.
-  #
-  # What the push trigger bought was re-queuing PRs that main had just moved
-  # underneath. The schedule below does exactly that, and cancel-in-progress
-  # cannot help here: a cancelled job still bills its rounded-up minute, so the
-  # only real saving is not starting the run.
-  schedule:
-    # Catches PRs opened by a workflow using GITHUB_TOKEN (those never emit a
-    # `pull_request` event), plus anything a transient API error skipped.
-    #
-    # COST, 2026-08-23: this was */10. Across seven repos that is 1,008 sweeps
-    # a day, every day, whether or not anybody is working — and GitHub bills
-    # per job rounded up to a whole minute, so a twenty-second sweep costs a
-    # full minute. It was the single largest recurring line on a week that
-    # reached $300.
-    #
-    # Halving the frequency costs almost nothing, because the schedule is a
-    # SAFETY NET, not the mechanism: the `pull_request` and `push` triggers
-    # above do the real work and fire within seconds. The sweep exists for the
-    # cases those cannot see — a PR opened by a workflow using GITHUB_TOKEN,
-    # or one an API error skipped — and thirty minutes is well inside the
-    # window where either matters.
-    #
-    # STAYS AT */30 even though the push trigger is now gone (2026-08-23).
-    # Raising it to */15 was tempting - the sweep is the only thing left that
-    # re-queues a PR main moved under - but */15 across seven repos is 336 extra
-    # runs a day, about $80 a month, to shave at most fifteen minutes off a case
-    # the `pull_request` trigger usually catches first: agents push to their
-    # branches constantly, and every one of those fires `synchronize`.
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
-  # A pull request Autopilot cannot land used to produce one line in a run log
-  # that nobody reads. It now produces an issue that closes itself when the
-  # list empties. See .github/scripts/report-stuck-prs.sh.
-  issues: write
 
 concurrency:
-  group: agent-autopilot-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  group: agent-autopilot-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  # ── Fast path: a PR just appeared or was updated ──────────────────────────
   queue-pr:
-    name: Queue this PR for auto-merge
-    # Dependabot is excluded on purpose. GitHub deliberately withholds normal
-    # repo secrets from dependabot-triggered events, so GH_PAT is empty here and
-    # the job can only fall back to GITHUB_TOKEN. Rather than half-work and go
-    # red on every dependency bump, we let the sweep pick these up on its next
-    # pass, where the PAT is present.
+    name: Queue this PR for protected squash merge
+    # pull_request_target can read the App secret, so same-repository branch
+    # ownership is the authorization boundary. A fork may run ordinary CI but
+    # can never mint merge authority, even when every check passes.
     if: >-
-      github.event_name == 'pull_request'
-      && github.event.pull_request.draft == false
-      && github.actor != 'dependabot[bot]'
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+      github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        # WITHOUT THIS the job has no working tree and
-        # `.github/scripts/queue-pr.sh` exits 127. That is how this workflow
-        # failed on its own first run.
-        uses: actions/checkout@v7.0.1
+      - name: Checkout reviewed default-branch automation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
-      - name: Mint a GitHub App installation token
-        # Skipped entirely when the App is not configured, in which case the
-        # `||` chain below falls through to GH_PAT exactly as before.
+      - name: Mint the GitHub App installation token
         id: app-token
-        if: vars.AUTOPILOT_APP_ID != ''
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.AUTOPILOT_APP_ID }}
           private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
 
-      - name: Verify the token actually works
+      - name: Verify merge authority
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash .github/scripts/check-token.sh
 
-      - name: Enable squash auto-merge
+      - name: Enable protected squash auto-merge
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          PUBLISHING_TOKEN: ${{ (steps.app-token.outputs.token != '' || secrets.GH_PAT != '') && 'true' || 'false' }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
-          set -uo pipefail
-          if [ "$PUBLISHING_TOKEN" != "true" ]; then
-            echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured, so this run falls back to GITHUB_TOKEN. A merge made with GITHUB_TOKEN does NOT trigger publish-club-arena.yml: the commit lands on main and never publishes. Set vars.AUTOPILOT_APP_ID + secrets.AUTOPILOT_APP_PRIVATE_KEY, or secrets.GH_PAT."
-          fi
+          set -euo pipefail
           case ",$LABELS," in
             *,do-not-merge,*|*,hold,*|*,wip,*)
-              echo "PR #$PR carries a hold label ($LABELS) — leaving it alone."
+              echo "PR #$PR carries a hold label ($LABELS); leaving it alone."
               exit 0 ;;
           esac
           bash .github/scripts/queue-pr.sh "$REPO" "$PR"
-
-  # ── Sweep: main moved, or the timer fired ────────────────────────────────
-  sweep:
-    name: Sweep open PRs (queue + keep fresh)
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Mint a GitHub App installation token
-        # Skipped entirely when the App is not configured, in which case the
-        # `||` chain below falls through to GH_PAT exactly as before.
-        id: app-token
-        if: vars.AUTOPILOT_APP_ID != ''
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.AUTOPILOT_APP_ID }}
-          private-key: ${{ secrets.AUTOPILOT_APP_PRIVATE_KEY }}
-
-      - name: Verify the token actually works
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN_FALLBACK: ${{ secrets.GITHUB_TOKEN }}
-        run: bash .github/scripts/check-token.sh
-
-      - name: Queue and refresh every open PR
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          PUBLISHING_TOKEN: ${{ (steps.app-token.outputs.token != '' || secrets.GH_PAT != '') && 'true' || 'false' }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          if [ "$PUBLISHING_TOKEN" != "true" ]; then
-            echo "::warning::No publishing token — neither the GitHub App nor GH_PAT is configured. See the token note at the top of this workflow."
-          fi
-
-          PRS=$(gh pr list --repo "$REPO" --state open --limit 1000 \
-                  --json number,isDraft,labels,mergeStateStatus,autoMergeRequest,headRefName,baseRefName)
-
-          echo "$PRS" | jq -c '.[]' | while read -r pr; do
-            N=$(echo "$pr"      | jq -r '.number')
-            DRAFT=$(echo "$pr"  | jq -r '.isDraft')
-            AUTO=$(echo "$pr"   | jq -r 'if .autoMergeRequest then "yes" else "no" end')
-            STATE=$(echo "$pr"  | jq -r '.mergeStateStatus')
-
-            # GitHub computes mergeability LAZILY. A bulk `gh pr list` returns
-            # "UNKNOWN" for every row until something asks about each pull
-            # request individually, so the `$STATE = DIRTY` test below did not
-            # fire and the conflicted majority fell through to the refresh path
-            # instead. MEASURED 2026-08-27 on one Club Arena sweep: all 100 open
-            # pull requests took "refreshing", every one of them conflicted —
-            # that is `gh pr update-branch` called 100 times a sweep on branches
-            # the API cannot fast-forward, which the comment below says must
-            # never happen. Re-asking costs one call per pull request and SAVES
-            # calls overall, because a conflicted PR then skips the compare, the
-            # run-list and the update-branch it used to make.
-            #
-            # ASKING ONCE IS NOT ENOUGH. GitHub computes mergeability
-            # ASYNCHRONOUSLY: the first request only STARTS the computation and
-            # returns UNKNOWN, and the answer lands a moment later. Measured
-            # 2026-08-27 after the single-ask version shipped — 20 of 99 pull
-            # requests resolved to DIRTY and 78 still fell through to a doomed
-            # `update-branch`. Ask, pause, ask again.
-            for _try in 1 2 3; do
-              case "$STATE" in
-                UNKNOWN|""|null) ;;
-                *) break ;;
-              esac
-              [ "$_try" = 1 ] || sleep 2
-              STATE=$(gh pr view "$N" --repo "$REPO" --json mergeStateStatus \
-                        --jq .mergeStateStatus 2>/dev/null || echo UNKNOWN)
-            done
-            BRANCH=$(echo "$pr" | jq -r '.headRefName')
-            BASE=$(echo "$pr"   | jq -r '.baseRefName')
-            HOLD=$(echo "$pr"   | jq -r '[.labels[].name] | map(select(.=="do-not-merge" or .=="hold" or .=="wip")) | length')
-
-            if [ "$DRAFT" = "true" ] || [ "$HOLD" != "0" ]; then
-              echo "#$N ($BRANCH): draft or held — skipping."
-              continue
-            fi
-
-            # Keep the PR fresh. A stale base is how a conflict gets resolved
-            # by taking one whole side, which is how the leaderboard RPC call
-            # vanished while its signature survived.
-            #
-            # Do NOT test `mergeStateStatus == "BEHIND"`. GitHub reports a
-            # single status, and a PR that is BOTH behind AND has a failing or
-            # pending check reports BLOCKED — so the branch never got refreshed,
-            # its stale checks never re-ran, and it sat open forever. #188 was
-            # 28 commits behind and reporting BLOCKED when this was found.
-            # Ask the compare API how far behind it actually is instead.
-            #
-            # DIRTY means a real conflict: updating cannot fix it and would only
-            # churn CI, so leave those for an agent to resolve hunk by hunk.
-            # WHEN TO REFRESH A BRANCH — and, more importantly, when not to.
-            #
-            # `strict_required_status_checks_policy` is OFF, so GitHub does NOT
-            # require a PR to be up to date with main in order to merge. That
-            # makes refreshing optional — and refreshing a PR that is already
-            # green CANCELS its checks and restarts them, which actively stops
-            # it merging.
-            #
-            # Refreshing on every main push therefore livelocks at this repo's
-            # velocity: main lands a commit every 5-7 minutes and CI takes ~8,
-            # so open PRs restart forever and nothing converges. Measured: #204
-            # and #205 both had their runs cancelled and restarted the moment
-            # #203 merged.
-            #
-            # So refresh ONLY when the PR cannot merge as it stands:
-            #   * its checks FAILED and it is behind  -> results are stale, retry
-            #     them against current main;
-            #   * it is very far behind               -> semantic-conflict risk
-            #     outweighs the cost of one more run.
-            # Otherwise leave it alone and let auto-merge do its job.
-            if [ "$STATE" = "DIRTY" ]; then
-              echo "#$N ($BRANCH): conflicts with $BASE — an agent must resolve this."
-            else
-              # Compare against the PR's OWN base. Hardcoding "main" is wrong the
-              # moment this workflow is copied to a repo whose default branch is
-              # named something else (PepNationLab ships from `production`), and
-              # wrong for any PR that targets a release branch.
-              BEHIND=$(gh api "repos/$REPO/compare/${BASE}...$BRANCH" --jq '.behind_by' 2>/dev/null || echo 0)
-              # THIS FILE IS BYTE-IDENTICAL IN SEVEN REPOS AND ONLY ONE OF THEM
-              # HAS A ci.yml (corrected 2026-09-04). It used to ask
-              # `gh run list --workflow ci.yml`, which in the World Hub - whose
-              # gate is build-safety-gate.yml - answered "none" for EVERY pull
-              # request, so the "no CI run at all" branch below pushed an empty
-              # re-trigger commit onto every World Hub pull request older than
-              # fifteen minutes, on every sweep after every real push: a second
-              # full copy of thirteen workflows, on six runners, and a later
-              # merge (the new head restarts auto-merge's wait). Five landed in
-              # one day. The same would happen in any repo whose gate is not
-              # literally named ci.yml.
-              #
-              # Two questions, answered without naming a workflow:
-              #   HAS_RUNS  - did ANY pull_request-event workflow run for this
-              #               head? That is what "no CI run at all" means.
-              #   LAST      - are the checks THE RULESET REQUIRES red? Read from
-              #               the ruleset and the PR's own rollup, so a
-              #               permanently red optional suite (World Hub's E2E
-              #               has been red on main for a day) cannot make every
-              #               behind-by-one pull request refresh on every sweep.
-              HEAD_FOR_RUNS=$(gh pr view "$N" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
-              HAS_RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_FOR_RUNS&event=pull_request&per_page=1" \
-                           --jq '.total_count' 2>/dev/null || echo 0)
-              REQUIRED=$(gh api "repos/$REPO/rules/branches/$BASE" \
-                           --jq '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | join("\n")' 2>/dev/null || echo "")
-              RED_REQUIRED=$(gh pr view "$N" --repo "$REPO" --json statusCheckRollup \
-                           --jq '[.statusCheckRollup[] | select((.conclusion // .state) | ascii_upcase | IN("FAILURE","ERROR","TIMED_OUT","CANCELLED")) | (.name // .context)] | .[]' 2>/dev/null \
-                           | grep -Fxf <(printf '%s\n' "$REQUIRED") | head -1 || true)
-              if [ "${HAS_RUNS:-0}" = "0" ] && [ -z "$RED_REQUIRED" ]; then LAST=none
-              elif [ -n "$RED_REQUIRED" ]; then LAST=failure
-              else LAST=other; fi
-              REFRESH=no
-              if [ "${BEHIND:-0}" -gt 0 ] && [ "$LAST" = "failure" ]; then
-                REFRESH="stale red checks ($BEHIND behind)"
-              elif [ "${BEHIND:-0}" -ge 40 ]; then
-                REFRESH="very stale ($BEHIND behind)"
-              fi
-
-              # A PULL REQUEST WITH NO CI RUN AT ALL IS DEAD, NOT WAITING (2026-09-02).
-              # LAST=none means no pull_request workflow has run for this head - it
-              # was pushed while a token was revoked, or the branch predates the
-              # workflow, or GitHub simply dropped the event. It matched neither
-              # refresh condition above, so it was "left to merge" - forever,
-              # because nothing will ever run its checks. Eight of the oldest
-              # open pull requests in Club Arena were in exactly that state,
-              # one of them for eight days. report-stuck-prs.sh has been naming
-              # these as NO CHECKS with the fix "push an empty commit" since
-              # August; this is that fix, done rather than reported.
-              #
-              # An empty commit on the head gives the branch a new sha, and
-              # `synchronize` runs CI on it. Made through the Git Data API so no
-              # checkout is needed. Guards: the PR must be older than 15
-              # minutes (CI on creation needs a moment), must not be DIRTY, and
-              # the current head must not already be one of these re-triggers
-              # (so a branch CI refuses to run on does not collect one empty
-              # commit per sweep forever - it stays reported instead).
-              if [ "$LAST" = "none" ] && [ "$STATE" != "DIRTY" ]; then
-                CREATED=$(gh pr view "$N" --repo "$REPO" --json createdAt --jq .createdAt 2>/dev/null || echo "")
-                AGE_MIN=999
-                if [ -n "$CREATED" ]; then
-                  C_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null || date -u -d "$CREATED" +%s 2>/dev/null || echo 0)
-                  AGE_MIN=$(( ( $(date -u +%s) - C_EPOCH ) / 60 ))
-                fi
-                HEAD_SHA=$(gh pr view "$N" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
-                HEAD_MSG=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || echo "")
-                if [ "$AGE_MIN" -ge 15 ] && [ -n "$HEAD_SHA" ] && ! printf '%s' "$HEAD_MSG" | grep -q '^ci: re-trigger checks'; then
-                  TREE=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.tree.sha' 2>/dev/null || echo "")
-                  NEW=$(gh api "repos/$REPO/git/commits" -X POST \
-                          -f message="ci: re-trigger checks - no CI run existed for $HEAD_SHA (autopilot, $(date -u +%Y-%m-%dT%H:%MZ))" \
-                          -f tree="$TREE" -f "parents[]=$HEAD_SHA" --jq .sha 2>/dev/null || echo "")
-                  if [ -n "$NEW" ] && gh api "repos/$REPO/git/refs/heads/$BRANCH" -X PATCH -f sha="$NEW" >/dev/null 2>&1; then
-                    echo "#$N ($BRANCH): had NO CI run for ${AGE_MIN}m - pushed an empty commit ($NEW) so checks run."
-                    continue
-                  else
-                    echo "::warning::#$N ($BRANCH): has no CI run and the re-trigger commit could not be written - see report-stuck-prs."
-                  fi
-                fi
-              fi
-              if [ "$REFRESH" != "no" ] && [ "$STATE" = "UNKNOWN" ]; then
-                # Still unknown after three asks. Refreshing is the ONLY action
-                # here that can do harm — on a conflicted branch it cannot
-                # succeed and it churns CI — so an unanswered question is not a
-                # licence to take it.
-                echo "#$N ($BRANCH): would refresh ($REFRESH) but mergeability is still unknown — not touching it."
-              elif [ "$REFRESH" != "no" ]; then
-                echo "#$N ($BRANCH): refreshing — $REFRESH."
-                gh pr update-branch "$N" --repo "$REPO" \
-                  || echo "::warning::#$N could not fast-forward — leaving for an agent."
-              else
-                echo "#$N ($BRANCH): $BEHIND behind $BASE, last CI=$LAST — leaving it to merge."
-              fi
-            fi
-
-            if [ "$AUTO" = "no" ]; then
-              echo "#$N ($BRANCH): auto-merge not set — enabling."
-              bash .github/scripts/queue-pr.sh "$REPO" "$N"
-            else
-              echo "#$N ($BRANCH): already queued (state=$STATE)."
-            fi
-          done
-
-      # Everything above lands what CAN land. This names what cannot, because
-      # a pull request nobody comes back for does not ship, and from outside
-      # the repo that is indistinguishable from the feature regressing.
-      # PepNationLab was carrying six of them - the oldest 68 days old - and
-      # nothing anywhere said so.
-      # ── REAP WORKFLOW RUNS THAT CAN NEVER FINISH ─────────────────────────
-      #
-      # Two kinds of run sit in `queued` forever and neither clears itself:
-      #
-      #   1. ORPHANS. A workflow file is deleted while runs of it are queued.
-      #      GitHub can no longer resolve the definition, so the run cannot
-      #      start, cannot be cancelled (409) and cannot be deleted (403). On
-      #      2026-09-04 there were EIGHT of these from `Build for World Hub
-      #      Sync` - the retired Club Arena sync path - aged 37 to 58 hours.
-      #      They consume no runner, but every human and agent reading the
-      #      queue counts them, and capacity looks worse than it is. One of
-      #      those readers was an agent that then drew the wrong conclusion.
-      #
-      #   2. GENUINELY STUCK runs, queued far longer than any real job takes,
-      #      usually because their runner died mid-assignment.
-      #
-      # This cancels what can be cancelled and NAMES what cannot, so nobody has
-      # to go hunting by hand. Nothing here can cancel healthy work: the
-      # threshold is deliberately well past the slowest real job.
-      - name: Reap workflow runs that can never finish
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          STUCK_MINUTES: '45'
-        run: |
-          set -uo pipefail
-          NOW=$(date -u +%s)
-          STUCK=0; KILLED=0; ORPHANED=""
-          RUNS=$(gh api "repos/$REPO/actions/runs?status=queued&per_page=100" \
-                   --jq '.workflow_runs[] | [.id, .created_at, .name, .head_branch] | @tsv' 2>/dev/null) || {
-            echo "could not list queued runs - skipping the sweep rather than guessing."; exit 0; }
-          while IFS=$'\t' read -r id created name branch; do
-            [ -z "${id:-}" ] && continue
-            AGE=$(( (NOW - $(date -u -d "$created" +%s 2>/dev/null || echo "$NOW")) / 60 ))
-            [ "$AGE" -lt "$STUCK_MINUTES" ] && continue
-            STUCK=$((STUCK+1))
-            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null 2>&1; then
-              KILLED=$((KILLED+1)); echo "cancelled #$id ($name, ${AGE}m, $branch)"
-            else
-              ORPHANED="$ORPHANED\n  - \`$name\` run $id, ${AGE}m old, branch \`$branch\`"
-              echo "ORPHAN #$id ($name, ${AGE}m) - cannot cancel; its workflow file is gone"
-            fi
-          done <<< "$RUNS"
-
-          {
-            echo "### Stuck-run sweep"
-            echo
-            echo "- queued longer than ${STUCK_MINUTES}m: **$STUCK**"
-            echo "- cancelled: **$KILLED**"
-            if [ -n "$ORPHANED" ]; then
-              echo "- **permanently orphaned (workflow file deleted while queued):**"
-              echo -e "$ORPHANED"
-              echo
-              echo "  These consume no runner. They cannot be cancelled or deleted through the API."
-              echo "  To clear them, restore a stub workflow file at the same path so GitHub can"
-              echo "  resolve and fail them, then delete it again. Otherwise they age out on their own."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Name the pull requests that cannot merge on their own
-        if: always()
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          # Reads use the App token; the ISSUE WRITE uses GITHUB_TOKEN, whose
-          # `issues: write` is declared above and therefore guaranteed. The
-          # App's installation scopes can be narrowed without anyone here
-          # noticing, and the first live run of this step hit exactly that: six
-          # stranded pull requests found in PepNationLab and no issue raised.
-          GH_TOKEN_ISSUES: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: bash .github/scripts/report-stuck-prs.sh
-
-      - name: Report
-        if: always()
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          {
-            echo "## Agent Autopilot sweep"
-            echo ""
-            echo "| PR | branch | state | auto-merge |"
-            echo "|----|--------|-------|------------|"
-            gh pr list --repo "$REPO" --state open --limit 1000 \
-              --json number,headRefName,mergeStateStatus,autoMergeRequest \
-              --jq '.[] | "| #\(.number) | \(.headRefName) | \(.mergeStateStatus) | \(if .autoMergeRequest then "queued" else "NOT QUEUED" end) |"'
-          } >> "$GITHUB_STEP_SUMMARY"

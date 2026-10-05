@@ -3,10 +3,9 @@
 #
 # Rule 1a (.agents/rules/00-anti-regression-workflow.md) says one working tree
 # per agent. It has been advisory, and advisory did not hold: the clone was
-# carrying EIGHT abandoned stashes and SIX backup/* branches from
-# git-unstick.sh rescues, and the World Hub clone had twelve ad-hoc worktrees
-# under /private/tmp - agents inventing isolation by hand because nothing gave
-# it to them.
+# carrying EIGHT abandoned stashes and SIX backup/* preservation branches, and
+# the World Hub clone had twelve ad-hoc worktrees under /private/tmp - agents
+# inventing isolation by hand because nothing gave it to them.
 #
 # WHY A SHARED CHECKOUT DESTROYS WORK, precisely: a working tree has exactly
 # one HEAD, one index and one set of uncommitted files. When agent B runs
@@ -38,27 +37,14 @@ case "$ACTION" in
   *)    ACTION_UC="COMMIT"; ACTION_EG="git commit" ;;
 esac
 
-# ── Legitimate commits in the main clone ────────────────────────────────────
-# scripts/git-safe-push.sh, the World Hub sync and any CI checkout all commit
-# in the one-and-only tree on purpose. They set this explicitly rather than
-# being pattern-matched, so the exemption is always visible at the call site.
-if [ "${AGENT_SHARED_CLONE_OK:-}" = "1" ]; then
-  exit 0
-fi
-
-# A runner's checkout is a fresh throwaway clone with exactly one consumer, so
-# the failure mode this guards does not exist there.
-if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
-  exit 0
-fi
-
 GIT_DIR=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || echo "")
 COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
 
-# Unknown shape (older git, odd setup) - never block on a check that cannot
-# tell where it is.
+# Unknown shape fails closed. A guard that cannot establish worktree isolation
+# has not established authority to create or publish a commit.
 if [ -z "$GIT_DIR" ] || [ -z "$COMMON_DIR" ]; then
-  exit 0
+  echo "[shared-clone guard] BLOCKED: cannot establish Git worktree isolation." >&2
+  exit 1
 fi
 
 # A linked worktree has its own git dir under <common>/worktrees/<name>.
@@ -68,7 +54,6 @@ if [ "$GIT_DIR" != "$COMMON_DIR" ]; then
 fi
 
 REPO_ROOT=${COMMON_DIR%/.git}
-REPO=$(basename "$REPO_ROOT")
 BRANCH=$(git branch --show-current 2>/dev/null || echo "HEAD")
 AGENT=${AGENT_NAME:-$(whoami)}
 # The slug the agent is most likely to want: whatever branch they are on.
@@ -94,13 +79,8 @@ cat >&2 <<MSG
   That script REFUSES to move a tree that has uncommitted changes, so run it,
   then copy your edited files across and commit there.
 
-  If you are a human working in your own clone, or a script that legitimately
-  commits here (git-safe-push.sh, the World Hub sync, CI):
-
-      AGENT_SHARED_CLONE_OK=1 $ACTION_EG ...
-
-  Do not reach for --no-verify. It skips the other hooks too, and every one of
-  them is here because something was lost.
+  There is no shared-clone or hook bypass. Create an isolated worktree and run
+  $ACTION_EG there.
   ─────────────────────────────────────────────────────────────────────────
 
 MSG

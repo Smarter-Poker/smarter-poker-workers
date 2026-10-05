@@ -1,0 +1,28 @@
+name: Agent Branch Proposal
+
+# A branch-authored workflow must never receive production or repository-wide
+# credentials. Its only output is a completed run that the trusted
+# default-branch Agent Open PR workflow consumes through workflow_run.
+on:
+  push:
+    branches-ignore:
+      - main
+      - 'backup/**'
+      - 'ci-marker/**'
+      - 'build/**'
+      - 'dependabot/**'
+      - 'preview/**'
+      - 'renovate/**'
+      - 'revert-*'
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    name: Ask trusted main to propose this branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record the proposal signal
+        run: echo "Branch proposal signal accepted for $GITHUB_REF_NAME at $GITHUB_SHA."
