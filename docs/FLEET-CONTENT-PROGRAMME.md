@@ -430,6 +430,32 @@ Hub's Phase 9.1 (`/api/cron/render-hand-clips`).
   this week / 1,000), `fn_horses_not_social_ready()` count.
 - Weekly digest email (Resend). Table talk at the felt (club-arena).
 
+Phase 10 as built, the workers side (2026-10-06): `GET/POST
+/cron/fleet-weekly-digest` (`src/routes/fleet-weekly-digest.ts`) is the
+Monday mail. One fire reads `fn_fleet_content_metrics(7)` (one RPC, the
+same rolling week the horses admin page shows: fleet runs per route from
+`cron_execution_log`, horse posts and distinct horses, horse share of the
+feed, human reactions per horse post, the distinct-caption rate, fleet
+coverage, the phrase and asset ledgers, the `fn_horses_not_social_ready()`
+count), then the master switch through `engineSwitch({ fresh: true })`, the
+reader the fleet obeys, and every `horse_post_modes` row (`mode`,
+`enabled`, `approved_at`), flipping nothing. It renders a plain-text
+digest from numbers, route names, mode names and fixed words (no model is
+called) and writes nothing but one email through the Resend API, to
+`FLEET_DIGEST_EMAIL` (one address or several, comma separated) from
+`RESEND_FROM_EMAIL` (default `alerts@smarter.poker`) with
+`RESEND_API_KEY`, all read at call time. The switch states are reported,
+never obeyed: a week with the engine off still arrives as a digest that
+says OFF. The only gate is the recipient: `FLEET_DIGEST_EMAIL` unset is a
+200 with `skipped: recipient_unset` and the figures still computed, so the
+fire is visible in `cron_execution_log` as a measured no-op;
+`RESEND_API_KEY` unset is `skipped: resend_key_unset`; a Resend failure or
+the 30 second ceiling is a 500 naming the HTTP status, never the key, and
+the mail is never sent twice. `?dry_run=1` (or `?preview=1`) renders the
+subject and the text into the JSON and sends nothing. The dispatcher entry
+is Monday 09:30 UTC in the World Hub (`scripts/openclaw-cron-dispatcher.py`),
+the hub half of this phase.
+
 ## How to verify a phase
 
 Playbook Rule 1, Part A to E, in full, and additionally for this programme:
