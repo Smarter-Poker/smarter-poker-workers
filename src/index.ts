@@ -58,6 +58,7 @@ import { contentSupplyWatchdog } from './routes/content-supply-watchdog.js';
 import { phase6Content } from './routes/phase6-content.js';
 import { phase7Content } from './routes/phase7-content.js';
 import { phase9Content } from './routes/phase9-content.js';
+import { fleetWeeklyDigest } from './routes/fleet-weekly-digest.js';
 import { memoryMatrixDailyChallenge } from './routes/memory-matrix-daily-challenge.js';
 import { pokerNews } from './routes/poker-news.js';
 import { venueTournaments } from './routes/venue-tournaments.js';
@@ -286,6 +287,10 @@ app.post('/cron/phase7-content', phase7Content);
 // switch and the hand_clip mode row; dry_run=1 writes nothing.
 app.get('/cron/phase9-content', phase9Content);
 app.post('/cron/phase9-content', phase9Content);
+// Fleet Content Programme Phase 10: the Monday digest mail. Read-only: one
+// RPC, the switch states, one Resend call; dry_run=1 renders without sending.
+app.get('/cron/fleet-weekly-digest', fleetWeeklyDigest);
+app.post('/cron/fleet-weekly-digest', fleetWeeklyDigest);
 app.get('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.post('/cron/memory-matrix-daily-challenge', memoryMatrixDailyChallenge);
 app.get('/cron/poker-news', pokerNews);
