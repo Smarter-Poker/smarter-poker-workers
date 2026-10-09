@@ -31,16 +31,17 @@
  *     cron_execution_log.result) shows how often the pools are running dry.
  *     That number is the Phase 2 and 3 yardstick.
  *
- * Still true, unchanged: no language model is called anywhere in here.
- * Every caption is a phrase pool draw. Zero cost, and the reason Phase 3
- * exists.
+ * Model captions remain explicitly disabled until the service-only budget
+ * contract is configured and qualified. When enabled, VoiceWriter reserves
+ * worst-case cost first and keeps every relevance, freshness and publication
+ * gate below intact; deterministic composition remains the safe fallback.
  */
 import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
 import { postModeEnabled } from './Fleet.js';
 import { topicsFor } from './SocialTopics.js';
 import { seedHorseMemory } from './HumanVoiceEngine.js';
-import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse } from './VoiceWriter.js';
+import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse, type ModelAttemptContext } from './VoiceWriter.js';
 import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
 import { hasSpecificTake } from './Composer.js';
 import {
@@ -68,6 +69,7 @@ import {
   type HorseVideoTopic,
 } from './HorseVideoPublication.js';
 import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
+import { captionModelIdempotencyKey, takeModelWriterStats } from './ModelWriter.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -370,7 +372,11 @@ export function bumpSupplyStat(key: string, amount = 1): void {
   supplyStats[key] = (supplyStats[key] ?? 0) + amount;
 }
 export function takeSupplyStats(): Record<string, number> {
-  const out = { ...supplyStats, oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0 };
+  const out = {
+    ...supplyStats,
+    ...takeModelWriterStats(),
+    oembed_backoff_active: Date.now() < oembedBackoffUntil ? 1 : 0,
+  };
   for (const k of Object.keys(supplyStats)) delete supplyStats[k];
   return out;
 }
@@ -663,6 +669,7 @@ export async function publishVideoClip(
    */
   publicationKey?: string,
   sharedSupplyError?: string,
+  modelAttemptContext?: ModelAttemptContext,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!(await postModeEnabled(`${clipType}_video`))) {
@@ -841,6 +848,7 @@ export async function publishVideoClip(
   let semanticReuse = 0;
   let invalidVideo = 0;
   let verificationUnknown = 0;
+  const modelAttempt = modelAttemptContext ?? {};
   for (const candidate of captionCandidates) {
     bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
 
@@ -885,6 +893,10 @@ export async function publishVideoClip(
         else bumpSupplyStat('title_repaired');
       }
     }
+    const key = assetKeyFor(candidate.source_url);
+    if (!key?.startsWith('yt:')) {
+      return { ...base, success: false, error: 'Selected video has no canonical YouTube identity' };
+    }
     const written = await writeCaption(
       horse as AuthorHorse,
       {
@@ -895,6 +907,7 @@ export async function publishVideoClip(
         sportHint: (candidate as SportsClipRow).sport_type ?? (candidate as LibraryClip).category ?? null,
       },
       fleet,
+      { modelIdempotencyKey: captionModelIdempotencyKey(publicationKey, key), modelAttempt },
     );
     if (!written.text) {
       if (written.belowFloor) {
@@ -913,10 +926,6 @@ export async function publishVideoClip(
     }
     const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
 
-    const key = assetKeyFor(candidate.source_url);
-    if (!key?.startsWith('yt:')) {
-      return { ...base, success: false, error: 'Selected video has no canonical YouTube identity' };
-    }
     const published = await publishHorseVideoAtomically({
       authorId: horse.profile_id,
       videoUrl: candidate.source_url,
@@ -1073,6 +1082,7 @@ export async function publishVideoForHorse(
 
   const errors: string[] = [];
   const captionExhaustions: string[] = [];
+  const modelAttempt: ModelAttemptContext = {};
   for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
     const result = await publishVideoClip(
       horse,
@@ -1081,6 +1091,8 @@ export async function publishVideoForHorse(
       'horse-video-reels',
       opts.sharedSupply,
       publicationKey,
+      undefined,
+      modelAttempt,
     );
     if (result.success) return result;
     if (result.skipped === 'caption_exhausted') {
@@ -1112,6 +1124,7 @@ async function postNewsLink(
   newsType: 'poker' | 'sports',
   fleet: AuthorHorse[],
   publicationKey: string,
+  modelAttempt: ModelAttemptContext,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
 
@@ -1160,10 +1173,15 @@ async function postNewsLink(
     const article = fresh[Math.floor(Math.random() * fresh.length)]!;
     await seedMemoryFromHistory(horse.profile_id);
 
+    const articleKey = assetKeyFor(article.link);
+    if (!articleKey) {
+      return { ...base, success: false, error: 'Selected article has no canonical asset identity' };
+    }
     const written = await writeCaption(
       horse as AuthorHorse,
       { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
       fleet,
+      { modelIdempotencyKey: captionModelIdempotencyKey(publicationKey, articleKey), modelAttempt },
     );
     if (!written.text) {
       return {
@@ -1356,6 +1374,7 @@ export async function publishForHorse(
   const other: 'poker' | 'sports' = isPoker ? 'sports' : 'poker';
   const attempts: string[] = [];
   const exhaustions: string[] = [];
+  const modelAttempt: ModelAttemptContext = {};
   const recordAttempt = (label: string, result: PublishResult): 'continue' | 'return' => {
     if (result.skipped === 'caption_exhausted' || result.skipped === 'supply_exhausted') {
       exhaustions.push(`${label}: ${result.error ?? result.skipped}`);
@@ -1384,7 +1403,7 @@ export async function publishForHorse(
   }
 
   for (const kind of [preferred, other]) {
-    let result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey);
+    let result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey, modelAttempt);
     if (result.success) return result;
     if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
     else if (!result.skipped) attempts.push(`${kind}_news: ${result.error}`);
@@ -1396,6 +1415,7 @@ export async function publishForHorse(
       opts.sharedVideoSupply,
       publicationKey,
       opts.sharedVideoSupplyError,
+      modelAttempt,
     );
     if (result.success) return result;
     if (result.skipped && recordAttempt(`${kind}_video`, result) === 'return') return result;

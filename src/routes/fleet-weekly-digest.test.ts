@@ -465,7 +465,7 @@ describe('the mail', () => {
     expect(body.subject).toBe('Smarter.Poker fleet digest, week to 2026-10-06');
     expect(text.split('\n')[0]).toBe('Smarter.Poker fleet content digest');
     expect(text).toContain('Window: 2026-09-29 09:30 to 2026-10-06 09:30 UTC (7 days). Sent 2026-10-06 09:30 UTC.');
-    expect(text).toContain('  Model spend: none (no language model is called)');
+    expect(text).toContain('  Caption model spend: service-only daily budget ledger (not exposed in this digest)');
 
     const line = (route: string) => text.split('\n').find((l) => l.startsWith(`  ${route} `)) ?? `(no line for ${route})`;
     expect(line('Route')).toMatch(/^ {2}Route\s+Runs\s+OK\s+Err\s+Killed\s+Skipped\(engine off\)\s+Due\s+Posted\s+Failed\s+Collided$/);
