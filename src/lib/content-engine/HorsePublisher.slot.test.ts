@@ -29,7 +29,7 @@ const db = vi.hoisted(() => ({
 const ledger = vi.hoisted(() => ({ recordPhrase: vi.fn(), recordAssetUse: vi.fn(), recordBrief: vi.fn() }));
 const modes = vi.hoisted(() => ({ grounded: true, video: true }));
 const feed = vi.hoisted(() => ({ parseURL: vi.fn() }));
-const voice = vi.hoisted(() => ({ writeGrounded: vi.fn() }));
+const voice = vi.hoisted(() => ({ writeCaption: vi.fn(), writeGrounded: vi.fn() }));
 
 vi.mock('../supabase.js', () => ({
   getSupabase: () => ({
@@ -92,16 +92,7 @@ vi.mock('./YouTubeMetadataVerifier.js', () => ({
 }));
 vi.mock('./HumanVoiceEngine.js', () => ({ seedHorseMemory: vi.fn() }));
 vi.mock('./VoiceWriter.js', () => ({
-  writeCaption: vi.fn(async () => ({
-    text: 'Called the river with second pair and it held',
-    stale: false,
-    semanticKey: 'sem:river-call-second-pair',
-    brief: { kind: 'link' },
-    relevance: 0.8,
-    grounding: ['title'],
-    attempts: 1,
-    belowFloor: false,
-  })),
+  writeCaption: voice.writeCaption,
   writeGrounded: voice.writeGrounded,
   summarise: () => 'brief',
   recordBrief: ledger.recordBrief,
@@ -180,6 +171,17 @@ beforeEach(() => {
   ledger.recordBrief.mockClear();
   feed.parseURL.mockReset();
   feed.parseURL.mockResolvedValue({ items: [{ title: 'Deep run at the Main Event', link: 'https://news.example/a' }] });
+  voice.writeCaption.mockReset();
+  voice.writeCaption.mockResolvedValue({
+    text: 'Called the river with second pair and it held',
+    stale: false,
+    semanticKey: 'sem:river-call-second-pair',
+    brief: { kind: 'link' },
+    relevance: 0.8,
+    grounding: ['title'],
+    attempts: 1,
+    belowFloor: false,
+  });
   voice.writeGrounded.mockReset();
   voice.writeGrounded.mockResolvedValue({
     text: "Folded the turn last night and I still think it's right",
@@ -409,6 +411,27 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 });
 
 describe('definitive bounded content exhaustion', () => {
+  it('treats intentionally disabled grounded modes as safe exhaustion after media exhausts', async () => {
+    modes.grounded = false;
+    feed.parseURL.mockResolvedValue({ items: [] });
+    voice.writeCaption.mockResolvedValue({
+      text: '', semanticKey: 'caption:stale', stale: true, brief: {}, relevance: 1,
+      grounding: ['title'], attempts: 6, belowFloor: false,
+    });
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { skipGuard: true, slot: SLOT });
+
+    expect(result).toMatchObject({
+      success: false,
+      skipped: 'content_exhausted',
+      publicationKey: `fleet:${id}:${SLOT}`,
+      error: expect.stringContaining('grounded modes await approval'),
+    });
+    expect(result.error).toContain('No fresh caption cleared the quality gate');
+    expect(db.inserts).toHaveLength(0);
+  });
+
   it('tries every approved fallback, then returns one observable safe-silence result', async () => {
     feed.parseURL.mockResolvedValue({ items: [] });
     voice.writeGrounded.mockResolvedValue(null);
