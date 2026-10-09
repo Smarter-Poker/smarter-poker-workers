@@ -97,6 +97,7 @@ export type PublishSkip =
   | 'duplicate_slot'
   | 'caption_exhausted'
   | 'supply_exhausted'
+  | 'mode_disabled'
   | 'content_exhausted'
   | 'no_slot';
 
@@ -1254,7 +1255,14 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
   const handEnabled = await postModeEnabled('grounded_hand');
   const sessionEnabled = await postModeEnabled('grounded_session');
   if (!handEnabled && !sessionEnabled) {
-    return { horse: horse.name, profile_id: horse.profile_id, success: false, error: 'grounded posts await approval' };
+    return {
+      horse: horse.name,
+      profile_id: horse.profile_id,
+      success: false,
+      skipped: 'mode_disabled',
+      publicationKey,
+      error: 'grounded modes await approval',
+    };
   }
   const base = { horse: horse.name, profile_id: horse.profile_id };
   const written = await writeGrounded(horse as AuthorHorse, { hand: handEnabled, session: sessionEnabled });
@@ -1376,7 +1384,11 @@ export async function publishForHorse(
   const exhaustions: string[] = [];
   const modelAttempt: ModelAttemptContext = {};
   const recordAttempt = (label: string, result: PublishResult): 'continue' | 'return' => {
-    if (result.skipped === 'caption_exhausted' || result.skipped === 'supply_exhausted') {
+    if (
+      result.skipped === 'caption_exhausted'
+      || result.skipped === 'supply_exhausted'
+      || result.skipped === 'mode_disabled'
+    ) {
       exhaustions.push(`${label}: ${result.error ?? result.skipped}`);
       return 'continue';
     }
