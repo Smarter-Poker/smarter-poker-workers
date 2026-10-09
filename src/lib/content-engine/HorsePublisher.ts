@@ -662,31 +662,29 @@ export async function publishVideoClip(
    * video write without it is refused before the RPC.
    */
   publicationKey?: string,
+  sharedSupplyError?: string,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!(await postModeEnabled(`${clipType}_video`))) {
     return { ...base, success: false, error: `${clipType}_video awaits approval` };
   }
+  if (sharedSupplyError) {
+    return { ...base, success: false, outcome: 'unknown', error: sharedSupplyError };
+  }
   let captionCandidates: Array<LibraryClip | SportsClipRow> = [];
 
-  if (scheduler === 'horse-video-reels') {
-    if (!sharedSupply) {
-      return {
-        ...base,
-        success: false,
-        outcome: 'unknown',
-        error: 'shared verified video supply unavailable',
-      };
-    }
+  if (sharedSupply) {
     const verifiedCaptionable = sharedSupply[clipType];
     if (!verifiedCaptionable.length) {
       return {
         ...base,
         success: false,
+        ...(scheduler === 'fleet' ? { skipped: 'supply_exhausted' as const, publicationKey } : {}),
         error: `No fresh public verified caption-ready ${clipType} clips in supply`,
       };
     }
 
+    const ledgerFailuresBefore = ledgerReadFailureTotal();
     const sourceNames = [...new Set(verifiedCaptionable.map((candidate) => candidate.source).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
     const mine = new Set(sliceForHorse(sourceNames, horse.profile_id));
@@ -707,11 +705,18 @@ export async function publishVideoClip(
       bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
     }
     if (!fresh.length) {
-      // A fail-closed ledger read also produces no usable assets, but that is
-      // an outage rather than authoritative exhaustion.
+      if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
+        return {
+          ...base,
+          success: false,
+          outcome: 'unknown',
+          error: `Shared ${clipType} asset ledger unavailable`,
+        };
+      }
       return {
         ...base,
         success: false,
+        ...(scheduler === 'fleet' ? { skipped: 'supply_exhausted' as const, publicationKey } : {}),
         error: `All ${clipType} verified clips already posted`,
       };
     }
@@ -817,9 +822,9 @@ export async function publishVideoClip(
     captionCandidates = takeRandomCandidates(fresh, MAX_LIVE_VIDEO_CANDIDATES);
   }
 
-  // Both producers now carry a bounded candidate sequence into the caption
-  // gate. The isolated Reel producer uses its shared proof snapshot; the
-  // ordinary publisher validates each candidate lazily as it reaches it.
+  // Both scheduled producers carry a bounded candidate sequence from the
+  // shared proof snapshot into the caption gate. Direct callers that omit a
+  // snapshot retain the bounded live-verifier fallback.
 
   // Fail closed: a video write without its slot key would sit outside the
   // duplicate protection every other scheduled post carries, whichever
@@ -839,7 +844,7 @@ export async function publishVideoClip(
   for (const candidate of captionCandidates) {
     bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
 
-    if (scheduler !== 'horse-video-reels') {
+    if (!sharedSupply) {
       const verdict = await youtubeValidity(candidate.source_url);
       if (verdict !== 'ok') {
         if (verdict === 'bad') {
@@ -1301,7 +1306,13 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
  */
 export async function publishForHorse(
   horse: FleetHorse,
-  opts: { skipGuard?: boolean; fleet?: AuthorHorse[]; slot?: string | null } = {},
+  opts: {
+    skipGuard?: boolean;
+    fleet?: AuthorHorse[];
+    slot?: string | null;
+    sharedVideoSupply?: SharedHorseVideoSupply;
+    sharedVideoSupplyError?: string;
+  } = {},
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   const slot = opts.slot ?? fleetSlotId(horse.profile_id, horse.timezone, new Date());
@@ -1377,7 +1388,15 @@ export async function publishForHorse(
     if (result.success) return result;
     if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
     else if (!result.skipped) attempts.push(`${kind}_news: ${result.error}`);
-    result = await publishVideoClip(horse, kind, opts.fleet ?? [], 'fleet', undefined, publicationKey);
+    result = await publishVideoClip(
+      horse,
+      kind,
+      opts.fleet ?? [],
+      'fleet',
+      opts.sharedVideoSupply,
+      publicationKey,
+      opts.sharedVideoSupplyError,
+    );
     if (result.success) return result;
     if (result.skipped && recordAttempt(`${kind}_video`, result) === 'return') return result;
     // The mixed publisher is disabled, but retain the same lost-ACK law if it

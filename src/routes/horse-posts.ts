@@ -9,9 +9,9 @@
  * docs/FLEET-CONTENT-PROGRAMME.md, Phase 1, and the header of
  * src/lib/content-engine/FleetScheduler.ts for the numbers.
  *
- * Budget: the dispatcher gives this route 600s. Each publish is roughly
- * 2 to 8 seconds (RSS fetch, oEmbed validation, three or four PostgREST
- * calls), so a hard deadline of 540s and a per-run cap keep a slow hour from
+ * Budget: the dispatcher gives this route 600s. Each publish uses one shared
+ * video-verification snapshot plus bounded RSS and PostgREST work, so a hard
+ * deadline of 540s and a per-run cap keep a slow hour from
  * running into the next fire. Horses that miss the cap are still inside
  * their DUE_WINDOW_HOURS on the next fire; the oldest slots go first.
  *
@@ -32,6 +32,7 @@ import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetSched
 import { loadFleet, engineEnabled, engineSwitch } from '../lib/content-engine/Fleet.js';
 import {
   fleetSlotId,
+  prepareSharedHorseVideoSupply,
   publishForHorse,
   takeSupplyStats,
   type PublishResult,
@@ -66,6 +67,9 @@ export async function horsePosts(c: Context) {
       .sort((a, b) => (b.due.age ?? 0) - (a.due.age ?? 0));
 
     const queue = due.slice(0, MAX_POSTS_PER_RUN);
+    const preparedVideoSupply = queue.length > 0
+      ? await prepareSharedHorseVideoSupply(['poker', 'sports'])
+      : null;
     const results: PublishResult[] = [];
     const run: { cursor: number; deadlineHit: boolean; halt: Halt | null } = {
       cursor: 0,
@@ -91,6 +95,12 @@ export async function horsePosts(c: Context) {
           results.push(
             await publishForHorse(item.horse, {
               fleet,
+              sharedVideoSupply: preparedVideoSupply?.status === 'ok'
+                ? preparedVideoSupply.supply
+                : undefined,
+              sharedVideoSupplyError: preparedVideoSupply?.status === 'unknown'
+                ? preparedVideoSupply.error
+                : undefined,
               // The slot this run found the horse due for, read from the same
               // clock, so an overlapping run names the same slot and key.
               slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
@@ -104,8 +114,8 @@ export async function horsePosts(c: Context) {
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        // A little air between publishes: YouTube oEmbed and the RSS hosts
-        // are third parties and the fleet is not in a hurry.
+        // A little air between publishes: RSS hosts and persistence endpoints
+        // both rate-limit bursts from the VM.
         await new Promise((r) => setTimeout(r, 400));
       }
     };
@@ -154,7 +164,10 @@ export async function horsePosts(c: Context) {
       }, {}),
       errors,
       ledger_unreadable: ledgerUnreadable,
-      supply: takeSupplyStats(),
+      video_supply_preflight: preparedVideoSupply?.status ?? 'not_needed',
+      supply: preparedVideoSupply?.status === 'ok'
+        ? { ...preparedVideoSupply.counts, runtime: takeSupplyStats() }
+        : { runtime: takeSupplyStats() },
       styles_synced: styles.updated,
       // Phase 2: did the words match the subject?
       avg_relevance: posted.length
