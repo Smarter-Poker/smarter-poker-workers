@@ -436,12 +436,80 @@ describe('horse video oEmbed proof', () => {
       },
     )).resolves.toMatchObject({
       success: false,
+      skipped: 'caption_exhausted',
       error: expect.stringContaining(`candidates=${MAX_VIDEO_CAPTION_CANDIDATES}`),
     });
     expect(mocks.writeCaption).toHaveBeenCalledTimes(MAX_VIDEO_CAPTION_CANDIDATES);
     expect(mocks.publishHorseVideoAtomically).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
+  });
+
+  it('tries another bounded candidate after a definite atomic semantic-reuse rejection', async () => {
+    const poker = ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
+      id: `clip-${videoId}`,
+      video_id: videoId,
+      source_url: `https://youtube.com/watch?v=${videoId}`,
+      source: 'Poker source',
+      title: 'All in on the river',
+      category: 'poker',
+      oembed_ok: null,
+    }));
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map((clip) => `yt:${clip.video_id}`)));
+    mocks.publishHorseVideoAtomically
+      .mockResolvedValueOnce({
+        success: false,
+        code: 'P0001',
+        error: 'atomic horse video publication failed: horse video caption violates the semantic reuse window',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        postId: 'post-fresh',
+        reelId: 'reel-fresh',
+        created: true,
+      });
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      {
+        skipGuard: true, slot: SLOT, allowedTypes: ['poker'],
+        sharedSupply: { poker, sports: [] },
+      },
+    )).resolves.toMatchObject({ success: true, postId: 'post-fresh', reelId: 'reel-fresh' });
+    expect(mocks.writeCaption).toHaveBeenCalledTimes(2);
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports bounded authoritative semantic-reuse exhaustion as a safe skip', async () => {
+    const poker = ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
+      id: `clip-${videoId}`,
+      video_id: videoId,
+      source_url: `https://youtube.com/watch?v=${videoId}`,
+      source: 'Poker source',
+      title: 'All in on the river',
+      category: 'poker',
+      oembed_ok: null,
+    }));
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map((clip) => `yt:${clip.video_id}`)));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: false,
+      code: 'P0001',
+      error: 'atomic horse video publication failed: horse video caption violates the semantic reuse window',
+    });
+
+    await expect(publishVideoForHorse(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      {
+        skipGuard: true, slot: SLOT, allowedTypes: ['poker'],
+        sharedSupply: { poker, sports: [] },
+      },
+    )).resolves.toMatchObject({
+      success: false,
+      skipped: 'caption_exhausted',
+      publicationKey: `fleet:horse-a:${SLOT}`,
+      error: expect.stringContaining('semantic_reuse=2'),
+    });
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(2);
   });
 
   it('fails scheduled publication closed without a shared snapshot and never falls back to live verification', async () => {

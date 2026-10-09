@@ -85,9 +85,15 @@ export interface FleetHorse {
  * Why nothing was published when that was the right answer rather than a
  * failure: the horse posted inside the guard window, the guard could not be
  * read (fail closed), another run already filled this slot (23505 on the slot
- * key), or the horse has no scheduled slot open.
+ * key), the bounded caption candidates are all inside the semantic reuse
+ * window, or the horse has no scheduled slot open.
  */
-export type PublishSkip = 'posted_recently' | 'guard_unreadable' | 'duplicate_slot' | 'no_slot';
+export type PublishSkip =
+  | 'posted_recently'
+  | 'guard_unreadable'
+  | 'duplicate_slot'
+  | 'caption_exhausted'
+  | 'no_slot';
 
 export interface PublishResult {
   success: boolean;
@@ -195,6 +201,20 @@ function isDuplicateSlotPublication(published: { code?: string; error?: string }
   if (!/publication_key/.test(message)) return false;
   if (published.code) return published.code === '23505';
   return isDuplicateSlotMessage(message);
+}
+
+/**
+ * The atomic RPC is the authoritative semantic ledger check. A concurrent
+ * writer can therefore reject a caption that looked fresh during the earlier
+ * read. This exact, definite guard rejection is safe to retry with another
+ * bounded candidate; transport uncertainty and every other database failure
+ * remain terminal for the attempt.
+ */
+function isSemanticReusePublication(
+  published: { outcome?: 'unknown'; error?: string },
+): boolean {
+  return published.outcome !== 'unknown'
+    && /caption violates the semantic reuse window/i.test(published.error ?? '');
 }
 
 /** The message-only fallback: Postgres's unique_violation text naming the slot index. */
@@ -798,6 +818,7 @@ export async function publishVideoClip(
   let belowFloor = 0;
   let stale = 0;
   let missingSemantic = 0;
+  let semanticReuse = 0;
   for (const candidate of captionCandidates) {
     bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
 
@@ -879,9 +900,15 @@ export async function publishVideoClip(
     if (!published.success && isDuplicateSlotPublication(published)) {
       return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
     }
-    // A failed acknowledgement may hide a committed write. A definite RPC
-    // rejection may be a cadence or concurrent-ledger guard. Neither permits
-    // trying a second asset inside the same publication attempt.
+    // The RPC transaction rolled back on this definite semantic-ledger guard,
+    // so a different bounded candidate is safe. This is the only database
+    // rejection that may advance: a failed acknowledgement may hide a commit,
+    // and every unrelated rejection remains terminal.
+    if (!published.success && isSemanticReusePublication(published)) {
+      semanticReuse += 1;
+      bumpSupplyStat(`${clipType}_caption_semantic_reuse`);
+      continue;
+    }
     if (!published.success || !published.postId || !published.reelId) {
       return {
         ...base,
@@ -912,7 +939,9 @@ export async function publishVideoClip(
   return {
     ...base,
     success: false,
-    error: `No fresh caption cleared the quality gate (candidates=${captionCandidates.length}, below_floor=${belowFloor}, stale=${stale}, missing_semantic=${missingSemantic})`,
+    skipped: 'caption_exhausted',
+    publicationKey,
+    error: `No fresh caption cleared the quality gate (candidates=${captionCandidates.length}, below_floor=${belowFloor}, stale=${stale}, missing_semantic=${missingSemantic}, semantic_reuse=${semanticReuse})`,
   };
 }
 
@@ -983,6 +1012,7 @@ export async function publishVideoForHorse(
   }
 
   const errors: string[] = [];
+  const captionExhaustions: string[] = [];
   for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
     const result = await publishVideoClip(
       horse,
@@ -992,13 +1022,28 @@ export async function publishVideoForHorse(
       opts.sharedSupply,
       publicationKey,
     );
-    if (result.success || result.skipped) return result;
+    if (result.success) return result;
+    if (result.skipped === 'caption_exhausted') {
+      captionExhaustions.push(`${kind}_video: ${result.error ?? 'caption candidates exhausted'}`);
+      continue;
+    }
+    if (result.skipped) return result;
     // A lost RPC acknowledgement may already represent a committed post.
     // Do not try the alternate topic in the same run or relabel uncertainty
     // as a definite failure; the durable author/asset retry owns recovery.
     if (result.outcome === 'unknown') return result;
     errors.push(`${kind}_video: ${result.error ?? 'failed'}`);
   }
+  if (errors.length === 0 && captionExhaustions.length > 0) {
+    return {
+      ...base,
+      success: false,
+      skipped: 'caption_exhausted',
+      publicationKey,
+      error: captionExhaustions.join(' | '),
+    };
+  }
+  errors.unshift(...captionExhaustions);
   return { ...base, success: false, error: errors.join(' | ') };
 }
 

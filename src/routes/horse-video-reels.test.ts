@@ -279,6 +279,55 @@ describe('horseVideoReels', () => {
     });
   });
 
+  it('keeps expected caption exhaustion silent and observable instead of paging', async () => {
+    mocks.publishVideoForHorse.mockImplementation(async (horse: (typeof horses)[number]) => ({
+      success: false,
+      horse: horse.name,
+      profile_id: horse.profile_id,
+      skipped: 'caption_exhausted',
+      error: 'No fresh caption cleared the quality gate',
+    }));
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(200);
+    expect(c.captured.body).toMatchObject({
+      success: true,
+      attempted: 2,
+      posted: 0,
+      failed: 0,
+      unknown: 0,
+      caption_exhausted: 2,
+      skipped_by_reason: { caption_exhausted: 2 },
+      errors: {},
+    });
+  });
+
+  it('still pages when caption exhaustion is accompanied by a real failure', async () => {
+    mocks.publishVideoForHorse
+      .mockResolvedValueOnce({
+        success: false,
+        horse: 'Alpha',
+        profile_id: 'horse-a',
+        skipped: 'caption_exhausted',
+        error: 'No fresh caption cleared the quality gate',
+      })
+      .mockResolvedValueOnce({
+        success: false,
+        horse: 'Bravo',
+        profile_id: 'horse-b',
+        error: 'database constraint unavailable',
+      });
+    const c = context();
+    await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(c.captured.body).toMatchObject({
+      success: false,
+      caption_exhausted: 1,
+      failed: 1,
+      errors: { 'database constraint unavailable': 1 },
+    });
+  });
+
   it('does not attempt horses outside their due window', async () => {
     mocks.isDueForPost.mockImplementation((id: string) => ({ due: id === 'horse-a', age: 0 }));
     const c = context();
