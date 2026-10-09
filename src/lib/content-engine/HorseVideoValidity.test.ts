@@ -289,6 +289,86 @@ describe('horse video oEmbed proof', () => {
     }));
   });
 
+  it('ordinary horse publication consumes a supplied shared positive without live YouTube fanout', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA']));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true,
+      postId: 'post-ordinary',
+      reelId: 'reel-ordinary',
+      created: true,
+    });
+    const sharedSupply = {
+      poker: [{
+        id: 'clip-a', video_id: 'AAAAAAAAAAA',
+        source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
+        source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
+      }],
+      sports: [],
+    };
+
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      'poker',
+      [],
+      'fleet',
+      sharedSupply,
+      `fleet:horse-a:${SLOT}`,
+    )).resolves.toMatchObject({ success: true, type: 'poker_video' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ scheduler: 'fleet' }),
+    }));
+  });
+
+  it('keeps a shared-proof outage unknown and authoritative empty supply safely exhausted', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      'poker',
+      [],
+      'fleet',
+      undefined,
+      `fleet:horse-a:${SLOT}`,
+      'shared registry unavailable',
+    )).resolves.toMatchObject({ success: false, outcome: 'unknown', error: 'shared registry unavailable' });
+
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      'poker',
+      [],
+      'fleet',
+      { poker: [], sports: [] },
+      `fleet:horse-a:${SLOT}`,
+    )).resolves.toMatchObject({
+      success: false,
+      skipped: 'supply_exhausted',
+      publicationKey: `fleet:horse-a:${SLOT}`,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
+  });
+
+  it('keeps mode approval ahead of shared-supply handling', async () => {
+    mocks.postModeEnabled.mockResolvedValue(false);
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      'poker',
+      [],
+      'fleet',
+      undefined,
+      `fleet:horse-a:${SLOT}`,
+      'shared registry unavailable',
+    )).resolves.toMatchObject({ success: false, error: 'poker_video awaits approval' });
+    expect(mocks.readFreshSharedYouTubeVerificationIds).not.toHaveBeenCalled();
+    expect(mocks.candidateClips).not.toHaveBeenCalled();
+  });
+
   it('publishes a verified sports snapshot as sports without a poker relabel or native processing', async () => {
     globalThis.fetch = vi.fn() as typeof fetch;
     mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:BBBBBBBBBBB']));

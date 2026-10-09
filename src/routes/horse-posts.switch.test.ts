@@ -13,6 +13,7 @@ const m = vi.hoisted(() => ({
   switches: [] as string[],
   engineSwitch: vi.fn(),
   publishForHorse: vi.fn(),
+  prepareSharedHorseVideoSupply: vi.fn(),
   syncStyleSheets: vi.fn(),
 }));
 
@@ -37,6 +38,7 @@ vi.mock('../lib/content-engine/FleetScheduler.js', () => ({
 }));
 vi.mock('../lib/content-engine/HorsePublisher.js', () => ({
   publishForHorse: m.publishForHorse,
+  prepareSharedHorseVideoSupply: m.prepareSharedHorseVideoSupply,
   takeSupplyStats: () => ({}),
   fleetSlotId: (profileId: string) => `slot-of-${profileId}`,
 }));
@@ -55,6 +57,13 @@ beforeEach(() => {
   m.switches = [];
   m.engineSwitch.mockClear();
   m.publishForHorse.mockReset();
+  m.prepareSharedHorseVideoSupply.mockReset();
+  m.prepareSharedHorseVideoSupply.mockResolvedValue({
+    status: 'ok',
+    supply: { poker: [], sports: [] },
+    availableTypes: [],
+    counts: {},
+  });
   m.publishForHorse.mockImplementation(async (h: { name: string; profile_id: string }) => ({
     success: true,
     horse: h.name,
@@ -66,6 +75,14 @@ beforeEach(() => {
 });
 
 describe('turning the engine off stops a run in flight', () => {
+  it('does not read shared supply when the master switch is off at entry', async () => {
+    m.switches = ['off'];
+    const r = await run();
+    expect(r.body).toMatchObject({ success: true, skipped: 'engine_disabled' });
+    expect(m.prepareSharedHorseVideoSupply).not.toHaveBeenCalled();
+    expect(m.publishForHorse).not.toHaveBeenCalled();
+  });
+
   it('stops before the next horse when the switch flips off mid-run', async () => {
     m.switches = ['on', 'on', 'on', 'off'];
     const r = await run();
@@ -95,6 +112,34 @@ describe('turning the engine off stops a run in flight', () => {
 });
 
 describe('each publish names its slot, and skips are counted by reason', () => {
+  it('prepares one shared video proof snapshot and passes it to every horse', async () => {
+    m.switches = ['on', 'on', 'on', 'on', 'on'];
+    const supply = { poker: [{ video_id: 'AAAAAAAAAAA' }], sports: [] };
+    m.prepareSharedHorseVideoSupply.mockResolvedValue({
+      status: 'ok', supply, availableTypes: ['poker'], counts: { poker: { scanned: 1, verified: 1, captionable: 1 } },
+    });
+    const r = await run();
+    expect(r.status).toBe(200);
+    expect(m.prepareSharedHorseVideoSupply).toHaveBeenCalledTimes(1);
+    expect(m.prepareSharedHorseVideoSupply).toHaveBeenCalledWith(['poker', 'sports']);
+    for (const [, opts] of m.publishForHorse.mock.calls) {
+      expect(opts).toMatchObject({ sharedVideoSupply: supply });
+    }
+    expect(r.body).toMatchObject({ video_supply_preflight: 'ok' });
+  });
+
+  it('passes a shared-proof outage as unknown instead of falling back to per-horse YouTube fanout', async () => {
+    m.switches = ['on', 'on', 'on', 'on', 'on'];
+    m.prepareSharedHorseVideoSupply.mockResolvedValue({ status: 'unknown', error: 'shared registry unavailable' });
+    const r = await run();
+    expect(r.status).toBe(200);
+    for (const [, opts] of m.publishForHorse.mock.calls) {
+      expect(opts).toMatchObject({ sharedVideoSupplyError: 'shared registry unavailable' });
+      expect(opts.sharedVideoSupply).toBeUndefined();
+    }
+    expect(r.body).toMatchObject({ video_supply_preflight: 'unknown' });
+  });
+
   it('passes the scheduler slot and counts guard, duplicate and recent skips apart from failures', async () => {
     m.switches = ['on', 'on', 'on', 'on', 'on'];
     const answers = [

@@ -14,6 +14,7 @@ import { Hono } from 'hono';
 
 const m = vi.hoisted(() => ({
   publishForHorse: vi.fn(),
+  prepareSharedHorseVideoSupply: vi.fn(),
   ledgerFailures: 0,
 }));
 
@@ -30,6 +31,7 @@ vi.mock('../lib/content-engine/FleetScheduler.js', () => ({
 }));
 vi.mock('../lib/content-engine/HorsePublisher.js', () => ({
   publishForHorse: m.publishForHorse,
+  prepareSharedHorseVideoSupply: m.prepareSharedHorseVideoSupply,
   takeSupplyStats: () => ({}),
   fleetSlotId: (profileId: string) => `slot-of-${profileId}`,
 }));
@@ -52,6 +54,10 @@ async function run() {
 beforeEach(() => {
   m.ledgerFailures = 0;
   m.publishForHorse.mockReset();
+  m.prepareSharedHorseVideoSupply.mockReset();
+  m.prepareSharedHorseVideoSupply.mockResolvedValue({
+    status: 'ok', supply: { poker: [], sports: [] }, availableTypes: [], counts: {},
+  });
 });
 
 describe('a ledger outage is named in the run result', () => {
