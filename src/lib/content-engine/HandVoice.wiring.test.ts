@@ -236,6 +236,35 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(secondKey).not.toBe(firstKey);
   });
 
+  it('does not reuse an exact grounded sentence anywhere in the active programme', async () => {
+    vi.setSystemTime(new Date('2026-10-08T12:00:00Z'));
+    db.tables.horse_post_modes = modes(true, false);
+    const first = await writeGrounded(HORSE as AuthorHorse, { hand: true, session: false });
+    expect(first?.text).toBeTruthy();
+    db.tables.horse_phrase_ledger = [{
+      phrase_norm: first!.text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim(),
+      horse_id: 'another-horse',
+      used_at: '2026-09-30T12:00:00Z',
+    }];
+
+    const second = await writeGrounded(HORSE as AuthorHorse, { hand: true, session: false });
+    expect(second?.text).toBeTruthy();
+    expect(second!.text).not.toBe(first!.text);
+  });
+
+  it('does not retell one source hand through a different frame', async () => {
+    vi.setSystemTime(new Date('2026-10-08T12:00:00Z'));
+    db.tables.horse_post_modes = modes(true, false);
+    db.tables.horse_phrase_ledger = [{
+      phrase_norm: 'grounded:hand:573264',
+      horse_id: 'another-horse',
+      used_at: '2026-09-30T12:00:00Z',
+    }];
+
+    const result = await writeGrounded(HORSE as AuthorHorse, { hand: true, session: false });
+    expect(result).toBeNull();
+  });
+
   it('grounded_session approved: the social_posts row carries the SessionVoice line, and no hand is read', async () => {
     db.tables.horse_post_modes = modes(false, true);
     const res = await publishForHorse(HORSE, { skipGuard: true, slot: SLOT });

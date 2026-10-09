@@ -34,7 +34,13 @@ import {
   relevanceOf,
   RELEVANCE_FLOOR,
 } from './Composer.js';
-import { normalizePhrase, phraseRecentlyUsed, phraseUsedOnPost, recentFrameKeys } from './ContentLedger.js';
+import {
+  groundedPhraseRecentlyUsed,
+  normalizePhrase,
+  phraseRecentlyUsed,
+  phraseUsedOnPost,
+  recentFrameKeys,
+} from './ContentLedger.js';
 import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
@@ -264,25 +270,29 @@ export async function writeGrounded(
         // skipped, and an exhausted pool is silence.
         const exclude = new Set(await recentFrameKeys('voice', hand.category));
         const seed = `${horse.profile_id}:h:${hand.handId}`;
-        for (let i = 0; i < MAX_DRAFTS; i++) {
-          const spoken = lineFor(hand, seed, exclude);
-          if (!spoken) break;
-          if (await phraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
-            exclude.add(spoken.key);
-            continue;
+        const semanticKey = `grounded:hand:${hand.handId}`;
+        if (!(await groundedPhraseRecentlyUsed(semanticKey, horse.profile_id))) {
+          for (let i = 0; i < MAX_DRAFTS; i++) {
+            const spoken = lineFor(hand, seed, exclude);
+            if (!spoken) break;
+            if (await groundedPhraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
+              exclude.add(spoken.key);
+              continue;
+            }
+            return {
+              text: spoken.text,
+              brief: briefForSpokenHand(hand),
+              style,
+              relevance: 1,
+              grounding: [`hand:${hand.handId}`, `category:${hand.category}`, spoken.key],
+              attempts: i + 1,
+              belowFloor: false,
+              stale: false,
+              frameKey: spoken.key,
+              groundedKind: 'hand',
+              semanticKey,
+            };
           }
-          return {
-            text: spoken.text,
-            brief: briefForSpokenHand(hand),
-            style,
-            relevance: 1,
-            grounding: [`hand:${hand.handId}`, `category:${hand.category}`, spoken.key],
-            attempts: i + 1,
-            belowFloor: false,
-            stale: false,
-            frameKey: spoken.key,
-            groundedKind: 'hand',
-          };
         }
       }
     }
@@ -295,25 +305,29 @@ export async function writeGrounded(
         // reachable from here.
         const exclude = new Set(await recentFrameKeys('sessionvoice', sessionGroup(session)));
         const seed = `${horse.profile_id}:s:${session.day}:${session.variant}:${session.format}`;
-        for (let i = 0; i < MAX_DRAFTS; i++) {
-          const spoken = sessionLineFor(session, seed, exclude);
-          if (!spoken) break;
-          if (await phraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
-            exclude.add(spoken.key);
-            continue;
+        const semanticKey = `grounded:session:${horse.profile_id}:${session.day}:${session.variant}:${session.format}`;
+        if (!(await groundedPhraseRecentlyUsed(semanticKey, horse.profile_id))) {
+          for (let i = 0; i < MAX_DRAFTS; i++) {
+            const spoken = sessionLineFor(session, seed, exclude);
+            if (!spoken) break;
+            if (await groundedPhraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
+              exclude.add(spoken.key);
+              continue;
+            }
+            return {
+              text: spoken.text,
+              brief: briefForSpokenSession(session),
+              style,
+              relevance: 1,
+              grounding: [`session:${session.day}`, `variant:${session.variant}`, `format:${session.format}`, spoken.key],
+              attempts: i + 1,
+              belowFloor: false,
+              stale: false,
+              frameKey: spoken.key,
+              groundedKind: 'session',
+              semanticKey,
+            };
           }
-          return {
-            text: spoken.text,
-            brief: briefForSpokenSession(session),
-            style,
-            relevance: 1,
-            grounding: [`session:${session.day}`, `variant:${session.variant}`, `format:${session.format}`, spoken.key],
-            attempts: i + 1,
-            belowFloor: false,
-            stale: false,
-            frameKey: spoken.key,
-            groundedKind: 'session',
-          };
         }
       }
     }

@@ -62,6 +62,7 @@ afterEach(() => {
 describe('ledger reads', () => {
   it('a readable ledger still says unused (control)', async () => {
     expect(await ledger.phraseRecentlyUsed('a fresh line', 'h-1')).toBe(false);
+    expect(await ledger.groundedPhraseRecentlyUsed('a fresh grounded line', 'h-1')).toBe(false);
     expect(await ledger.phraseUsedOnPost('a fresh line', 'post-1')).toBe(false);
     expect([...(await ledger.filterUnusedAssets(['yt:aaaaaaaaaaa'], 'h-1'))]).toEqual(['yt:aaaaaaaaaaa']);
   });
@@ -69,6 +70,18 @@ describe('ledger reads', () => {
   it('phraseRecentlyUsed: unreadable means used', async () => {
     ledgerDown();
     expect(await ledger.phraseRecentlyUsed('a fresh line', 'h-1')).toBe(true);
+  });
+
+  it('grounded programme freshness: platform reuse and unreadability both mean used', async () => {
+    db.seed('horse_phrase_ledger', [{
+      id: 'phrase-1',
+      phrase_norm: 'a grounded line',
+      horse_id: 'another-horse',
+      used_at: '2026-10-01T00:00:00.000Z',
+    }]);
+    expect(await ledger.groundedPhraseRecentlyUsed('a grounded line', 'h-1')).toBe(true);
+    ledgerDown();
+    expect(await ledger.groundedPhraseRecentlyUsed('another grounded line', 'h-1')).toBe(true);
   });
 
   it('phraseUsedOnPost: unreadable means used', async () => {

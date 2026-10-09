@@ -119,10 +119,9 @@ describe('a day is said the way a player says it', () => {
     expect(sayGame(at('plo5'))).toBe('five-card PLO');
     expect(sayGame(at('short_deck'))).toBe('short deck');
     expect(sayGame(at('something_new'))).toBeNull();
-    // An unknown variant still has lines that do not need the game.
+    // An unknown variant cannot produce a specific, source-backed game line.
     const lines = rendered(at('something_new'));
-    expect(lines.length).toBeGreaterThan(0);
-    for (const line of lines) expect(line.text).not.toMatch(/something|new/i);
+    expect(lines).toEqual([]);
   });
 
   it('renders variety in every direction and falls silent when the pool is used up', () => {
