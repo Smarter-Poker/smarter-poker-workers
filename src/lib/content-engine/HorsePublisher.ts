@@ -55,6 +55,7 @@ import {
 import {
   assetKeyFor,
   filterUnusedAssets,
+  ledgerReadFailureTotal,
   recordAssetUse,
   recordPhrase,
   normalizePhrase,
@@ -85,9 +86,17 @@ export interface FleetHorse {
  * Why nothing was published when that was the right answer rather than a
  * failure: the horse posted inside the guard window, the guard could not be
  * read (fail closed), another run already filled this slot (23505 on the slot
- * key), or the horse has no scheduled slot open.
+ * key), the bounded caption candidates are all inside the semantic reuse
+ * window, or the horse has no scheduled slot open.
  */
-export type PublishSkip = 'posted_recently' | 'guard_unreadable' | 'duplicate_slot' | 'no_slot';
+export type PublishSkip =
+  | 'posted_recently'
+  | 'guard_unreadable'
+  | 'duplicate_slot'
+  | 'caption_exhausted'
+  | 'supply_exhausted'
+  | 'content_exhausted'
+  | 'no_slot';
 
 export interface PublishResult {
   success: boolean;
@@ -195,6 +204,20 @@ function isDuplicateSlotPublication(published: { code?: string; error?: string }
   if (!/publication_key/.test(message)) return false;
   if (published.code) return published.code === '23505';
   return isDuplicateSlotMessage(message);
+}
+
+/**
+ * The atomic RPC is the authoritative semantic ledger check. A concurrent
+ * writer can therefore reject a caption that looked fresh during the earlier
+ * read. This exact, definite guard rejection is safe to retry with another
+ * bounded candidate; transport uncertainty and every other database failure
+ * remain terminal for the attempt.
+ */
+function isSemanticReusePublication(
+  published: { outcome?: 'unknown'; error?: string },
+): boolean {
+  return published.outcome !== 'unknown'
+    && /caption violates the semantic reuse window/i.test(published.error ?? '');
 }
 
 /** The message-only fallback: Postgres's unique_violation text naming the slot index. */
@@ -321,6 +344,19 @@ export const YOUTUBE_OEMBED_TIMEOUT_MS = 8_000;
 
 /** Bound ledger reads when one caption-ready asset is stale for this horse. */
 export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
+/** Bound live verifier work in the ordinary mixed publisher. */
+export const MAX_LIVE_VIDEO_CANDIDATES = 3;
+
+/** Randomised without replacement, so one bad/stale clip cannot monopolise an attempt. */
+function takeRandomCandidates<T>(rows: readonly T[], limit: number): T[] {
+  const remaining = [...rows];
+  const selected: T[] = [];
+  while (selected.length < limit && remaining.length > 0) {
+    const index = Math.floor(Math.random() * remaining.length);
+    selected.push(remaining.splice(index, 1)[0]!);
+  }
+  return selected;
+}
 
 /**
  * Per-run supply telemetry, surfaced in the route's result JSON so a run
@@ -631,7 +667,6 @@ export async function publishVideoClip(
   if (!(await postModeEnabled(`${clipType}_video`))) {
     return { ...base, success: false, error: `${clipType}_video awaits approval` };
   }
-  let clip: LibraryClip | SportsClipRow | null = null;
   let captionCandidates: Array<LibraryClip | SportsClipRow> = [];
 
   if (scheduler === 'horse-video-reels') {
@@ -672,6 +707,8 @@ export async function publishVideoClip(
       bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
     }
     if (!fresh.length) {
+      // A fail-closed ledger read also produces no usable assets, but that is
+      // an outage rather than authoritative exhaustion.
       return {
         ...base,
         success: false,
@@ -693,6 +730,7 @@ export async function publishVideoClip(
     if (widened) bumpSupplyStat('poker_widened_to_platform');
     if (!pool.length) return { ...base, success: false, error: 'No poker clips in supply' };
 
+    const ledgerFailuresBefore = ledgerReadFailureTotal();
     const keys = pool.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
     const usable = await filterUnusedAssets(keys, horse.profile_id);
     const fresh = pool.filter((c) => {
@@ -702,30 +740,20 @@ export async function publishVideoClip(
     bumpSupplyStat(
       'poker_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'),
     );
-    if (!fresh.length) return { ...base, success: false, error: 'All poker clips already posted' };
-
-    // Three candidates, as sports does. The row already carries the last
-    // oEmbed answer, so a definite "bad" here is rare and worth persisting:
-    // a dead video should cost the fleet one question, not one per container.
-    for (let i = 0; i < 3 && fresh.length > 0; i++) {
-      const idx = Math.floor(Math.random() * fresh.length);
-      const candidate = fresh[idx]!;
-      const verdict = await youtubeValidity(candidate.source_url);
-      if (verdict === 'ok') {
-        clip = candidate as unknown as LibraryClip;
-        break;
+    if (!fresh.length) {
+      if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
+        return { ...base, success: false, error: 'All poker clips already posted (asset ledger unreadable)' };
       }
-      // Unknown means the verifier, shared registry, or network could not
-      // answer. Only a definitive negative may retire durable supply.
-      if (verdict === 'bad') {
-        await recordValidity(candidate.id, false);
-        bumpSupplyStat('poker_clip_retired_on_use');
-      } else {
-        bumpSupplyStat('poker_clip_unknown_on_use');
-      }
-      fresh.splice(idx, 1);
+      return {
+        ...base, success: false, skipped: 'supply_exhausted', publicationKey,
+        error: 'All poker clips already posted',
+      };
     }
-    if (!clip) return { ...base, success: false, error: 'No valid poker clips found' };
+
+    // Validate lazily in the caption loop. If the first playable clip has no
+    // fresh grounded caption, the next distinct clip gets a chance without
+    // probing more than the same three live candidates used before.
+    captionCandidates = takeRandomCandidates(fresh, MAX_LIVE_VIDEO_CANDIDATES);
   } else {
     const supa = getSupabase();
     const assigned = await getHorseSources(horse.profile_id);
@@ -736,14 +764,16 @@ export async function publishVideoClip(
     // daily; the newest 400 of a horse's sources are the live pool.
     let clips: SportsClipRow[] = [];
     if (assigned.length > 0) {
-      const { data } = await supa
+      const { data, error } = await supa
         .from('sports_clips')
         .select('*')
         .in('source', assigned)
         .order('created_at', { ascending: false })
         .limit(400);
+      if (error) bumpSupplyStat('sports_assigned_pool_unreadable');
       if (data?.length) clips = data as SportsClipRow[];
     }
+    const ledgerFailuresBefore = ledgerReadFailureTotal();
     const freshOf = async (rows: SportsClipRow[]) => {
       const keys = rows.map((c) => assetKeyFor(c.source_url)).filter(Boolean) as string[];
       const usable = await filterUnusedAssets(keys, horse.profile_id);
@@ -755,36 +785,41 @@ export async function publishVideoClip(
     let fresh = clips.length ? await freshOf(clips) : [];
     if (fresh.length < 10) {
       // The horse's own sources are thin; widen to the platform's newest.
-      const { data } = await supa
+      const { data, error } = await supa
         .from('sports_clips')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(600);
+      if (error) {
+        return {
+          ...base,
+          success: false,
+          outcome: 'unknown',
+          error: `sports clip supply unavailable: ${error.message}`,
+        };
+      }
       if (data?.length) fresh = await freshOf(data as SportsClipRow[]);
       bumpSupplyStat('sports_widened_to_platform');
     }
-    if (!fresh.length) return { ...base, success: false, error: 'All sports clips already posted' };
+    if (!fresh.length) {
+      if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
+        return { ...base, success: false, error: 'All sports clips already posted (asset ledger unreadable)' };
+      }
+      return {
+        ...base, success: false, skipped: 'supply_exhausted', publicationKey,
+        error: 'All sports clips already posted',
+      };
+    }
     bumpSupplyStat('sports_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'));
 
-    // Three candidates, not ten: sports_clips rows come from the channel
-    // scraper and are trusted unless oEmbed definitely says otherwise.
-    for (let i = 0; i < 3 && fresh.length > 0; i++) {
-      const idx = Math.floor(Math.random() * fresh.length);
-      const candidate = fresh[idx]!;
-      if ((await youtubeValidity(candidate.source_url)) === 'ok') {
-        clip = candidate;
-        break;
-      }
-      fresh.splice(idx, 1);
-    }
-    if (!clip) return { ...base, success: false, error: 'No valid sports clips found' };
+    // As with poker, verification stays bounded and lazy so caption reuse on
+    // one valid clip can advance to another distinct candidate.
+    captionCandidates = takeRandomCandidates(fresh, MAX_LIVE_VIDEO_CANDIDATES);
   }
 
-  // The legacy publisher validates one live candidate. The isolated Reel
-  // producer receives a proof snapshot and may try a small bounded sequence
-  // when a safe caption for the first asset is stale. It never makes a live
-  // YouTube request here and never relaxes the caption gate.
-  if (captionCandidates.length === 0 && clip) captionCandidates = [clip];
+  // Both producers now carry a bounded candidate sequence into the caption
+  // gate. The isolated Reel producer uses its shared proof snapshot; the
+  // ordinary publisher validates each candidate lazily as it reaches it.
 
   // Fail closed: a video write without its slot key would sit outside the
   // duplicate protection every other scheduled post carries, whichever
@@ -798,8 +833,32 @@ export async function publishVideoClip(
   let belowFloor = 0;
   let stale = 0;
   let missingSemantic = 0;
+  let semanticReuse = 0;
+  let invalidVideo = 0;
+  let verificationUnknown = 0;
   for (const candidate of captionCandidates) {
     bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
+
+    if (scheduler !== 'horse-video-reels') {
+      const verdict = await youtubeValidity(candidate.source_url);
+      if (verdict !== 'ok') {
+        if (verdict === 'bad') {
+          invalidVideo += 1;
+          bumpSupplyStat(`${clipType}_clip_invalid_on_use`);
+          if (clipType === 'poker') {
+            const candidateId = (candidate as LibraryClip).id;
+            if (candidateId) {
+              await recordValidity(candidateId, false);
+              bumpSupplyStat('poker_clip_retired_on_use');
+            }
+          }
+        } else {
+          verificationUnknown += 1;
+          bumpSupplyStat(`${clipType}_clip_unknown_on_use`);
+        }
+        continue;
+      }
+    }
 
     // Phase 2: the caption is written from a brief of THIS clip - its title,
     // channel and sport - not drawn from a pool keyed on a category. See
@@ -879,9 +938,15 @@ export async function publishVideoClip(
     if (!published.success && isDuplicateSlotPublication(published)) {
       return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
     }
-    // A failed acknowledgement may hide a committed write. A definite RPC
-    // rejection may be a cadence or concurrent-ledger guard. Neither permits
-    // trying a second asset inside the same publication attempt.
+    // The RPC transaction rolled back on this definite semantic-ledger guard,
+    // so a different bounded candidate is safe. This is the only database
+    // rejection that may advance: a failed acknowledgement may hide a commit,
+    // and every unrelated rejection remains terminal.
+    if (!published.success && isSemanticReusePublication(published)) {
+      semanticReuse += 1;
+      bumpSupplyStat(`${clipType}_caption_semantic_reuse`);
+      continue;
+    }
     if (!published.success || !published.postId || !published.reelId) {
       return {
         ...base,
@@ -909,10 +974,29 @@ export async function publishVideoClip(
     };
   }
 
+  if (verificationUnknown > 0) {
+    return {
+      ...base,
+      success: false,
+      outcome: 'unknown',
+      error: `Video verification unavailable before candidate exhaustion (candidates=${captionCandidates.length}, unknown=${verificationUnknown}, invalid=${invalidVideo})`,
+    };
+  }
+  if (invalidVideo === captionCandidates.length && captionCandidates.length > 0) {
+    return {
+      ...base,
+      success: false,
+      skipped: 'supply_exhausted',
+      publicationKey,
+      error: `No valid ${clipType} clips found after ${captionCandidates.length} bounded candidates`,
+    };
+  }
   return {
     ...base,
     success: false,
-    error: `No fresh caption cleared the quality gate (candidates=${captionCandidates.length}, below_floor=${belowFloor}, stale=${stale}, missing_semantic=${missingSemantic})`,
+    skipped: 'caption_exhausted',
+    publicationKey,
+    error: `No fresh caption cleared the quality gate (candidates=${captionCandidates.length}, below_floor=${belowFloor}, stale=${stale}, missing_semantic=${missingSemantic}, semantic_reuse=${semanticReuse})`,
   };
 }
 
@@ -983,6 +1067,7 @@ export async function publishVideoForHorse(
   }
 
   const errors: string[] = [];
+  const captionExhaustions: string[] = [];
   for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
     const result = await publishVideoClip(
       horse,
@@ -992,13 +1077,28 @@ export async function publishVideoForHorse(
       opts.sharedSupply,
       publicationKey,
     );
-    if (result.success || result.skipped) return result;
+    if (result.success) return result;
+    if (result.skipped === 'caption_exhausted') {
+      captionExhaustions.push(`${kind}_video: ${result.error ?? 'caption candidates exhausted'}`);
+      continue;
+    }
+    if (result.skipped) return result;
     // A lost RPC acknowledgement may already represent a committed post.
     // Do not try the alternate topic in the same run or relabel uncertainty
     // as a definite failure; the durable author/asset retry owns recovery.
     if (result.outcome === 'unknown') return result;
     errors.push(`${kind}_video: ${result.error ?? 'failed'}`);
   }
+  if (errors.length === 0 && captionExhaustions.length > 0) {
+    return {
+      ...base,
+      success: false,
+      skipped: 'caption_exhausted',
+      publicationKey,
+      error: captionExhaustions.join(' | '),
+    };
+  }
+  errors.unshift(...captionExhaustions);
   return { ...base, success: false, error: errors.join(' | ') };
 }
 
@@ -1031,15 +1131,26 @@ async function postNewsLink(
 
   try {
     const articles = (await fetchFeed(source.rss)).slice(0, 20).filter((a) => !!a.link);
-    if (!articles.length) return { ...base, success: false, error: 'No articles' };
+    if (!articles.length) {
+      return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'No articles' };
+    }
 
     const keys = articles.map((a) => assetKeyFor(a.link)).filter(Boolean) as string[];
+    const ledgerFailuresBefore = ledgerReadFailureTotal();
     const usable = await filterUnusedAssets(keys, horse.profile_id);
     const fresh = articles.filter((a) => {
       const k = assetKeyFor(a.link);
       return !!k && usable.has(k);
     });
-    if (!fresh.length) return { ...base, success: false, error: 'All articles already posted' };
+    if (!fresh.length) {
+      if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
+        return { ...base, success: false, error: 'All articles already posted (asset ledger unreadable)' };
+      }
+      return {
+        ...base, success: false, skipped: 'supply_exhausted', publicationKey,
+        error: 'All articles already posted',
+      };
+    }
 
     const article = fresh[Math.floor(Math.random() * fresh.length)]!;
     await seedMemoryFromHistory(horse.profile_id);
@@ -1049,7 +1160,15 @@ async function postNewsLink(
       { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
       fleet,
     );
-    if (!written.text) return { ...base, success: false, error: 'No fresh caption cleared the quality gate' };
+    if (!written.text) {
+      return {
+        ...base,
+        success: false,
+        skipped: 'caption_exhausted',
+        publicationKey,
+        error: 'No fresh caption cleared the quality gate',
+      };
+    }
     const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
     const content = `${picked.text}\n\n${article.link}`;
 
@@ -1116,7 +1235,15 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
   }
   const base = { horse: horse.name, profile_id: horse.profile_id };
   const written = await writeGrounded(horse as AuthorHorse, { hand: handEnabled, session: sessionEnabled });
-  if (!written || !written.text) return { ...base, success: false, error: 'No approved grounded story worth telling' };
+  if (!written || !written.text) {
+    return {
+      ...base,
+      success: false,
+      skipped: 'caption_exhausted',
+      publicationKey,
+      error: 'No approved grounded story worth telling',
+    };
+  }
   const groundedType = written.groundedKind ?? 'hand';
 
   const { data: post, error } = await getSupabase()
@@ -1143,6 +1270,7 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
   if (error) return { ...base, success: false, error: error.message };
   const postId = (post as { id: string } | null)?.id ?? null;
   await recordPhrase(normalizePhrase(written.text), horse.profile_id, postId);
+  if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, postId);
   // The skeleton is ledgered as well as the sentence. Two horses telling
   // different hands through the same frame is the repetition a reader
   // actually notices, and the cards hide it from the phrase ledger.
@@ -1216,6 +1344,14 @@ export async function publishForHorse(
   const preferred: 'poker' | 'sports' = isPoker ? 'poker' : 'sports';
   const other: 'poker' | 'sports' = isPoker ? 'sports' : 'poker';
   const attempts: string[] = [];
+  const exhaustions: string[] = [];
+  const recordAttempt = (label: string, result: PublishResult): 'continue' | 'return' => {
+    if (result.skipped === 'caption_exhausted' || result.skipped === 'supply_exhausted') {
+      exhaustions.push(`${label}: ${result.error ?? result.skipped}`);
+      return 'continue';
+    }
+    return 'return';
+  };
 
   // Phase 3: the horse's own poker.
   //
@@ -1231,30 +1367,44 @@ export async function publishForHorse(
   // same key.
   if (groundedFirst) {
     const grounded = await postGrounded(horse, publicationKey);
-    if (grounded.success || grounded.skipped) return grounded;
-    attempts.push(`grounded: ${grounded.error}`);
+    if (grounded.success) return grounded;
+    if (grounded.skipped && recordAttempt('grounded', grounded) === 'return') return grounded;
+    else if (!grounded.skipped) attempts.push(`grounded: ${grounded.error}`);
   }
 
   for (const kind of [preferred, other]) {
     let result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey);
-    if (result.success || result.skipped) return result;
-    attempts.push(`${kind}_news: ${result.error}`);
+    if (result.success) return result;
+    if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
+    else if (!result.skipped) attempts.push(`${kind}_news: ${result.error}`);
     result = await publishVideoClip(horse, kind, opts.fleet ?? [], 'fleet', undefined, publicationKey);
-    if (result.success || result.skipped) return result;
+    if (result.success) return result;
+    if (result.skipped && recordAttempt(`${kind}_video`, result) === 'return') return result;
     // The mixed publisher is disabled, but retain the same lost-ACK law if it
     // is ever re-enabled: an unknown atomic outcome may already be committed,
     // so no alternate category or grounded fallback may publish behind it.
     if (result.outcome === 'unknown') return result;
-    attempts.push(`${kind}_video: ${result.error}`);
+    if (!result.skipped) attempts.push(`${kind}_video: ${result.error}`);
   }
 
   // The media pools are exhausted for this horse. Its own poker is the
   // fallback that never is.
   if (!groundedFirst) {
     const grounded = await postGrounded(horse, publicationKey);
-    if (grounded.success || grounded.skipped) return grounded;
-    attempts.push(`grounded: ${grounded.error}`);
+    if (grounded.success) return grounded;
+    if (grounded.skipped && recordAttempt('grounded', grounded) === 'return') return grounded;
+    else if (!grounded.skipped) attempts.push(`grounded: ${grounded.error}`);
   }
 
+  if (attempts.length === 0 && exhaustions.length > 0) {
+    return {
+      ...base,
+      success: false,
+      skipped: 'content_exhausted',
+      publicationKey,
+      error: exhaustions.join(' | '),
+    };
+  }
+  attempts.unshift(...exhaustions);
   return { ...base, success: false, error: attempts.join(' | ') };
 }

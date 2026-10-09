@@ -75,6 +75,8 @@ export function _resetLedgerReadFailures(): void {
 export const ASSET_GLOBAL_DAYS = 30;
 export const PHRASE_HORSE_DAYS = 90;
 export const PHRASE_GLOBAL_HOURS = 48;
+/** Grounded-mode approval began here; exact/semantic reuse stays barred for the programme. */
+export const GROUNDED_PROGRAMME_STARTED_AT = '2026-09-29T00:00:00.000Z';
 
 /**
  * How long a grounded FRAME is spoken for.
@@ -260,6 +262,31 @@ export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): P
     return true;
   }
   return (mine.data ?? []).length > 0;
+}
+
+/**
+ * Grounded posts have enough source facts to avoid the small caption-pool
+ * exception. Refuse an exact sentence or source-story semantic key used by
+ * any horse since grounded publishing was approved, while retaining the
+ * ordinary 90-day per-horse rule. An unreadable ledger is used (fail closed).
+ */
+export async function groundedPhraseRecentlyUsed(
+  phraseNorm: string,
+  horseId: string,
+): Promise<boolean> {
+  if (!phraseNorm) return false;
+  const recent = await getSupabase()
+    .from('horse_phrase_ledger')
+    .select('id')
+    .eq('phrase_norm', phraseNorm)
+    .gte('used_at', GROUNDED_PROGRAMME_STARTED_AT)
+    .limit(1);
+  if (recent.error) {
+    noteReadFailure('phrase', recent.error.message);
+    return true;
+  }
+  if ((recent.data ?? []).length > 0) return true;
+  return phraseRecentlyUsed(phraseNorm, horseId);
 }
 
 /** Has this unstyled sentence already been used under this exact post? True when the ledger cannot say. */

@@ -469,6 +469,17 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
       text = text.replace(new RegExp(`\\{${part}\\}`, 'g'), spoken[part] ?? '');
     }
     if (text.includes('{')) continue;
+    // Generic reactions caused the production exact-text clusters. Preserve
+    // their useful voice variety, but make a source-backed poker fact audible
+    // instead of relying on hidden metadata to call the sentence grounded.
+    if (line.needs.length === 0) {
+      if (spoken.holding) text += ` The hand was ${spoken.holding}.`;
+      else if (spoken.street) text += ` It was decided ${spoken.street}.`;
+      else if (spoken.money) text += ` It was ${spoken.money}.`;
+      else if (spoken.board) text += ` The board was ${spoken.board}.`;
+      else if (spoken.runs) text += ` We ran it ${spoken.runs}.`;
+      else continue;
+    }
     // A replacement can begin a new sentence inside the frame: for example,
     // "No half measures in that one. {money}." The spoken money phrase is a
     // noun phrase and deliberately lowercase everywhere else, so capitalise

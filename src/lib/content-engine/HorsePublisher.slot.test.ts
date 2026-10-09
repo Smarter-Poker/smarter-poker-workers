@@ -29,6 +29,7 @@ const db = vi.hoisted(() => ({
 const ledger = vi.hoisted(() => ({ recordPhrase: vi.fn(), recordAssetUse: vi.fn(), recordBrief: vi.fn() }));
 const modes = vi.hoisted(() => ({ grounded: true, video: true }));
 const feed = vi.hoisted(() => ({ parseURL: vi.fn() }));
+const voice = vi.hoisted(() => ({ writeGrounded: vi.fn() }));
 
 vi.mock('../supabase.js', () => ({
   getSupabase: () => ({
@@ -101,15 +102,7 @@ vi.mock('./VoiceWriter.js', () => ({
     attempts: 1,
     belowFloor: false,
   })),
-  writeGrounded: vi.fn(async () => ({
-    text: "Folded the turn last night and I still think it's right",
-    groundedKind: 'hand',
-    grounding: ['hand'],
-    brief: { kind: 'hand' },
-    relevance: 1,
-    attempts: 1,
-    frameKey: 'frame:test',
-  })),
+  writeGrounded: voice.writeGrounded,
   summarise: () => 'brief',
   recordBrief: ledger.recordBrief,
 }));
@@ -187,6 +180,16 @@ beforeEach(() => {
   ledger.recordBrief.mockClear();
   feed.parseURL.mockReset();
   feed.parseURL.mockResolvedValue({ items: [{ title: 'Deep run at the Main Event', link: 'https://news.example/a' }] });
+  voice.writeGrounded.mockReset();
+  voice.writeGrounded.mockResolvedValue({
+    text: "Folded the turn last night and I still think it's right",
+    groundedKind: 'hand',
+    grounding: ['hand'],
+    brief: { kind: 'hand' },
+    relevance: 1,
+    attempts: 1,
+    frameKey: 'frame:test',
+  });
   _resetFeedCache();
   _resetValidityCache();
   vi.stubGlobal(
@@ -401,6 +404,28 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     const r = await publishForHorse(horse(id));
     expect(r).toMatchObject({ success: false, skipped: 'no_slot' });
     expect(db.reads).toHaveLength(0);
+    expect(db.inserts).toHaveLength(0);
+  });
+});
+
+describe('definitive bounded content exhaustion', () => {
+  it('tries every approved fallback, then returns one observable safe-silence result', async () => {
+    feed.parseURL.mockResolvedValue({ items: [] });
+    voice.writeGrounded.mockResolvedValue(null);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('missing', { status: 404 })));
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { skipGuard: true, slot: SLOT });
+
+    expect(result).toMatchObject({
+      success: false,
+      skipped: 'content_exhausted',
+      publicationKey: `fleet:${id}:${SLOT}`,
+      error: expect.stringContaining('No approved grounded story worth telling'),
+    });
+    expect(result.error).toContain('No articles');
+    expect(result.error).toContain('No valid poker clips found after 1 bounded candidates');
+    expect(result.error).toContain('All sports clips already posted');
     expect(db.inserts).toHaveLength(0);
   });
 });

@@ -169,6 +169,7 @@ export function sessionLineFor(
 ): { text: string; key: string } | null {
   const group = sessionGroup(s);
   const spoken: Spoken = { game: sayGame(s) };
+  if (!spoken.game) return null;
   const pool = LINES[group];
   const start = fleetHash(seed, 'sessionvoice');
   for (let i = 0; i < pool.length; i++) {
@@ -178,6 +179,9 @@ export function sessionLineFor(
     if (line.when && !line.when(s)) continue;
     let text = line.t.replace(/\{game\}/g, spoken.game ?? '');
     if (text.includes('{')) continue;
+    // Direction-only slogans formed the largest exact duplicate groups. Keep
+    // the voice variety, but always make this day's source-backed game audible.
+    if (!line.needs.includes('game')) text += ` The game was ${spoken.game}.`;
     text = text.replace(/(^|[.!?]\s+)([a-z])/g, (_m, lead: string, letter: string) => `${lead}${letter.toUpperCase()}`);
     const key = `frame:sessionvoice:${group}:${idx}`;
     if (exclude?.has(key)) continue;

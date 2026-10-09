@@ -248,6 +248,9 @@ export async function horseVideoReels(c: Context) {
       // Another producer or run already published this horse's slot (23505
       // on the publication key inside the RPC): a skip, not a failure.
       duplicate_slot: skippedByReason.duplicate_slot ?? 0,
+      // The bounded candidates all failed the unchanged caption/semantic
+      // quality gate. Silence is the correct result, not an operational page.
+      caption_exhausted: skippedByReason.caption_exhausted ?? 0,
       skipped_by_reason: skippedByReason,
       failed: failed.length,
       unknown: unknown.length,
