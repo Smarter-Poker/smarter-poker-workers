@@ -400,7 +400,7 @@ export function renderDigest(metrics: FleetMetrics, switches: Switches, window: 
     `  Master switch (content_settings.engine_enabled): ${ENGINE_WORDS[switches.engine]}`,
     `  Modes on: ${on.length} of ${switches.modes.length} (${on.length ? on.join(', ') : 'none'})`,
     `  Modes off: ${off.length ? off.join(', ') : 'none'}`,
-    '  Model spend: none (no language model is called)',
+    '  Caption model spend: service-only daily budget ledger (not exposed in this digest)',
     '',
     'Fleet runs this week (cron_execution_log)',
     ...runTable,

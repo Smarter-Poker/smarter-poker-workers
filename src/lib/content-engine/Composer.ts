@@ -19,12 +19,10 @@
  * The two are separate so 1,000 horses can say a hundred different true
  * things about one clip in a hundred different shapes.
  *
- * NO MODEL IS CALLED. Deterministic, free, and it cannot invent a player who
- * is not in the title. `ModelWriter` may later rewrite a composed draft when
- * a working key and budget exist; the draft, its grounding and its style
- * survive that rewrite, and this path stays as the fallback so the feed never
- * goes quiet. (Checked 2026-09-05: the only model key on the workers VM,
- * XAI_API_KEY, is rejected by the provider, so nothing model-shaped runs.)
+ * This composer remains deterministic, free, and unable to invent a player
+ * who is not in the title. VoiceWriter may put one separately budgeted,
+ * qualified ModelWriter candidate through the same gates first; this path is
+ * the bounded fallback for every disabled, exhausted or unavailable outcome.
  */
 import { briefForComment, publicFigureDomain, type PostBrief } from './PostBrief.js';
 import { fleetHash } from './FleetScheduler.js';

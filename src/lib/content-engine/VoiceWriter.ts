@@ -19,11 +19,10 @@
  *   goes out, and recorded after. Phase 1 proved the ledger is the only thing
  *   that actually stops repeats.
  *
- * The model layer is deliberately absent rather than stubbed: there is no
- * working key on the VM (checked 2026-09-05, XAI_API_KEY is rejected by the
- * provider), and a half-wired model call that silently fails is worse than
- * none. When a key exists, `ModelWriter` slots in at the marked point and
- * everything here stays as its fallback.
+ * ModelWriter is optional, default-off and budgeted before every provider
+ * call. Its candidate still passes the same relevance and freshness gates;
+ * any disabled, unqualified, exhausted, invalid or unknown outcome continues
+ * through this deterministic path without weakening a publication rule.
  */
 import { briefForAsset, briefForPost, summarise, isUninformativeTitle, type PostBrief, type BriefSource } from './PostBrief.js';
 import { styleSheetFor, styleId, describeStyle, sentenceKeys, type StyleSheet } from './StyleSheet.js';
@@ -47,6 +46,7 @@ import { getSupabase } from '../supabase.js';
 import { pickHandStory, pickSessionStory } from './HandStory.js';
 import { lineFor, briefForSpokenHand } from './HandVoice.js';
 import { sessionLineFor, sessionGroup, briefForSpokenSession } from './SessionVoice.js';
+import { writeModelCaption } from './ModelWriter.js';
 
 export interface WrittenText {
   text: string;
@@ -90,6 +90,11 @@ export interface WrittenText {
   skipReason?: string;
 }
 
+/** Request-local latency bound only; the database remains budget authority. */
+export interface ModelAttemptContext {
+  attempted?: boolean;
+}
+
 const MAX_DRAFTS = 6;
 
 /**
@@ -103,15 +108,17 @@ async function writeGated(
   horseId: string,
   postId?: string,
   echoes?: (text: string) => boolean,
+  preferred?: { text: string; relevance: number; grounding: string[]; semanticKey?: string; skip?: undefined },
 ): Promise<Omit<WrittenText, 'brief' | 'style'>> {
   let best: { text: string; relevance: number; grounding: string[]; semanticKey?: string } | null = null;
   let attempts = 0;
   let sawFresh = false;
   let echoed = 0;
 
-  for (let i = 0; i < MAX_DRAFTS; i++) {
+  const totalDrafts = MAX_DRAFTS + (preferred ? 1 : 0);
+  for (let i = 0; i < totalDrafts; i++) {
     attempts = i + 1;
-    const draft = make(String(i));
+    const draft = preferred && i === 0 ? preferred : make(String(i - (preferred ? 1 : 0)));
     // The composer refused on purpose (a reply with nothing to answer). The
     // same input gives the same answer, so report why instead of redrafting.
     if (draft.skip) {
@@ -171,14 +178,36 @@ export async function writeCaption(
   horse: AuthorHorse,
   asset: { kind: 'video' | 'link'; title?: string | null; source?: string | null; domainHint?: 'poker' | 'sports'; sportHint?: string | null },
   fleet: AuthorHorse[] = [],
+  opts: { modelIdempotencyKey?: string; modelAttempt?: ModelAttemptContext } = {},
 ): Promise<WrittenText> {
   const brief = briefForAsset(asset);
   const style = styleSheetFor(horse.profile_id);
+  const deterministicReference = composeCaption(brief, style, 'model-reference');
+  const mayAttemptModel = !!opts.modelIdempotencyKey && !opts.modelAttempt?.attempted;
+  if (mayAttemptModel && opts.modelAttempt) opts.modelAttempt.attempted = true;
+  const model = mayAttemptModel
+    ? await writeModelCaption({
+      idempotencyKey: opts.modelIdempotencyKey,
+      brief,
+      style,
+      deterministicDraft: deterministicReference.text,
+    })
+    : null;
   const core = await writeGated(
     (variant) => composeCaption(brief, style, variant),
     brief,
     style,
     horse.profile_id,
+    undefined,
+    undefined,
+    model?.status === 'accepted'
+      ? {
+        text: model.text,
+        relevance: relevanceOf(model.text, brief),
+        grounding: model.grounding,
+        semanticKey: model.semanticKey,
+      }
+      : undefined,
   );
 
   const out: WrittenText = { ...core, brief, style };

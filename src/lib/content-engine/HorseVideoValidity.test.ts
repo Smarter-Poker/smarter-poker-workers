@@ -522,6 +522,14 @@ describe('horse video oEmbed proof', () => {
       error: expect.stringContaining(`candidates=${MAX_VIDEO_CAPTION_CANDIDATES}`),
     });
     expect(mocks.writeCaption).toHaveBeenCalledTimes(MAX_VIDEO_CAPTION_CANDIDATES);
+    const modelOpts = mocks.writeCaption.mock.calls.map((call) => call[3] as {
+      modelIdempotencyKey: string;
+      modelAttempt: object;
+    });
+    expect(new Set(modelOpts.map((opts) => opts.modelAttempt)).size).toBe(1);
+    expect(modelOpts.every((opts) => opts.modelIdempotencyKey.length === 75)).toBe(true);
+    expect(new Set(modelOpts.map((opts) => opts.modelIdempotencyKey)).size)
+      .toBe(MAX_VIDEO_CAPTION_CANDIDATES);
     expect(mocks.publishHorseVideoAtomically).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
