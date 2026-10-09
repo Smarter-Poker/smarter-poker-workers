@@ -29,6 +29,17 @@ describe('worker revision wiring', () => {
     expect(release).toContain('GIT_SHA=${{ github.sha }}');
   });
 
+  it('keeps long VM cutovers alive without deploying workflow-only maintenance', async () => {
+    const workflow = await repositoryFile('.github/workflows/auto-deploy-workers.yml');
+
+    expect(workflow).toContain("- 'src/**'");
+    expect(workflow).toContain("- 'docker-compose.yml'");
+    expect(workflow).not.toContain("- '.github/workflows/auto-deploy-workers.yml'");
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow.match(/ServerAliveInterval=30/g)).toHaveLength(2);
+    expect(workflow.match(/ServerAliveCountMax=20/g)).toHaveLength(2);
+  });
+
   it('keeps the one-shot sports refresh opt-in, exact-revision, bounded and secret-safe', async () => {
     const workflow = await repositoryFile('.github/workflows/auto-deploy-workers.yml');
 
