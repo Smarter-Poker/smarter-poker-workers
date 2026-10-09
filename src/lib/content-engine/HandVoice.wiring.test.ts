@@ -316,7 +316,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(db.reads).not.toContain('horse_daily_nets');
     expect(groundedInserts()).toEqual([]);
     expect(res.type ?? '').not.toMatch(/^grounded/);
-    expect(res.success ? '' : String(res.error)).toMatch(res.success ? /^$/ : /grounded: grounded posts await approval/);
+    expect(res.success ? '' : String(res.error)).toMatch(res.success ? /^$/ : /grounded: grounded modes await approval/);
   });
 
   it('approving sessions does not approve hands, and approving hands does not approve sessions', async () => {
