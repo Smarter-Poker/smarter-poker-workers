@@ -33,7 +33,6 @@ on:
       - 'tsconfig.json'
       - 'Dockerfile'
       - 'docker-compose.yml'
-      - '.github/workflows/auto-deploy-workers.yml'
   workflow_dispatch:
     inputs:
       run_sports_scrape:
@@ -87,7 +86,10 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          SSH="ssh -i $HOME/.ssh/workers_ed25519 -o BatchMode=yes -o ConnectTimeout=25 root@$HOST"
+          # Graceful container drain can be silent for several minutes. Keep
+          # the SSH transport alive so a successful cutover is not reported
+          # as a lost acknowledgement by the runner.
+          SSH="ssh -i $HOME/.ssh/workers_ed25519 -o BatchMode=yes -o ConnectTimeout=25 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 root@$HOST"
           SHORT=${SHA:0:11}
           IMAGE=ghcr.io/smarter-poker/smarter-poker-workers
           SERVICE=smarter-poker-workers
@@ -132,7 +134,7 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          SSH="ssh -i $HOME/.ssh/workers_ed25519 -o BatchMode=yes -o ConnectTimeout=25 root@$HOST"
+          SSH="ssh -i $HOME/.ssh/workers_ed25519 -o BatchMode=yes -o ConnectTimeout=25 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 root@$HOST"
           SHORT=${SHA:0:11}
           SERVICE=smarter-poker-workers
 
