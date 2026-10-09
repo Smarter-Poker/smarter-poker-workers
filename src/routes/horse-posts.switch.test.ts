@@ -122,4 +122,48 @@ describe('each publish names its slot, and skips are counted by reason', () => {
       skipped_by_reason: { guard_unreadable: 1, duplicate_slot: 1, posted_recently: 1 },
     });
   });
+
+  it('reports definitive all-candidate exhaustion as safe silence, not failure', async () => {
+    m.switches = ['on', 'on', 'on', 'on', 'on'];
+    m.publishForHorse.mockImplementation(async (h: { name: string; profile_id: string }) => ({
+      success: false,
+      horse: h.name,
+      profile_id: h.profile_id,
+      skipped: 'content_exhausted',
+      error: 'all bounded approved candidates exhausted',
+    }));
+    const r = await run();
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({
+      success: true,
+      attempted: 4,
+      posted: 0,
+      failed: 0,
+      content_exhausted: 4,
+      skipped_by_reason: { content_exhausted: 4 },
+      errors: {},
+    });
+  });
+
+  it('keeps real failures visible beside exhausted horses', async () => {
+    m.switches = ['on', 'on', 'on', 'on', 'on'];
+    const answers = [
+      { success: false, skipped: 'content_exhausted', error: 'bounded candidates exhausted' },
+      { success: false, error: 'feed transport failed' },
+      { success: true, type: 'poker_news' },
+      { success: false, skipped: 'content_exhausted', error: 'bounded candidates exhausted' },
+    ];
+    m.publishForHorse.mockImplementation(async (h: { name: string; profile_id: string }) => ({
+      horse: h.name,
+      profile_id: h.profile_id,
+      ...answers.shift()!,
+    }));
+    const r = await run();
+    expect(r.body).toMatchObject({
+      posted: 1,
+      failed: 1,
+      content_exhausted: 2,
+      errors: { 'feed transport failed': 1 },
+    });
+  });
 });

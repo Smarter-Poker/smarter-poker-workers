@@ -141,6 +141,9 @@ export async function horsePosts(c: Context) {
       skipped_guard_unreadable: skippedByReason.guard_unreadable ?? 0,
       // Another run already published this horse's slot (23505 on the key).
       duplicate_slot: skippedByReason.duplicate_slot ?? 0,
+      // Every bounded approved candidate was validly exhausted. This is an
+      // expected quiet slot, distinct from transport or persistence failure.
+      content_exhausted: skippedByReason.content_exhausted ?? 0,
       skipped_by_reason: skippedByReason,
       failed: failed.length,
       collided: posted.filter((r) => r.collided).length,

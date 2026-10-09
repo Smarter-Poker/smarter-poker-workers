@@ -55,6 +55,7 @@ vi.mock('./ContentLedger.js', () => ({
     return match ? `yt:${match[1]}` : null;
   },
   filterUnusedAssets: mocks.filterUnusedAssets,
+  ledgerReadFailureTotal: vi.fn(() => 0),
   normalizePhrase: vi.fn(() => 'a real caption'),
   recordAssetUse: vi.fn(),
   recordPhrase: vi.fn(),
@@ -63,6 +64,7 @@ vi.mock('./ContentLedger.js', () => ({
 import {
   _resetValidityCache,
   MAX_VIDEO_CAPTION_CANDIDATES,
+  MAX_LIVE_VIDEO_CANDIDATES,
   prepareSharedHorseVideoSupply,
   publishVideoClip,
   publishVideoForHorse,
@@ -512,6 +514,44 @@ describe('horse video oEmbed proof', () => {
     expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(2);
   });
 
+  it('ordinary publishing advances to a distinct valid clip when the first caption is stale', async () => {
+    const poker = ['AAAAAAAAAAA', 'BBBBBBBBBBB'].map((videoId) => ({
+      id: `clip-${videoId}`,
+      video_id: videoId,
+      source_url: `https://youtube.com/watch?v=${videoId}`,
+      source: 'Poker source',
+      title: 'All in on the river',
+      category: 'poker',
+      oembed_ok: null,
+    }));
+    mocks.candidateClips.mockResolvedValue({ clips: poker, widened: false });
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map((clip) => `yt:${clip.video_id}`)));
+    mocks.recordYouTubeVerification.mockResolvedValue(true);
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      html: '<iframe src="x"></iframe>', title: 'All in on the river',
+    }), { status: 200 })) as typeof fetch;
+    mocks.writeCaption
+      .mockResolvedValueOnce({
+        text: '', semanticKey: 'caption:stale', stale: true, brief: {}, relevance: 1,
+        grounding: ['title'], attempts: 6, belowFloor: false,
+      })
+      .mockResolvedValueOnce({
+        text: 'Fresh second clip caption', semanticKey: 'caption:fresh', stale: false,
+        brief: {}, relevance: 1, grounding: ['title'], attempts: 1, belowFloor: false,
+      });
+    mocks.publishHorseVideoAtomically.mockResolvedValue({
+      success: true, postId: 'post-fresh', reelId: 'reel-fresh', created: true,
+    });
+
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' },
+      'poker', [], 'fleet', undefined, `fleet:horse-a:${SLOT}`,
+    )).resolves.toMatchObject({ success: true, postId: 'post-fresh' });
+    expect(mocks.writeCaption).toHaveBeenCalledTimes(2);
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('fails scheduled publication closed without a shared snapshot and never falls back to live verification', async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock as typeof fetch;
@@ -665,8 +705,10 @@ describe('horse video oEmbed proof', () => {
     });
     globalThis.fetch = vi.fn(async () => new Response('rate limited', { status: 429 })) as typeof fetch;
 
-    await expect(publishVideoClip({ id: 1, name: 'Alpha', profile_id: 'horse-a' }, 'poker', []))
-      .resolves.toMatchObject({ success: false, error: 'No valid poker clips found' });
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' }, 'poker', [],
+      'fleet', undefined, `fleet:horse-a:${SLOT}`,
+    )).resolves.toMatchObject({ success: false, outcome: 'unknown', error: expect.stringContaining('unknown=1') });
     expect(mocks.recordValidity).not.toHaveBeenCalled();
   });
 
@@ -691,12 +733,14 @@ describe('horse video oEmbed proof', () => {
     globalThis.fetch = vi.fn(async () => new Response('forbidden', { status: 403 })) as typeof fetch;
     const random = vi.spyOn(Math, 'random').mockReturnValue(0);
     try {
-      await expect(publishVideoClip({ id: 1, name: 'Alpha', profile_id: 'horse-a' }, 'poker', []))
-        .resolves.toMatchObject({ success: false, error: 'No valid poker clips found' });
+      await expect(publishVideoClip(
+        { id: 1, name: 'Alpha', profile_id: 'horse-a' }, 'poker', [],
+        'fleet', undefined, `fleet:horse-a:${SLOT}`,
+      )).resolves.toMatchObject({ success: false, outcome: 'unknown', error: expect.stringContaining('unknown=3') });
     } finally {
       random.mockRestore();
     }
-    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(MAX_LIVE_VIDEO_CANDIDATES);
     expect(mocks.recordValidity).not.toHaveBeenCalled();
   });
 
@@ -716,8 +760,10 @@ describe('horse video oEmbed proof', () => {
     globalThis.fetch = vi.fn(async () => new Response('missing', { status: 404 })) as typeof fetch;
     mocks.recordYouTubeVerification.mockResolvedValue(true);
 
-    await expect(publishVideoClip({ id: 1, name: 'Alpha', profile_id: 'horse-a' }, 'poker', []))
-      .resolves.toMatchObject({ success: false, error: 'No valid poker clips found' });
+    await expect(publishVideoClip(
+      { id: 1, name: 'Alpha', profile_id: 'horse-a' }, 'poker', [],
+      'fleet', undefined, `fleet:horse-a:${SLOT}`,
+    )).resolves.toMatchObject({ success: false, skipped: 'supply_exhausted' });
     expect(mocks.recordValidity).toHaveBeenCalledWith('clip-a', false);
   });
 
