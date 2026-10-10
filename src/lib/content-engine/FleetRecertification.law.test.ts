@@ -155,13 +155,13 @@ describe('quality controls fail closed', () => {
 describe('fleet duplicate protection lives in the database', () => {
   it('every social_posts insert carries the slot key in metadata, never the reserved column', () => {
     const publisher = source('HorsePublisher.ts');
-    // Two direct inserts (news link, grounded text). The video kind writes
-    // through publish_horse_video_reel, checked below.
+    // Grounded text remains the only direct insert. News and video each write
+    // through an atomic RPC, checked below.
     const inserts = publisher
       .split(".from('social_posts')")
       .slice(1)
       .filter((s) => s.trimStart().startsWith('.insert('));
-    expect(inserts).toHaveLength(2);
+    expect(inserts).toHaveLength(1);
     for (const block of inserts) {
       const body = block.slice(0, block.indexOf('.select('));
       const metadata = body.match(/metadata: \{[\s\S]*?\}/)?.[0] ?? '';
@@ -173,6 +173,19 @@ describe('fleet duplicate protection lives in the database', () => {
         /^\.maybeSingle\(\);\s+if \(isDuplicateSlot\(error\)\) return \{[^}]*skipped: 'duplicate_slot'/,
       );
     }
+  });
+
+  it('the fleet news write delegates its slot and every freshness key to one atomic RPC', () => {
+    const publisher = source('HorsePublisher.ts');
+    const calls = publisher.split('await publishHorseNewsAtomically({').slice(1);
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!.slice(0, calls[0]!.indexOf('});'));
+    expect(call).toMatch(/publicationKey,/);
+    expect(call).toMatch(/assetKey: articleKey/);
+    expect(call).toMatch(/phraseNorm: picked\.norm/);
+    expect(call).toMatch(/semanticKey: written\.semanticKey/);
+    expect(call).toMatch(/brief: written\.brief/);
+    expect(publisher).not.toMatch(/recordAssetUse\(key, horse\.profile_id, postId\)/);
   });
 
   it('the fleet video write carries the slot key in p_metadata and reads 23505 on it as a duplicate', () => {
