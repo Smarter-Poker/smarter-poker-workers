@@ -31,7 +31,9 @@ describe('Phase 6 publishing laws', () => {
     expect(mentions).toEqual(['    publication_key: draft.publicationKey,']);
     const metadataFor = source.slice(source.indexOf('function metadataFor'), source.indexOf('async function publishClubDraft'));
     expect(metadataFor).toContain('publication_key: draft.publicationKey');
-    expect(source).toContain(".eq('metadata->>publication_key', publicationKey)");
+    const ledger = source.slice(source.indexOf('async function publishedKeys'), source.indexOf('type PublishOutcome'));
+    expect(ledger).toContain(".in('metadata->>publication_key', chunk)");
+    expect(ledger).toContain("row.metadata?.publication_key");
   });
 
   it('writes the club feed mirror only for a page_and_feed digest, after the page post', () => {
