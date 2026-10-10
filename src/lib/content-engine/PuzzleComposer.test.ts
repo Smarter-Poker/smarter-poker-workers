@@ -97,7 +97,7 @@ describe('the nuts puzzle', () => {
     expect(p.game_variant).toBe('nlh');
     expect(p.board).toEqual([{ rank: '2', suit: 'c' }, { rank: '7', suit: 'c' }, { rank: 'A', suit: 'c' }, { rank: 'Q', suit: 'c' }, { rank: '2', suit: 'd' }]);
     expect(p.prompt.split('\n')).toEqual([
-      'Went to the river on this board earlier today in a 2.5/5 cash game.',
+      'Went to the river on this board not long ago in a 2.5/5 cash game.',
       'Board [[sp-card:2c]][[sp-card:7c]][[sp-card:Ac]][[sp-card:Qc]][[sp-card:2d]]',
       'What is the nuts here? I will post the answer in about six hours.',
     ]);
@@ -118,7 +118,18 @@ describe('the nuts puzzle', () => {
     expect(p.salt).toBe(SALT);
   });
 
-  it('says "not long ago" once the hand is twelve hours old, and names the format when the stake cannot be stated', () => {
+  it('uses neutral recent timing across midnight because the row does not carry the author timezone', () => {
+    const result = composePuzzle('nuts', row({ played_at: '2026-09-30T23:00:00Z' }), {
+      salt: SALT,
+      now: new Date('2026-10-01T00:30:00Z'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`nuts rejected: ${result.rejected}`);
+    expect(result.puzzle.prompt).toContain('Went to the river on this board not long ago in a 2.5/5 cash game.');
+    expect(result.puzzle.prompt).not.toContain('earlier today');
+  });
+
+  it('names the format when the stake cannot be stated', () => {
     const p = ok('nuts', row({ played_at: '2026-09-29T08:00:00Z', format: 'tournament', big_blind: 400 }));
     expect(p.prompt).toContain('Went to the river on this board not long ago in a tournament.');
     const q = ok('nuts', row({ format: 'cash', big_blind: 0.25 }));
@@ -186,7 +197,7 @@ describe('the what would you do puzzle', () => {
   it('shows the horse hand and board, the river spot, four options when facing a bet, and reveals what it did from the row', () => {
     const p = ok('what_would_you_do');
     expect(p.prompt.split('\n')).toEqual([
-      'Spot from earlier today in a 2.5/5 cash game.',
+      'Spot from not long ago in a 2.5/5 cash game.',
       'Hand [[sp-card:Th]][[sp-card:Jc]]',
       'Board [[sp-card:2c]][[sp-card:7c]][[sp-card:Ac]][[sp-card:Qc]][[sp-card:2d]]',
       'On the river there is 1005 in the pot and it is 419 to call. What would you do? I will post what I did in about six hours.',
