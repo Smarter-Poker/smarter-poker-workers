@@ -119,7 +119,10 @@ export function correctPosition(key: string, n: number): number {
 /* Fixed phrases (the law test scans this pool)                              */
 /* ------------------------------------------------------------------------ */
 
-const WHEN = { today: 'earlier today', recent: 'not long ago' } as const;
+// The source row carries an instant, not the author's timezone. A rolling
+// age window therefore cannot prove that a hand happened on the author's
+// local calendar day.
+const WHEN = { recent: 'not long ago' } as const;
 const CLOSER_ANSWER = 'I will post the answer in about six hours.';
 const CLOSER_DID = 'I will post what I did in about six hours.';
 const NUTS_QUESTION = 'What is the nuts here?';
@@ -148,7 +151,6 @@ const OPEN_OPTIONS = ['check', 'bet', 'all_in'] as const;
 
 /** Every fixed sentence and fragment horse-visible text is built from. */
 export const TEMPLATE_POOL: readonly string[] = [
-  WHEN.today,
   WHEN.recent,
   CLOSER_ANSWER,
   CLOSER_DID,
@@ -221,11 +223,10 @@ function gamePhrase(row: PuzzleReviewRow): string {
   return 'a game';
 }
 
-function whenPhrase(playedAt: string, now: Date): string | null {
+function whenPhrase(playedAt: string): string | null {
   const t = Date.parse(playedAt);
   if (!Number.isFinite(t)) return null;
-  const hours = (now.getTime() - t) / 3_600_000;
-  return hours < 12 ? WHEN.today : WHEN.recent;
+  return WHEN.recent;
 }
 
 interface ActionEntry {
@@ -554,7 +555,7 @@ export function composePuzzle(kind: PuzzleKind, row: PuzzleReviewRow, opts: { sa
   if (row.board.length !== 5) return reject('board_not_five_cards');
   const board = cardsFromRow(row.board);
   if (!board) return reject('board_unreadable');
-  const when = whenPhrase(row.played_at, opts.now);
+  const when = whenPhrase(row.played_at);
   if (!when) return reject('played_at_unreadable');
   switch (kind) {
     case 'nuts':
