@@ -514,6 +514,22 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
   });
 
+  it('stops all fallbacks when the atomic news acknowledgement is unknown', async () => {
+    modes.grounded = true;
+    modes.video = true;
+    db.newsRpcResult = { data: null, error: { message: 'socket hang up' } };
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+
+    expect(result).toMatchObject({ success: false, outcome: 'unknown' });
+    expect(result.error).toMatch(/atomic horse news publication outcome unknown/);
+    expect(db.rpcCalls.filter((x) => x.name === 'publish_horse_news_post')).toHaveLength(1);
+    expect(db.rpcCalls.filter((x) => x.name === 'publish_horse_video_reel')).toHaveLength(0);
+    expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
+    expect(voice.writeGrounded).not.toHaveBeenCalled();
+  });
+
   it('with no slot given and no window open, nothing is read or written', async () => {
     const id = horseId(11);
     let quiet = NOW;

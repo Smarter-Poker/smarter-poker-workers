@@ -1237,7 +1237,12 @@ async function postNewsLink(
       if (published.reason === 'phrase_used') {
         return { ...base, success: false, skipped: 'caption_exhausted', publicationKey, error: 'Caption became used before publication' };
       }
-      return { ...base, success: false, error: published.error ?? 'Atomic horse news publication failed' };
+      return {
+        ...base,
+        success: false,
+        outcome: published.outcome,
+        error: published.error ?? 'Atomic horse news publication failed',
+      };
     }
     const postId = published.postId!;
     return {
@@ -1438,6 +1443,10 @@ export async function publishForHorse(
     let result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey, modelAttempt);
     if (result.success) return result;
     if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
+    // The RPC may have committed before its acknowledgement was lost. The
+    // exact slot retry resolves that durable identity; no alternate kind may
+    // publish behind an unknown news outcome in this invocation.
+    if (result.outcome === 'unknown') return result;
     else if (!result.skipped) attempts.push(`${kind}_news: ${result.error}`);
     result = await publishVideoClip(
       horse,
