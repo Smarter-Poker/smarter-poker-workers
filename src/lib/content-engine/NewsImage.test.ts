@@ -18,8 +18,19 @@ describe('article image extraction', () => {
     'https://cdn.example/favicon.ico',
     'https://cdn.example/publisher-logo.png',
     'https://cdn.example/placeholder.jpg',
+    'https://s.w.org/images/core/emoji/17.0.2/72x72/1f609.png',
+    'https://cdn.example/wp-smilies/wink.png',
   ])('rejects unsafe or generic artwork: %s', (url) => {
     expect(extractArticleImageUrl({ enclosure: { url } })).toBeNull();
+  });
+
+  it('skips an inline emoji and keeps scanning for the real story image', () => {
+    expect(extractArticleImageUrl({
+      'content:encoded': [
+        '<p><img src="https://s.w.org/images/core/emoji/17.0.2/72x72/1f609.png"></p>',
+        '<figure><img src="https://cdn.example/stories/table-action.webp"></figure>',
+      ].join(''),
+    })).toBe('https://cdn.example/stories/table-action.webp');
   });
 });
 
