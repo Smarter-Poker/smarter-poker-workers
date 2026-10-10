@@ -26,6 +26,13 @@ const asset = {
   domainHint: 'poker' as const,
 };
 
+const unsupportedNews = {
+  kind: 'link' as const,
+  title: 'Neighborhood cardroom announces autumn hours after renovation',
+  source: 'PokerNews',
+  domainHint: 'poker' as const,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.phraseRecentlyUsed.mockResolvedValue(false);
@@ -73,5 +80,33 @@ describe('VoiceWriter model candidate gates', () => {
     });
     expect(mocks.writeModelCaption).toHaveBeenCalledTimes(1);
     expect(modelAttempt).toEqual({ attempted: true });
+  });
+
+  it('uses a truthful source-attributed report for a fresh news title with no supported opinion', async () => {
+    mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
+
+    const written = await writeCaption(horse, unsupportedNews);
+
+    expect(written.text).toContain('PokerNews');
+    expect(written.text).toContain('Neighborhood cardroom announces autumn hours after renovation');
+    expect(written.text).not.toMatch(/worth a look|stuck with me|I think|I believe/i);
+    expect(written.semanticKey).toContain('source report pokernews neighborhood cardroom announces autumn hours after renovation');
+    expect(written.relevance).toBeGreaterThanOrEqual(0.3);
+  });
+
+  it('keeps unsupported video titles silent and rejects clipped news headlines', async () => {
+    mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
+    expect((await writeCaption(horse, { ...unsupportedNews, kind: 'video' })).text).toBe('');
+    expect((await writeCaption(horse, { ...unsupportedNews, title: 'Neighborhood cardroom announces autumn hours and the' })).text).toBe('');
+  });
+
+  it('keeps source-attributed news behind the same semantic freshness gate', async () => {
+    mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
+    mocks.phraseRecentlyUsed.mockImplementation(async (key: string) => key.startsWith('meaning:source report'));
+
+    const written = await writeCaption(horse, unsupportedNews);
+
+    expect(written.text).toBe('');
+    expect(written.stale).toBe(true);
   });
 });

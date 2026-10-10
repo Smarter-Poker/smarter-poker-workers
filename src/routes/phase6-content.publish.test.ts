@@ -440,6 +440,52 @@ describe('P6C-06/03: the whole event window, without junk', () => {
   });
 });
 
+describe('P6C-15: hourly fires spread approved drafts without starving behind duplicates', () => {
+  const extraHorses = Array.from({ length: 100 }, (_, index) => ({
+    id: `hourly-horse-${index}`,
+    city: 'Las Vegas',
+    state: 'NV',
+    is_horse: true,
+    display_name: `Hourly Horse ${index}`,
+  }));
+  const events = Array.from({ length: 40 }, (_, index) => event(`hourly-event-${index}`));
+
+  it('publishes at most one fresh local-event draft per run and advances past prior keys', async () => {
+    const db = world({ events, extraPeople: extraHorses });
+    enableOnly('local_event');
+
+    const candidates = (await preview(TUESDAY)).samples.local_event!;
+    expect(candidates.length).toBeGreaterThan(2);
+
+    const first = (await live()).results.local_event!;
+    expect(first.posted).toBe(1);
+    expect(db.inserts('social_posts')).toHaveLength(1);
+
+    const second = (await live()).results.local_event!;
+    expect(second.posted).toBe(1);
+    expect(second.skipped.duplicate).toBeGreaterThanOrEqual(1);
+    expect(db.inserts('social_posts')).toHaveLength(2);
+    expect(new Set(db.inserts('social_posts').map((row) => (row.metadata as Row).publication_key)).size).toBe(2);
+  });
+
+  it('reaches a fresh draft beyond twenty already-published keys', async () => {
+    const db = world({ events, extraPeople: extraHorses });
+    enableOnly('local_event');
+    const candidates = (await preview(TUESDAY)).samples.local_event!;
+    expect(candidates.length).toBeGreaterThan(20);
+    db.seed('social_posts', candidates.slice(0, 20).map((draft, index) => ({
+      id: `existing-${index}`,
+      author_id: draft.authorId,
+      metadata: { publication_key: draft.publicationKey },
+    })));
+
+    const result = (await live()).results.local_event!;
+    expect(result.posted).toBe(1);
+    expect(result.skipped.duplicate).toBe(20);
+    expect((db.inserts('social_posts')[0]!.metadata as Row).publication_key).toBe(candidates[20]!.publicationKey);
+  });
+});
+
 describe('P6C-10: the 20-hour guard fails closed', () => {
   it('counts an unreadable guard as recent and does not post', async () => {
     const db = world();

@@ -28,6 +28,7 @@ import { briefForAsset, briefForPost, summarise, isUninformativeTitle, type Post
 import { styleSheetFor, styleId, describeStyle, sentenceKeys, type StyleSheet } from './StyleSheet.js';
 import {
   composeCaption,
+  composeSourceReportedNews,
   composeComment,
   composeReply,
   relevanceOf,
@@ -109,13 +110,14 @@ async function writeGated(
   postId?: string,
   echoes?: (text: string) => boolean,
   preferred?: { text: string; relevance: number; grounding: string[]; semanticKey?: string; skip?: undefined },
+  maxDrafts = MAX_DRAFTS,
 ): Promise<Omit<WrittenText, 'brief' | 'style'>> {
   let best: { text: string; relevance: number; grounding: string[]; semanticKey?: string } | null = null;
   let attempts = 0;
   let sawFresh = false;
   let echoed = 0;
 
-  const totalDrafts = MAX_DRAFTS + (preferred ? 1 : 0);
+  const totalDrafts = maxDrafts + (preferred ? 1 : 0);
   for (let i = 0; i < totalDrafts; i++) {
     attempts = i + 1;
     const draft = preferred && i === 0 ? preferred : make(String(i - (preferred ? 1 : 0)));
@@ -193,7 +195,7 @@ export async function writeCaption(
       deterministicDraft: deterministicReference.text,
     })
     : null;
-  const core = await writeGated(
+  let core = await writeGated(
     (variant) => composeCaption(brief, style, variant),
     brief,
     style,
@@ -209,6 +211,25 @@ export async function writeCaption(
       }
       : undefined,
   );
+
+  // A link may still be useful when the bounded opinion pool has no grounded
+  // take left: attribute the publisher's complete headline and invent
+  // nothing. This remains behind the same semantic and exact-text ledgers.
+  // Unsupported video titles stay silent.
+  if (!core.text && asset.kind === 'link') {
+    const reported = await writeGated(
+      (variant) => composeSourceReportedNews(brief, style, variant),
+      brief,
+      style,
+      horse.profile_id,
+      undefined,
+      undefined,
+      undefined,
+      1,
+    );
+    reported.attempts += core.attempts;
+    core = reported;
+  }
 
   const out: WrittenText = { ...core, brief, style };
 

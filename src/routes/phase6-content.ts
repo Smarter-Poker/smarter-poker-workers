@@ -50,7 +50,10 @@ import {
 } from '../lib/content-engine/Phase6Content.js';
 
 const PREVIEW_LIMIT = 24;
-const PUBLISH_LIMIT_PER_MODE = 20;
+/** One approved Phase 6 item per mode and fire keeps hourly output staggered. */
+const PUBLISH_SUCCESS_LIMIT_PER_MODE = 1;
+/** Bound author-guard/write attempts after duplicate keys are removed in bulk. */
+const PUBLISH_ATTEMPT_LIMIT_PER_MODE = 20;
 /** Ceilings for complete reads. Reaching one is a failure, never a truncation. */
 const CLUB_PAGES_MAX_ROWS = 5_000;
 const CLUB_STATS_MAX_ROWS = 50_000;
@@ -413,19 +416,34 @@ export function readSeasonalComposition(now: Date, horses: RosterHorse[]): ModeC
   return out;
 }
 
-/** Has this key been published as a feed post or a page post? */
-async function alreadyPublished(publicationKey: string): Promise<boolean> {
+/**
+ * Existing keys across both Phase 6 publication surfaces.
+ *
+ * The former per-draft lookup was followed by `drafts.slice(0, 20)`. Once
+ * those first twenty keys existed, a fresh twenty-first draft could never be
+ * reached on any later fire. Read the bounded candidate set in chunks first,
+ * then spend the per-run attempt budget only on genuinely fresh work. The
+ * database unique indexes still arbitrate a concurrent writer at insert time.
+ */
+async function publishedKeys(publicationKeys: string[]): Promise<Set<string>> {
   const supa = getSupabase();
-  for (const table of ['social_posts', 'social_page_posts'] as const) {
-    const { data, error } = await supa
-      .from(table)
-      .select('id')
-      .eq('metadata->>publication_key', publicationKey)
-      .limit(1);
-    if (error) throw new Error(`publication ledger read failed (${table}): ${error.message}`);
-    if ((data ?? []).length > 0) return true;
+  const keys = [...new Set(publicationKeys.filter(Boolean))];
+  const found = new Set<string>();
+  for (let index = 0; index < keys.length; index += 150) {
+    const chunk = keys.slice(index, index + 150);
+    for (const table of ['social_posts', 'social_page_posts'] as const) {
+      const { data, error } = await supa
+        .from(table)
+        .select('metadata')
+        .in('metadata->>publication_key', chunk);
+      if (error) throw new Error(`publication ledger read failed (${table}): ${error.message}`);
+      for (const row of (data ?? []) as Array<{ metadata?: Record<string, unknown> | null }>) {
+        const key = row.metadata?.publication_key;
+        if (typeof key === 'string' && chunk.includes(key)) found.add(key);
+      }
+    }
   }
-  return false;
+  return found;
 }
 
 type PublishOutcome =
@@ -548,18 +566,23 @@ async function publishMode(mode: Phase6Mode, composition: ModeComposition): Prom
     held: composition.held.map((item) => ({ reason: item.reason, page_id: item.pageId, detail: item.detail })),
     notes: composition.notes,
   };
-  for (const draft of composition.drafts.slice(0, PUBLISH_LIMIT_PER_MODE)) {
+  let existing: Set<string>;
+  try {
+    existing = await publishedKeys(composition.drafts.map((draft) => draft.publicationKey));
+  } catch (error) {
+    result.skipped.failed += 1;
+    result.errors.push(message(error));
+    return result;
+  }
+  result.skipped.duplicate += composition.drafts.filter((draft) => existing.has(draft.publicationKey)).length;
+
+  let freshAttempts = 0;
+  for (const draft of composition.drafts) {
+    if (result.posted >= PUBLISH_SUCCESS_LIMIT_PER_MODE) break;
+    if (existing.has(draft.publicationKey)) continue;
+    if (freshAttempts >= PUBLISH_ATTEMPT_LIMIT_PER_MODE) break;
+    freshAttempts += 1;
     result.attempted += 1;
-    try {
-      if (await alreadyPublished(draft.publicationKey)) {
-        result.skipped.duplicate += 1;
-        continue;
-      }
-    } catch (error) {
-      result.skipped.failed += 1;
-      result.errors.push(message(error));
-      continue;
-    }
     // The 20-hour guard paces a horse's own feed and fails closed: an
     // unreadable guard counts as recent. A page-only club digest writes no
     // feed row under anyone, so the guard does not apply to it.

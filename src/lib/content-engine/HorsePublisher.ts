@@ -57,7 +57,6 @@ import {
   assetKeyFor,
   filterUnusedAssets,
   ledgerReadFailureTotal,
-  recordAssetUse,
   recordPhrase,
   normalizePhrase,
 } from './ContentLedger.js';
@@ -70,6 +69,8 @@ import {
 } from './HorseVideoPublication.js';
 import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
 import { captionModelIdempotencyKey, takeModelWriterStats } from './ModelWriter.js';
+import { extractArticleImageUrl, safeArticleUrl } from './NewsImage.js';
+import { publishHorseNewsAtomically } from './HorseNewsPublication.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -240,7 +241,7 @@ const rssParser = new Parser({
  * A failed fetch is cached too (as empty) so the fleet does not hammer a
  * host that just refused it.
  */
-type FeedItem = { title?: string; link?: string };
+type FeedItem = { title?: string; link?: string } & Record<string, unknown>;
 const feedCache = new Map<string, { items: FeedItem[]; at: number; error?: string }>();
 const FEED_TTL_MS = 10 * 60_000;
 
@@ -674,7 +675,13 @@ export async function publishVideoClip(
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!(await postModeEnabled(`${clipType}_video`))) {
-    return { ...base, success: false, error: `${clipType}_video awaits approval` };
+    return {
+      ...base,
+      success: false,
+      skipped: 'mode_disabled',
+      publicationKey,
+      error: `${clipType}_video awaits approval`,
+    };
   }
   if (sharedSupplyError) {
     return { ...base, success: false, outcome: 'unknown', error: sharedSupplyError };
@@ -1149,7 +1156,10 @@ async function postNewsLink(
   const source = candidates[fleetHash(horse.profile_id, `news:${newsType}`) % candidates.length]!;
 
   try {
-    const articles = (await fetchFeed(source.rss)).slice(0, 20).filter((a) => !!a.link);
+    const articles = (await fetchFeed(source.rss)).slice(0, 20).flatMap((article) => {
+      const link = safeArticleUrl(article.link);
+      return link ? [{ ...article, link }] : [];
+    });
     if (!articles.length) {
       return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'No articles' };
     }
@@ -1172,6 +1182,7 @@ async function postNewsLink(
     }
 
     const article = fresh[Math.floor(Math.random() * fresh.length)]!;
+    const articleImage = extractArticleImageUrl(article);
     await seedMemoryFromHistory(horse.profile_id);
 
     const articleKey = assetKeyFor(article.link);
@@ -1196,30 +1207,39 @@ async function postNewsLink(
     const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
     const content = `${picked.text}\n\n${article.link}`;
 
-    const { data: post, error } = await getSupabase()
-      .from('social_posts')
-      .insert({
-        author_id: horse.profile_id,
-        content,
-        content_type: 'link',
-        visibility: 'public',
-        link_url: article.link,
-        link_title: article.title,
-        link_site_name: source.name,
-        ...topicsFor('news'),
-        metadata: { news_type: newsType, scheduler: 'fleet', publication_key: publicationKey },
-      })
-      .select('id')
-      .maybeSingle();
-
-    if (isDuplicateSlot(error)) return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
-    if (error) return { ...base, success: false, error: error.message };
-    const postId = (post as { id: string } | null)?.id ?? null;
-    const key = assetKeyFor(article.link);
-    if (key) await recordAssetUse(key, horse.profile_id, postId);
-    await recordPhrase(picked.norm, horse.profile_id, postId);
-    if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, postId);
-    if (postId) await recordBrief(postId, written.brief);
+    if (!written.semanticKey) {
+      return { ...base, success: false, error: 'Caption cleared without a semantic freshness key' };
+    }
+    const published = await publishHorseNewsAtomically({
+      authorId: horse.profile_id,
+      content,
+      linkUrl: article.link,
+      linkTitle: article.title ?? '',
+      linkImage: articleImage,
+      linkSiteName: source.name,
+      newsType,
+      publicationKey,
+      assetKey: articleKey,
+      phraseNorm: picked.norm,
+      semanticKey: written.semanticKey,
+      brief: written.brief,
+    });
+    if (!published.success) {
+      if (published.reason === 'already_published' || published.reason === 'duplicate_slot') {
+        return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
+      }
+      if (published.reason === 'posted_recently') {
+        return { ...base, success: false, skipped: 'posted_recently', publicationKey };
+      }
+      if (published.reason === 'asset_used') {
+        return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'Article became used before publication' };
+      }
+      if (published.reason === 'phrase_used') {
+        return { ...base, success: false, skipped: 'caption_exhausted', publicationKey, error: 'Caption became used before publication' };
+      }
+      return { ...base, success: false, error: published.error ?? 'Atomic horse news publication failed' };
+    }
+    const postId = published.postId!;
     return {
       ...base,
       success: true,

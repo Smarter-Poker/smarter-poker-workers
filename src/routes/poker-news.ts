@@ -19,6 +19,7 @@
 import type { Context } from 'hono';
 import RssParser from 'rss-parser';
 import { getSupabase } from '../lib/supabase.js';
+import { extractArticleImageUrl } from '../lib/content-engine/NewsImage.js';
 
 const SYSTEM_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -63,31 +64,6 @@ function categorizeArticle(title: string): Article['category'] {
   return 'news';
 }
 
-function extractImageUrl(item: Record<string, unknown>): string | null {
-  const enclosure = item.enclosure as { url?: string } | undefined;
-  if (enclosure?.url) return enclosure.url;
-
-  const mc = item['media:content'] as { $?: { url?: string } } | undefined;
-  if (mc?.$?.url) return mc.$.url;
-
-  const mt = item['media:thumbnail'] as { $?: { url?: string } } | undefined;
-  if (mt?.$?.url) return mt.$.url;
-
-  const ce = item['content:encoded'];
-  if (typeof ce === 'string') {
-    const m = ce.match(/<img[^>]+src="([^">]+)"/);
-    if (m && m[1]) return m[1];
-  }
-
-  const desc = item.description;
-  if (typeof desc === 'string') {
-    const m = desc.match(/<img[^>]+src="([^">]+)"/);
-    if (m && m[1]) return m[1];
-  }
-
-  return null;
-}
-
 async function fetchLatestNews(): Promise<Article[]> {
   const all: Article[] = [];
 
@@ -98,7 +74,7 @@ async function fetchLatestNews(): Promise<Article[]> {
       for (const item of items) {
         if (!item.title || !item.link) continue;
         const raw = item as unknown as Record<string, unknown>;
-        const imageUrl = extractImageUrl(raw);
+        const imageUrl = extractArticleImageUrl(raw);
         const summary = ((item.contentSnippet || item.content || '') as string).slice(
           0,
           CONFIG.MAX_SUMMARY_LENGTH,

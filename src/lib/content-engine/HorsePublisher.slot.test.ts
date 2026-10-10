@@ -24,6 +24,10 @@ const db = vi.hoisted(() => ({
     data: [{ social_post_id: 'post-1', social_reel_id: 'reel-1', created: true }] as unknown[] | null,
     error: null as { code?: string; message: string } | null,
   },
+  newsRpcResult: {
+    data: [{ social_post_id: 'post-1', created: true, reason: null }] as unknown[] | null,
+    error: null as { code?: string; message: string } | null,
+  },
   rpcCalls: [] as Array<{ name: string; args: Record<string, unknown> }>,
 }));
 const ledger = vi.hoisted(() => ({ recordPhrase: vi.fn(), recordAssetUse: vi.fn(), recordBrief: vi.fn() }));
@@ -38,6 +42,7 @@ vi.mock('../supabase.js', () => ({
     async rpc(name: string, args: Record<string, unknown>) {
       db.rpcCalls.push({ name, args });
       if (name === 'publish_horse_video_reel') return db.rpcResult;
+      if (name === 'publish_horse_news_post') return db.newsRpcResult;
       if (name === 'record_youtube_embed_failure_verdict') {
         return {
           data: [{ video_id: args.p_video_id, verification_status: 'resolved', resolved: true }],
@@ -161,6 +166,10 @@ beforeEach(() => {
   db.reads.length = 0;
   db.rpcResult = {
     data: [{ social_post_id: 'post-1', social_reel_id: 'reel-1', created: true }],
+    error: null,
+  };
+  db.newsRpcResult = {
+    data: [{ social_post_id: 'post-1', created: true, reason: null }],
     error: null,
   };
   db.rpcCalls.length = 0;
@@ -325,6 +334,10 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
       c.setup();
       db.insertResult = { data: null, error: duplicate };
       db.rpcResult = { data: null, error: duplicate };
+      db.newsRpcResult = {
+        data: [{ social_post_id: null, created: false, reason: 'duplicate_slot' }],
+        error: null,
+      };
       const id = c.id();
       const r = await publishForHorse(horse(id), { slot: SLOT });
       expect(r).toMatchObject({ success: false, skipped: 'duplicate_slot', publicationKey: `fleet:${id}:${SLOT}` });
@@ -339,6 +352,12 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
         const args = rpcs[0]!.args;
         expect((args.p_metadata as Record<string, unknown>).publication_key).toBe(`fleet:${id}:${SLOT}`);
         expect(Object.keys(args)).not.toContain('publication_key');
+      } else if (c.contentType === 'link') {
+        const newsRpcs = db.rpcCalls.filter((x) => x.name === 'publish_horse_news_post');
+        expect(rpcs).toHaveLength(0);
+        expect(posts).toHaveLength(0);
+        expect(newsRpcs).toHaveLength(1);
+        expect(newsRpcs[0]!.args.p_publication_key).toBe(`fleet:${id}:${SLOT}`);
       } else {
         expect(rpcs).toHaveLength(0);
         expect(posts).toHaveLength(1);
@@ -386,16 +405,113 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(ledger.recordBrief).toHaveBeenCalledWith('post-1', expect.anything());
   });
 
-  it('a clean insert carries the key and writes its ledger rows', async () => {
+  it('a clean news publication carries the key and every atomic ledger input', async () => {
     modes.grounded = false;
     const id = horseWhereGroundedFirstIs(false);
     const r = await publishForHorse(horse(id), { slot: SLOT });
     expect(r).toMatchObject({ success: true, postId: 'post-1' });
-    const row = db.inserts.find((x) => x.table === 'social_posts')!.row;
-    expect((row.metadata as Record<string, unknown>).publication_key).toBe(`fleet:${id}:${SLOT}`);
-    expect(row).toMatchObject({ content_type: 'link', topic: 'poker', topics: ['poker', 'news'] });
-    expect(ledger.recordPhrase).toHaveBeenCalled();
-    expect(ledger.recordAssetUse).toHaveBeenCalled();
+    expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
+    const call = db.rpcCalls.find((x) => x.name === 'publish_horse_news_post')!;
+    expect(call.args).toMatchObject({
+      p_publication_key: `fleet:${id}:${SLOT}`,
+      p_asset_key: 'url:news.example/a',
+      p_phrase_norm: 'called the river with second pair and it held',
+      p_semantic_key: 'sem:river-call-second-pair',
+      p_link_url: 'https://news.example/a',
+      p_link_title: 'Deep run at the Main Event',
+      p_link_site_name: 'Poker Wire',
+    });
+    expect(['poker', 'sports']).toContain(call.args.p_news_type);
+    expect(ledger.recordPhrase).not.toHaveBeenCalled();
+    expect(ledger.recordAssetUse).not.toHaveBeenCalled();
+    expect(ledger.recordBrief).not.toHaveBeenCalled();
+  });
+
+  it('a news insert carries the actual safe article image in link_image', async () => {
+    modes.grounded = false;
+    feed.parseURL.mockResolvedValue({
+      items: [{
+        title: 'Deep run at the Main Event',
+        link: 'https://news.example/a',
+        enclosure: { url: 'https://cdn.news.example/photos/main-event.webp' },
+      }],
+    });
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+
+    expect(result.success).toBe(true);
+    expect(result.type).toMatch(/^(poker|sports)_news$/);
+    expect(db.rpcCalls.find((x) => x.name === 'publish_horse_news_post')!.args).toMatchObject({
+      p_link_url: 'https://news.example/a',
+      p_link_title: 'Deep run at the Main Event',
+      p_link_image: 'https://cdn.news.example/photos/main-event.webp',
+    });
+  });
+
+  it('refuses a feed item whose article link is not an ordinary web URL', async () => {
+    modes.grounded = false;
+    modes.video = false;
+    feed.parseURL.mockResolvedValue({
+      items: [{ title: 'Deep run at the Main Event', link: 'javascript:alert(1)' }],
+    });
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+
+    expect(result).toMatchObject({ success: false, skipped: 'content_exhausted' });
+    expect(result.error).toContain('No articles');
+    expect(db.rpcCalls.filter((x) => x.name === 'publish_horse_news_post')).toHaveLength(0);
+  });
+
+  it.each([
+    ['asset_used', 'Article became used'],
+    ['phrase_used', 'Caption became used'],
+  ] as const)('classifies an atomic %s race as safe silence', async (reason, detail) => {
+    modes.grounded = false;
+    modes.video = false;
+    db.newsRpcResult = { data: [{ social_post_id: null, created: false, reason }], error: null };
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+
+    expect(result).toMatchObject({ success: false, skipped: 'content_exhausted' });
+    expect(result.error).toContain(detail);
+    expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
+    expect(ledger.recordPhrase).not.toHaveBeenCalled();
+    expect(ledger.recordAssetUse).not.toHaveBeenCalled();
+  });
+
+  it('treats an idempotent atomic retry as an existing slot, not a new post', async () => {
+    modes.grounded = false;
+    modes.video = false;
+    db.newsRpcResult = {
+      data: [{ social_post_id: 'existing-post', created: false, reason: 'already_published' }],
+      error: null,
+    };
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+
+    expect(result).toMatchObject({ success: false, skipped: 'duplicate_slot' });
+    expect(db.rpcCalls.filter((x) => x.name === 'publish_horse_news_post')).toHaveLength(1);
+    expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
+  });
+
+  it('preserves the transaction-side 20-hour guard as safe posted-recently silence', async () => {
+    modes.grounded = false;
+    modes.video = false;
+    db.newsRpcResult = {
+      data: [{ social_post_id: null, created: false, reason: 'posted_recently' }],
+      error: null,
+    };
+    const id = horseWhereGroundedFirstIs(false);
+
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+
+    expect(result).toMatchObject({ success: false, skipped: 'posted_recently' });
+    expect(db.rpcCalls.filter((x) => x.name === 'publish_horse_news_post')).toHaveLength(1);
+    expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
   });
 
   it('with no slot given and no window open, nothing is read or written', async () => {
