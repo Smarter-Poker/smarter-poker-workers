@@ -94,6 +94,15 @@ describe('VoiceWriter model candidate gates', () => {
     expect(written.relevance).toBeGreaterThanOrEqual(0.3);
   });
 
+  it('preserves the complete source headline across horse style sheets', async () => {
+    mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
+    for (const profile_id of ['horse-a', '00000000-0000-4000-8000-000000000001', 'horse-z']) {
+      const written = await writeCaption({ ...horse, profile_id }, unsupportedNews);
+      expect(written.text).toContain(unsupportedNews.title);
+      expect(written.text).not.toMatch(/\.\.\.|…/);
+    }
+  });
+
   it('keeps unsupported video titles silent and rejects clipped news headlines', async () => {
     mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
     expect((await writeCaption(horse, { ...unsupportedNews, kind: 'video' })).text).toBe('');

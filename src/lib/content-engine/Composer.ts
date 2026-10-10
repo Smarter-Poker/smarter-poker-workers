@@ -761,7 +761,10 @@ export function composeSourceReportedNews(
 
   const seed = `${style.profileId}:source-report:${source}:${title}:${variantSeed}`;
   const frame = SOURCE_REPORT_FRAMES[fleetHash(seed, 'frame') % SOURCE_REPORT_FRAMES.length]!;
-  const text = render([frame(source, title)], style, seed, { noOpener: true, noCloser: true });
+  // This path reports somebody else's headline verbatim. Voice styling may
+  // choose the attribution frame, but must not lowercase, punctuate, clip or
+  // otherwise rewrite the source's words.
+  const text = frame(source, title);
   return {
     text,
     relevance: relevanceOf(text, b),
