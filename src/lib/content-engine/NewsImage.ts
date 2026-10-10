@@ -3,7 +3,7 @@
  * This never fetches arbitrary page HTML. It accepts only ordinary web URLs
  * and refuses publisher chrome that would misrepresent a logo as story art.
  */
-const GENERIC_ARTWORK = /(?:^|[\/_-])(?:favicon|logo|placeholder|default|avatar|sprite)(?:[\/_\-.]|$)/i;
+const GENERIC_ARTWORK = /(?:^|[\/_-])(?:favicon|logo|placeholder|default|avatar|sprite|emoji|smiley|smilies|icon)(?:[\/_\-.]|$)/i;
 
 export function safeArticleUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -28,8 +28,12 @@ function safeArticleImageUrl(value: unknown): string | null {
 
 function imageFromHtml(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const match = value.match(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/i);
-  return safeArticleImageUrl(match?.[1]);
+  const images = value.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi);
+  for (const match of images) {
+    const safe = safeArticleImageUrl(match[1]);
+    if (safe) return safe;
+  }
+  return null;
 }
 
 export function extractArticleImageUrl(item: Record<string, unknown>): string | null {
