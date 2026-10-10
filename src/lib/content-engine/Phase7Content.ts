@@ -55,7 +55,7 @@ export const PUZZLES_PER_KIND_PER_RUN = 3;
 export const PUZZLE_ATTEMPTS_PER_KIND = 30;
 export const CANDIDATE_LIMIT = 200;
 export const CANDIDATE_MIN_ABS_BB = 25;
-/** Hands played between now-24h and now-1h: "earlier today", never mid-hand. */
+/** Hands played between now-24h and now-1h: recent, never claimed as the author's local "today", and never mid-hand. */
 export const CANDIDATE_OLDEST_HOURS = 24;
 export const CANDIDATE_NEWEST_HOURS = 1;
 export const STORIES_PER_MODE_PER_RUN = 20;
