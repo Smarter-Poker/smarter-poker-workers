@@ -4,7 +4,7 @@
  * Ported from pages/api/cron/freeroll-qualification-sync.js (341 lines).
  *
  * 4×/day: For each commander_freerolls row in status=qualifying|upcoming
- * with qualification_type in (cash_hours, tournament_points), aggregate
+ * with qualification_type=cash_hours, aggregate
  * the relevant per-player metric over the freeroll's qualification_period
  * window and upsert into commander_freeroll_qualifications. Marks players
  * as is_qualified=true once they cross qualification_threshold.
@@ -22,24 +22,6 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
-
-const POSITION_POINTS: Record<number, number> = {
-  1: 100,
-  2: 75,
-  3: 60,
-  4: 50,
-  5: 40,
-  6: 30,
-  7: 25,
-  8: 20,
-  9: 15,
-  10: 10,
-};
-
-function getPointsForPosition(pos: number | null | undefined): number {
-  if (!pos || pos < 1) return 0;
-  return POSITION_POINTS[pos] ?? 5;
-}
 
 interface Freeroll {
   id: string;
@@ -142,83 +124,6 @@ async function getCashHoursPerPlayer(
   return playerHours;
 }
 
-interface PlayerPointsRow {
-  player_id: string;
-  player_name: string;
-  points: number;
-  tournaments_played: number;
-}
-type PlayerPoints = Record<string, PlayerPointsRow>;
-
-async function getTournamentPointsPerPlayer(
-  venueId: string,
-  dateRange: DateRange,
-): Promise<PlayerPoints> {
-  const supabase = getSupabase();
-
-  const { data: tournamentsData, error: tError } = await supabase
-    .from('commander_tournaments')
-    .select('id')
-    .eq('venue_id', venueId)
-    .gte('scheduled_start', dateRange.start)
-    .lte('scheduled_start', dateRange.end)
-    .in('status', ['completed', 'running', 'final_table'])
-    .limit(100);
-
-  if (tError) {
-    console.warn('[freeroll-qualification-sync] tournament query error:', tError.message);
-    return {};
-  }
-
-  const tournaments = (tournamentsData ?? []) as Array<{ id: string }>;
-  if (tournaments.length === 0) return {};
-
-  const tournamentIds = tournaments.map((t) => t.id);
-
-  const { data: entriesData, error: eError } = await supabase
-    .from('commander_tournament_entries')
-    .select('player_id, player_name, finish_position, tournament_id')
-    .in('tournament_id', tournamentIds)
-    .not('player_id', 'is', null)
-    .limit(5000);
-
-  if (eError) {
-    console.warn(
-      '[freeroll-qualification-sync] tournament entries query error:',
-      eError.message,
-    );
-    return {};
-  }
-
-  const entries = (entriesData ?? []) as Array<{
-    player_id: string;
-    player_name: string | null;
-    finish_position: number | null;
-    tournament_id: string;
-  }>;
-
-  const playerPoints: PlayerPoints = {};
-  for (const e of entries) {
-    const pid = e.player_id;
-    if (!playerPoints[pid]) {
-      playerPoints[pid] = {
-        player_id: pid,
-        player_name: e.player_name ?? 'Unknown',
-        points: 0,
-        tournaments_played: 0,
-      };
-    }
-    playerPoints[pid]!.tournaments_played++;
-    if (e.finish_position) {
-      playerPoints[pid]!.points += getPointsForPosition(e.finish_position);
-    } else {
-      playerPoints[pid]!.points += 5;
-    }
-  }
-
-  return playerPoints;
-}
-
 interface SyncResult {
   freeroll_id: string;
   name: string;
@@ -237,27 +142,17 @@ async function syncFreeroll(freeroll: Freeroll): Promise<SyncResult> {
   const threshold = parseFloat(String(freeroll.qualification_threshold ?? 0)) || 0;
   const syncType = freeroll.qualification_type;
 
-  let playerData: PlayerHours | PlayerPoints = {};
-
-  if (syncType === 'cash_hours') {
-    playerData = await getCashHoursPerPlayer(freeroll.venue_id, dateRange);
-  } else if (syncType === 'tournament_points') {
-    playerData = await getTournamentPointsPerPlayer(freeroll.venue_id, dateRange);
-  } else if (syncType === 'open') {
+  // Points may score leaderboards, but never qualify players for a benefit.
+  // Targeted requests must refuse the retired mode as well as the bulk scan.
+  if (syncType !== 'cash_hours') {
     return {
       freeroll_id: freeroll.id,
       name: freeroll.name,
       status: 'skipped',
-      reason: 'open type',
-    };
-  } else if (syncType === 'custom') {
-    return {
-      freeroll_id: freeroll.id,
-      name: freeroll.name,
-      status: 'skipped',
-      reason: 'custom type',
+      reason: syncType === 'tournament_points' ? 'points_rewards_retired' : `${syncType} type`,
     };
   }
+  const playerData = await getCashHoursPerPlayer(freeroll.venue_id, dateRange);
 
   const { data: existingData } = await supabase
     .from('commander_freeroll_qualifications')
@@ -286,27 +181,14 @@ async function syncFreeroll(freeroll: Freeroll): Promise<SyncResult> {
     const row = playerData[pid];
     if (!row) continue;
 
-    const hours =
-      syncType === 'cash_hours' && 'hours' in row
-        ? parseFloat((row as PlayerHoursRow).hours.toFixed(2))
-        : 0;
-    const points =
-      syncType === 'tournament_points' && 'points' in row
-        ? (row as PlayerPointsRow).points
-        : 0;
-
-    let isQualified = false;
-    if (threshold > 0) {
-      if (syncType === 'cash_hours' && hours >= threshold) isQualified = true;
-      if (syncType === 'tournament_points' && points >= threshold) isQualified = true;
-    }
+    const hours = parseFloat(row.hours.toFixed(2));
+    const isQualified = threshold > 0 && hours >= threshold;
 
     const payload = {
       freeroll_id: freeroll.id,
       player_id: pid,
       player_name: row.player_name,
       hours_logged: hours,
-      points_earned: points,
       is_qualified: isQualified,
       qualified_at: isQualified ? new Date().toISOString() : null,
       manually_added: false,
@@ -367,7 +249,7 @@ export async function freerollQualificationSync(c: Context) {
         .from('commander_freerolls')
         .select('*')
         .in('status', ['qualifying', 'upcoming'])
-        .in('qualification_type', ['cash_hours', 'tournament_points'])
+        .in('qualification_type', ['cash_hours'])
         .limit(100);
     }
 
