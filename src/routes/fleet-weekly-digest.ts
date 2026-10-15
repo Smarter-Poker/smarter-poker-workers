@@ -78,7 +78,7 @@ export const DRY_RUN_WRITES_NOTE =
 
 /** The Phase 6 output law, as HandVoice.ts and phase9-content.ts pin it. */
 export const CAPTION_EMOJI = /\p{Extended_Pictographic}/u;
-export const CAPTION_DASHES = /[–—]/;
+export const CAPTION_DASHES = /[\u2013\u2014]/;
 
 type Supa = ReturnType<typeof getSupabase>;
 
