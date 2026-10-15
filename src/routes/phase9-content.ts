@@ -319,7 +319,7 @@ export function buildCaption(review: Pick<ReviewRow, 'game_variant' | 'big_blind
 
 /** The Phase 6 output law, as HandVoice.ts and SessionVoice.ts pin it. */
 export const CAPTION_EMOJI = /\p{Extended_Pictographic}/u;
-export const CAPTION_DASHES = /[–—]/;
+export const CAPTION_DASHES = /[\u2013\u2014]/;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
