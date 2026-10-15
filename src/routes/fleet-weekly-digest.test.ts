@@ -37,6 +37,7 @@ import {
   parseMetrics,
   parseRecipients,
   renderDigest,
+  resolveRecipients,
   RESEND_TIMEOUT_MS,
   RESEND_URL,
   runDigest,
@@ -159,6 +160,7 @@ beforeEach(() => {
   fetcher = vi.fn().mockResolvedValue(okResponse());
   vi.stubGlobal('fetch', fetcher);
   vi.stubEnv('FLEET_DIGEST_EMAIL', RECIPIENTS);
+  vi.stubEnv('OPS_ALERT_EMAIL', '');
   vi.stubEnv('RESEND_API_KEY', KEY);
   vi.stubEnv('RESEND_FROM_EMAIL', '');
 });
@@ -170,17 +172,18 @@ afterEach(() => {
 });
 
 describe('the gates: recipient and key', () => {
-  it('recipient unset (variable absent): 200, skipped recipient_unset, the figures computed, fetch never called', async () => {
+  it('no recipient anywhere: 503, ok false, skipped recipient_unset, the figures computed, fetch never called', async () => {
     delete process.env.FLEET_DIGEST_EMAIL;
+    delete process.env.OPS_ALERT_EMAIL;
     const captured = await fire();
-    expect(captured.status).toBe(200);
+    expect(captured.status).toBe(503);
     const body = captured.body as DigestResult;
-    expect(body).toMatchObject({ ok: true, dry_run: false, skipped: 'recipient_unset', sent: 0, recipients: 0, engine: 'on' });
+    expect(body).toMatchObject({ ok: false, dry_run: false, skipped: 'recipient_unset', sent: 0, recipients: 0, recipient_source: 'unset', engine: 'on' });
     expect(body.resend_id).toBeUndefined();
     expect(body.text).toBeUndefined();
     expect(body.subject).toBe('Smarter.Poker fleet digest, week to 2026-10-06');
     expect(body.metrics.posts).toEqual({ horse_posts: 1240, horses_posted: 615 });
-    expect(body.notes.join(' ')).toContain('FLEET_DIGEST_EMAIL is unset');
+    expect(body.notes.join(' ')).toContain('FLEET_DIGEST_EMAIL and OPS_ALERT_EMAIL are both unset');
     expect(fetcher).not.toHaveBeenCalled();
     expect(h.rpc).toHaveBeenCalledTimes(1);
     expect(h.rpc).toHaveBeenCalledWith('fn_fleet_content_metrics', { p_days: 7 });
@@ -190,15 +193,40 @@ describe('the gates: recipient and key', () => {
   it('recipient blank (only whitespace and commas) is unset too', async () => {
     vi.stubEnv('FLEET_DIGEST_EMAIL', ' , ,  ');
     const body = await live();
-    expect(body).toMatchObject({ skipped: 'recipient_unset', sent: 0, recipients: 0 });
+    expect(body).toMatchObject({ ok: false, skipped: 'recipient_unset', sent: 0, recipients: 0 });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('key unset: 200, skipped resend_key_unset, the recipient count reported, fetch never called', async () => {
-    vi.stubEnv('RESEND_API_KEY', '');
+  it('FLEET_DIGEST_EMAIL unset: the digest goes to the ops inbox OPS_ALERT_EMAIL and says so by name only', async () => {
+    vi.stubEnv('FLEET_DIGEST_EMAIL', '');
+    vi.stubEnv('OPS_ALERT_EMAIL', 'ops@example.test');
     const captured = await fire();
     expect(captured.status).toBe(200);
-    expect(captured.body).toMatchObject({ ok: true, skipped: 'resend_key_unset', sent: 0, recipients: 2 });
+    expect(captured.body).toMatchObject({ ok: true, sent: 1, recipients: 1, recipient_source: 'OPS_ALERT_EMAIL' });
+    expect(sentMail().body.to).toEqual(['ops@example.test']);
+    expect(JSON.stringify(captured.body)).not.toContain('ops@example.test');
+  });
+
+  it('FLEET_DIGEST_EMAIL wins over the ops inbox when it names anyone', async () => {
+    vi.stubEnv('OPS_ALERT_EMAIL', 'ops@example.test');
+    const body = await live();
+    expect(body).toMatchObject({ ok: true, sent: 1, recipients: 2, recipient_source: 'FLEET_DIGEST_EMAIL' });
+    expect(sentMail().body.to).toEqual(ADDRESSES);
+  });
+
+  it('resolveRecipients reads only the two variables and reports a source, never an address', () => {
+    expect(resolveRecipients({})).toEqual({ recipients: [], source: 'unset' });
+    expect(resolveRecipients({ FLEET_DIGEST_EMAIL: ' , ', OPS_ALERT_EMAIL: 'a@example.test' }))
+      .toEqual({ recipients: ['a@example.test'], source: 'OPS_ALERT_EMAIL' });
+    expect(resolveRecipients({ FLEET_DIGEST_EMAIL: 'b@example.test', OPS_ALERT_EMAIL: 'a@example.test' }))
+      .toEqual({ recipients: ['b@example.test'], source: 'FLEET_DIGEST_EMAIL' });
+  });
+
+  it('key unset: 503, ok false, skipped resend_key_unset, the recipient count reported, fetch never called', async () => {
+    vi.stubEnv('RESEND_API_KEY', '');
+    const captured = await fire();
+    expect(captured.status).toBe(503);
+    expect(captured.body).toMatchObject({ ok: false, skipped: 'resend_key_unset', sent: 0, recipients: 2 });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -343,7 +371,7 @@ describe('a live run', () => {
     const ticks = [0, DEADLINE_MS + 1];
     const clock = () => ticks.shift() ?? DEADLINE_MS + 2;
     const body = await runDigest({ dryRun: false, now: NOW, clock });
-    expect(body).toMatchObject({ ok: true, skipped: 'deadline', sent: 0 });
+    expect(body).toMatchObject({ ok: false, skipped: 'deadline', sent: 0 });
     expect(fetcher).not.toHaveBeenCalled();
     expect(DEADLINE_MS).toBe(90_000);
     expect(RESEND_TIMEOUT_MS).toBe(30_000);
@@ -595,10 +623,12 @@ describe('wiring and laws (static)', () => {
     expect(route.indexOf("finish('resend_key_unset')")).toBeLessThan(route.indexOf('await sendDigest('));
   });
 
-  it('has no recipient of its own: FLEET_DIGEST_EMAIL has no default, and the only literal address is the sender', () => {
-    expect(route).toContain('process.env.FLEET_DIGEST_EMAIL');
+  it('has no recipient of its own: FLEET_DIGEST_EMAIL, then OPS_ALERT_EMAIL, and the only literal address is the sender', () => {
+    expect(route).toContain('resolveRecipients(process.env)');
     expect(route).not.toMatch(/FLEET_DIGEST_EMAIL\s*(?:\?\?|\|\|)/);
-    expect(route).toMatch(/parseRecipients\(process\.env\.FLEET_DIGEST_EMAIL\)/);
+    expect(route).toMatch(/parseRecipients\(env\.FLEET_DIGEST_EMAIL\)/);
+    expect(route).toMatch(/parseRecipients\(env\.OPS_ALERT_EMAIL\)/);
+    expect(route).toContain('return c.json(result, result.ok ? 200 : 503);');
     const addresses = new Set(route.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) ?? []);
     expect([...addresses]).toEqual(['alerts@smarter.poker']);
     expect(route).toContain("DEFAULT_FROM_EMAIL = 'alerts@smarter.poker'");

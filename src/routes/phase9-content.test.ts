@@ -170,11 +170,12 @@ describe('gates', () => {
     expect(db.log).toHaveLength(0);
   });
 
-  it('mode off: skipped mode_disabled and no review read', async () => {
+  it('mode off: held mode_disabled (an owner hold, not a skip) and no review read', async () => {
     h.readPostModeStates.mockResolvedValue({ [HAND_CLIP_MODE]: false });
     seedPickFixture();
     const body = await live();
-    expect(body).toMatchObject({ ok: true, skipped: 'mode_disabled', enqueued: 0, candidates: 0, gates: { engine: 'on', mode: 'off' } });
+    expect(body).toMatchObject({ ok: true, held: 'mode_disabled', enqueued: 0, candidates: 0, gates: { engine: 'on', mode: 'off' } });
+    expect(body.skipped).toBeUndefined();
     expect(h.readPostModeStates).toHaveBeenCalledWith([HAND_CLIP_MODE]);
     expect(db.log).toHaveLength(0);
   });

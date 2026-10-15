@@ -73,7 +73,6 @@ type Supa = ReturnType<typeof getSupabase>;
 export type Phase9Skip =
   | 'engine_disabled'
   | 'engine_unreadable'
-  | 'mode_disabled'
   | 'mode_unreadable'
   | 'no_candidates'
   | 'no_slot'
@@ -118,6 +117,15 @@ export interface Phase9Result {
   candidates: number;
   job_id?: string;
   skipped?: Phase9Skip;
+  /**
+   * A deliberate owner hold, not a skip: the hand_clip mode row is off
+   * because the owner has not approved hand clips. The run is correct to do
+   * nothing, and the cron no-op detector (Club Arena fn_monitoring_health_snapshot,
+   * 20261015035957) never counts a held run as success while doing nothing,
+   * so leaving a mode unapproved does not page. A gate that cannot be read is
+   * still a skip (mode_unreadable), never a hold.
+   */
+  held?: 'mode_disabled';
   pick?: Phase9Pick;
   gates: { engine: EngineSwitchState | 'not_read'; mode: ModeState | 'not_read' };
   pool: {
@@ -449,7 +457,11 @@ export async function runPhase9(options: RunOptions): Promise<Phase9Result> {
   if (!options.dryRun && engine !== 'on') return finish(engineSkip(engine));
   const mode = await handClipMode();
   result.gates.mode = mode;
-  if (!options.dryRun && mode !== 'on') return finish(mode === 'off' ? 'mode_disabled' : 'mode_unreadable');
+  if (!options.dryRun && mode === 'off') {
+    result.held = 'mode_disabled';
+    return finish();
+  }
+  if (!options.dryRun && mode !== 'on') return finish('mode_unreadable');
 
   // 2. The pool, ranked.
   if (overBudget()) return finish('deadline');
