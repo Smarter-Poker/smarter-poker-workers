@@ -41,7 +41,8 @@ vi.mock('./VoiceWriter.js', () => ({
   summarise: vi.fn(() => 'brief'),
   recordBrief: vi.fn(),
 }));
-vi.mock('./ClipSupply.js', () => ({
+vi.mock('./ClipSupply.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./ClipSupply.js')>()),
   candidateClips: mocks.candidateClips,
   newsSources: vi.fn(),
   platformCandidateClips: mocks.platformCandidateClips,

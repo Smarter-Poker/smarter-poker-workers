@@ -125,6 +125,7 @@ import {
   fleetSlotId,
   postedRecently,
   publishForHorse,
+  takeRandomCandidates,
   type FleetHorse,
 } from './HorsePublisher.js';
 import { fleetHash, isDueForPost } from './FleetScheduler.js';
@@ -179,7 +180,7 @@ beforeEach(() => {
   ledger.recordAssetUse.mockClear();
   ledger.recordBrief.mockClear();
   feed.parseURL.mockReset();
-  feed.parseURL.mockResolvedValue({ items: [{ title: 'Deep run at the Main Event', link: 'https://news.example/a' }] });
+  feed.parseURL.mockResolvedValue({ items: [{ title: 'Deep run at the Main Event', link: 'https://news.example/a', enclosure: { url: 'https://cdn.news.example/photos/main-event.webp' } }] });
   voice.writeCaption.mockReset();
   voice.writeCaption.mockResolvedValue({
     text: 'Called the river with second pair and it held',
@@ -314,6 +315,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
       id: () => horseWhereGroundedFirstIs(false),
       setup: () => {
         modes.grounded = false;
+        modes.video = false;
       },
       contentType: 'link',
     },
@@ -405,8 +407,32 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(ledger.recordBrief).toHaveBeenCalledWith('post-1', expect.anything());
   });
 
+  it('prefers a genuine linked video/Reel over an available illustrated news article', async () => {
+    modes.grounded = false;
+    const result = await publishForHorse(horse(horseWhereGroundedFirstIs(false)), { slot: SLOT });
+    expect(result).toMatchObject({success:true,type:expect.stringMatching(/_video$/),postId:'post-1',reelId:'reel-1'});
+    expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(0);
+    expect(feed.parseURL).not.toHaveBeenCalled();
+  });
+
+  it('keeps known short/excerpt candidates ahead of full streams even under hostile random draws', () => {
+    vi.spyOn(Math,'random').mockReturnValue(.9999);
+    const rows=[{source_url:'https://www.youtube.com/watch?v=AbCdEfGhIjK',duration_seconds:12000}, {source_url:'https://www.youtube.com/watch?v=ShortClip01',duration_seconds:43}, {source_url:'https://www.youtube.com/shorts/ShortClip02',duration_seconds:null}];
+    expect(takeRandomCandidates(rows,3).map(row=>row.duration_seconds)).toEqual([43,null,12000]);
+  });
+
+  it('does not publish an article card with missing or generic artwork', async () => {
+    modes.grounded=false;modes.video=false;
+    feed.parseURL.mockResolvedValue({items:[{title:'Deep run at the Main Event',link:'https://news.example/a',enclosure:{url:'https://cdn.example/publisher-logo.png'}}]});
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
+    expect(result).toMatchObject({success:false,skipped:'content_exhausted'});
+    expect(result.error).toContain('genuine associated story artwork');
+    expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(0);
+  });
+
   it('a clean news publication carries the key and every atomic ledger input', async () => {
     modes.grounded = false;
+    modes.video = false;
     const id = horseWhereGroundedFirstIs(false);
     const r = await publishForHorse(horse(id), { slot: SLOT });
     expect(r).toMatchObject({ success: true, postId: 'post-1' });
@@ -429,6 +455,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 
   it('a news insert carries the actual safe article image in link_image', async () => {
     modes.grounded = false;
+    modes.video = false;
     feed.parseURL.mockResolvedValue({
       items: [{
         title: 'Deep run at the Main Event',
@@ -516,7 +543,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 
   it('stops all fallbacks when the atomic news acknowledgement is unknown', async () => {
     modes.grounded = true;
-    modes.video = true;
+    modes.video = false;
     db.newsRpcResult = { data: null, error: { message: 'socket hang up' } };
     const id = horseWhereGroundedFirstIs(false);
 

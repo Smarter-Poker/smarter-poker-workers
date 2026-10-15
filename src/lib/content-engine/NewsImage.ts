@@ -3,7 +3,7 @@
  * This never fetches arbitrary page HTML. It accepts only ordinary web URLs
  * and refuses publisher chrome that would misrepresent a logo as story art.
  */
-const GENERIC_ARTWORK = /(?:^|[\/_-])(?:favicon|logo|placeholder|default|avatar|sprite|emoji|smiley|smilies|icon)(?:[\/_\-.]|$)/i;
+const GENERIC_ARTWORK = /(?:^|[\/_-])(?:favicon|logos?|placeholder|default|avatar|sprite|emoji|smiley|smilies|icon)(?:[\/_\-.]|$)/i;
 
 export function safeArticleUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -19,11 +19,73 @@ export function safeArticleUrl(value: unknown): string | null {
   }
 }
 
-function safeArticleImageUrl(value: unknown): string | null {
+export function safeArticleImageUrl(value: unknown): string | null {
   const safe = safeArticleUrl(value);
   if (!safe) return null;
   const url = new URL(safe);
-  return GENERIC_ARTWORK.test(`${url.hostname}${url.pathname}`) ? null : safe;
+  let decoded = safe;
+  for (let i = 0; i < 2; i++) { try { decoded = decodeURIComponent(decoded); } catch { break; } }
+  // ESPN's default share card contains no story photograph and its filename
+  // omits "logo". It must not masquerade as article-specific artwork.
+  return GENERIC_ARTWORK.test(decoded)
+    || /(?:^|\/)espn(?:[-_](?:combiner|default|share|og))?\.(?:png|jpe?g|webp)$/i.test(url.pathname)
+    || /\/i\/espn\/espn_logos\//i.test(url.pathname)
+    || /\/combiner\/i\?/.test(safe) && /(?:logo|espn_default)/i.test(url.search)
+    ? null : safe;
+}
+
+const storyImageCache = new Map<string, { expires: number; pending: Promise<string | null> }>();
+export function _resetArticleImageCache(): void { storyImageCache.clear(); }
+
+/** Exact first-party story lookup only. No arbitrary article-page fetch/SSRF. */
+export async function resolveArticleImageUrl(item: Record<string, unknown>): Promise<string | null> {
+  const supplied = extractArticleImageUrl(item);
+  if (supplied) return supplied;
+  const link = safeArticleUrl(item.link);
+  if (!link) return null;
+  const url = new URL(link);
+  if (!['espn.com', 'www.espn.com'].includes(url.hostname.toLowerCase())) return null;
+  const id = url.pathname.match(/\/story\/_\/id\/(\d+)(?:\/|$)/)?.[1];
+  if (!id) return null;
+  const cached = storyImageCache.get(id);
+  if (cached && cached.expires > Date.now()) return cached.pending;
+  const entry = { expires: Date.now() + 6000, pending: fetchStoryImage(id) };
+  storyImageCache.set(id, entry);
+  if (storyImageCache.size > 256) storyImageCache.delete(storyImageCache.keys().next().value!);
+  const result = await entry.pending;
+  // Success and failure are bounded metadata optimizations, never a publish
+  // authority. An outage is retried on a later original request, not a timer.
+  entry.expires = Date.now() + (result ? 5 * 60_000 : 30_000);
+  return result;
+}
+
+async function fetchStoryImage(id: string): Promise<string | null> {
+  try {
+    const response = await fetch(`https://content.core.api.espn.com/v1/sports/news/${id}`, {
+      headers: { Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return null;
+    if (!response.body) return null;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > 262_144) { await reader.cancel(); return null; }
+      chunks.push(part.value);
+    }
+    const body = Buffer.concat(chunks, bytes).toString('utf8');
+    const data = JSON.parse(body) as { headlines?: Array<{ id?: string | number; images?: Array<{ url?: unknown }> }> };
+    const story = data.headlines?.find(row=>String(row.id)===id);
+    if (!story) return null;
+    for (const image of story.images ?? []) {
+      const safe = safeArticleImageUrl(image.url);
+      if (safe) return safe;
+    }
+  } catch { /* A failed first-party resolution is no proof of story artwork. */ }
+  return null;
 }
 
 function imageFromHtml(value: unknown): string | null {

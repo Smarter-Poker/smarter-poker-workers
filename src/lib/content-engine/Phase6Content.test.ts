@@ -139,20 +139,20 @@ describe('Phase 6 content facts', () => {
     expect(localEventFacts({ ...raw, start_time: '9:00PM' }, RUN)).toBeNull();
 
     const texts: string[] = [];
-    for (let i = 0; i < 40; i += 1) {
+    for (let i = 0; i < 1000; i += 1) {
       const draft = buildLocalEventDraft({ profile_id: `h${i}`, name: 'Horse', city: 'Las Vegas', state: 'NV' }, [raw], '2026-09-07', '2026-09-21', RUN)!;
       texts.push(draft.content);
-      expect(draft.content).toContain("No Limit Hold'em");
-      expect(draft.content).toContain('tonight at 8PM');
-      expect(draft.content).toContain('$160 buy-in');
-      expect(draft.content).not.toMatch(/Buy In|8:00PM|on Sep 7|It is |That is /);
+      expect(draft.content.toLowerCase()).toContain("no limit hold'em");
+      expect(draft.content.toLowerCase()).toContain('tonight at 8pm');
+      expect(draft.content.toLowerCase()).toContain('$160 buy-in');
+      expect(draft.content).not.toMatch(/Buy In|8:00PM|on Sep 7|Looks like|Worth a look|Could be a fun one|I'd play that/);
       expect(draft.content).not.toMatch(EMOJI);
       expect(draft.content.includes(EM_DASH) || draft.content.includes(EN_DASH)).toBe(false);
       // No number that is not in the source row.
       for (const number of draft.content.match(/\d[\d,:]*/g) ?? []) expect(['8', '160']).toContain(number.replace(/,/g, ''));
     }
     expect(new Set(texts).size).toBeGreaterThan(3);
-    expect(texts.some((text) => /\b\w+'(?:s|re|d|ll|t)\b/.test(text) || /n't\b/.test(text))).toBe(true);
+    expect(texts.some((text) => text.includes('\n'))).toBe(true);
   });
 
   it('P6C-08: tidies a doubled venue type without changing the venue', () => {

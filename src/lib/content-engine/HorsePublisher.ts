@@ -46,6 +46,7 @@ import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
 import { hasSpecificTake } from './Composer.js';
 import {
   candidateClips,
+  clipFormatPriority,
   newsSources,
   platformCandidateClips,
   recordValidity,
@@ -69,7 +70,7 @@ import {
 } from './HorseVideoPublication.js';
 import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
 import { captionModelIdempotencyKey, takeModelWriterStats } from './ModelWriter.js';
-import { extractArticleImageUrl, safeArticleUrl } from './NewsImage.js';
+import { resolveArticleImageUrl, safeArticleUrl } from './NewsImage.js';
 import { publishHorseNewsAtomically } from './HorseNewsPublication.js';
 
 export interface FleetHorse {
@@ -352,11 +353,13 @@ export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
 export const MAX_LIVE_VIDEO_CANDIDATES = 3;
 
 /** Randomised without replacement, so one bad/stale clip cannot monopolise an attempt. */
-function takeRandomCandidates<T>(rows: readonly T[], limit: number): T[] {
+export function takeRandomCandidates<T extends { source_url: string; duration_seconds?: number | null }>(rows: readonly T[], limit: number): T[] {
   const remaining = [...rows];
   const selected: T[] = [];
   while (selected.length < limit && remaining.length > 0) {
-    const index = Math.floor(Math.random() * remaining.length);
+    const priority = Math.min(...remaining.map(clipFormatPriority));
+    const eligible = remaining.map((row,index)=>({row,index})).filter(({row})=>clipFormatPriority(row)===priority);
+    const index = eligible[Math.floor(Math.random() * eligible.length)]!.index;
     selected.push(remaining.splice(index, 1)[0]!);
   }
   return selected;
@@ -715,9 +718,12 @@ export async function publishVideoClip(
       });
     };
     let fresh = preferred.length ? await freshFrom(preferred) : [];
-    if (!fresh.length && preferred.length !== verifiedCaptionable.length) {
-      fresh = await freshFrom(verifiedCaptionable);
-      bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
+    if (!fresh.some(clip=>clipFormatPriority(clip)<=1) && preferred.length !== verifiedCaptionable.length) {
+      const wider = await freshFrom(verifiedCaptionable);
+      if (!fresh.length || wider.some(clip=>clipFormatPriority(clip)<=1)) {
+        fresh = wider;
+        bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
+      }
     }
     if (!fresh.length) {
       if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
@@ -735,11 +741,10 @@ export async function publishVideoClip(
         error: `All ${clipType} verified clips already posted`,
       };
     }
-    const offset = Math.floor(Math.random() * fresh.length);
-    captionCandidates = Array.from(
-      { length: Math.min(MAX_VIDEO_CAPTION_CANDIDATES, fresh.length) },
-      (_, index) => fresh[(offset + index) % fresh.length]!,
-    );
+    // Randomize only within each format tier. A rotation across the entire
+    // pool discards the short/excerpt preference and can lead with a full
+    // tournament broadcast while a qualified short is still available.
+    captionCandidates = takeRandomCandidates(fresh,MAX_VIDEO_CAPTION_CANDIDATES);
     bumpSupplyStat(`${clipType}_shared_verified_selected`);
   } else if (clipType === 'poker') {
     // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
@@ -1181,8 +1186,22 @@ async function postNewsLink(
       };
     }
 
-    const article = fresh[Math.floor(Math.random() * fresh.length)]!;
-    const articleImage = extractArticleImageUrl(article);
+    // A news card without associated art is not an eligible feed item. Do
+    // not publish a logo/blank placeholder and hope a later browser repairs it.
+    const illustrated: Array<{ article: typeof fresh[number]; image: string }> = [];
+    // Bounded first-party metadata work with in-flight/cache deduplication
+    // across horses, never another story used as a thumbnail substitute.
+    for (const article of fresh.slice(0, 3)) {
+      const image = await resolveArticleImageUrl(article);
+      if (image) illustrated.push({ article, image });
+    }
+    if (!illustrated.length) {
+      bumpSupplyStat(`${newsType}_news_no_story_image`);
+      return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'No fresh article has genuine associated story artwork' };
+    }
+    const selected = illustrated[Math.floor(Math.random() * illustrated.length)]!;
+    const article = selected.article;
+    const articleImage = selected.image;
     await seedMemoryFromHistory(horse.profile_id);
 
     const articleKey = assetKeyFor(article.link);
@@ -1348,7 +1367,7 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
 
 /**
  * Publish one post for this horse. 75/25 poker/sports with streak
- * prevention (three of a kind forces a switch), news first, video fallback.
+ * prevention (three of a kind forces a switch), verified videos first.
  *
  * `slot` is the FleetScheduler slot the caller found the horse due for
  * (fleetSlotId). Without one the slot is worked out from the clock, and a
@@ -1395,7 +1414,9 @@ export async function publishForHorse(
     /* streak check is best effort */
   }
 
-  // Preferred category first (news, then video), then the OTHER category.
+  // Both approved video categories precede every news attempt. Ordering just
+  // one category video-first still lets a poker news item preempt a perfectly
+  // eligible sports clip, defeating the owner's video-led feed requirement.
   // Measured on the first hourly fleet fire (2026-09-05 09:10): 26 due, 18
   // failed "All poker clips already posted" because the ledger correctly
   // refused all 150 hard-coded poker clips. A due horse that stays silent is
@@ -1440,15 +1461,7 @@ export async function publishForHorse(
   }
 
   for (const kind of [preferred, other]) {
-    let result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey, modelAttempt);
-    if (result.success) return result;
-    if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
-    // The RPC may have committed before its acknowledgement was lost. The
-    // exact slot retry resolves that durable identity; no alternate kind may
-    // publish behind an unknown news outcome in this invocation.
-    if (result.outcome === 'unknown') return result;
-    else if (!result.skipped) attempts.push(`${kind}_news: ${result.error}`);
-    result = await publishVideoClip(
+    const result = await publishVideoClip(
       horse,
       kind,
       opts.fleet ?? [],
@@ -1465,6 +1478,15 @@ export async function publishForHorse(
     // so no alternate category or grounded fallback may publish behind it.
     if (result.outcome === 'unknown') return result;
     if (!result.skipped) attempts.push(`${kind}_video: ${result.error}`);
+  }
+
+  for (const kind of [preferred, other]) {
+    const result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey, modelAttempt);
+    if (result.success) return result;
+    if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
+    // An acknowledgement loss is not proof that the atomic write failed.
+    if (result.outcome === 'unknown') return result;
+    if (!result.skipped) attempts.push(`${kind}_news: ${result.error}`);
   }
 
   // The media pools are exhausted for this horse. Its own poker is the

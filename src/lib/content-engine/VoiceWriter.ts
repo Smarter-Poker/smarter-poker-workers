@@ -28,7 +28,6 @@ import { briefForAsset, briefForPost, summarise, isUninformativeTitle, type Post
 import { styleSheetFor, styleId, describeStyle, sentenceKeys, type StyleSheet } from './StyleSheet.js';
 import {
   composeCaption,
-  composeSourceReportedNews,
   composeComment,
   composeReply,
   relevanceOf,
@@ -48,6 +47,7 @@ import { pickHandStory, pickSessionStory } from './HandStory.js';
 import { lineFor, briefForSpokenHand } from './HandVoice.js';
 import { sessionLineFor, sessionGroup, briefForSpokenSession } from './SessionVoice.js';
 import { writeModelCaption } from './ModelWriter.js';
+import { captionVoiceProfile } from './CaptionVoice.js';
 
 export interface WrittenText {
   text: string;
@@ -195,7 +195,7 @@ export async function writeCaption(
       deterministicDraft: deterministicReference.text,
     })
     : null;
-  let core = await writeGated(
+  const core = await writeGated(
     (variant) => composeCaption(brief, style, variant),
     brief,
     style,
@@ -212,24 +212,9 @@ export async function writeCaption(
       : undefined,
   );
 
-  // A link may still be useful when the bounded opinion pool has no grounded
-  // take left: attribute the publisher's complete headline and invent
-  // nothing. This remains behind the same semantic and exact-text ledgers.
-  // Unsupported video titles stay silent.
-  if (!core.text && asset.kind === 'link') {
-    const reported = await writeGated(
-      (variant) => composeSourceReportedNews(brief, style, variant),
-      brief,
-      style,
-      horse.profile_id,
-      undefined,
-      undefined,
-      undefined,
-      1,
-    );
-    reported.attempts += core.attempts;
-    core = reported;
-  }
+  // A headline in four attribution wrappers is not a horse's voice. Both
+  // news and video require a grounded, fresh take; unsupported metadata stays
+  // silent rather than making the entire fleet sound like a wire service.
 
   const out: WrittenText = { ...core, brief, style };
 
@@ -666,7 +651,7 @@ export async function syncStyleSheets(
       if ((existing.style as { style_id?: string } | undefined)?.style_id === want) continue;
       const { error } = await supa
         .from('content_authors')
-        .update({ personality: { ...existing, style: describeStyle(sheet) } })
+        .update({ personality: { ...existing, style: { ...describeStyle(sheet), caption: captionVoiceProfile(sheet) } } })
         .eq('profile_id', horse.profile_id);
       if (error) {
         console.warn('[voice] style sync failed:', error.message);

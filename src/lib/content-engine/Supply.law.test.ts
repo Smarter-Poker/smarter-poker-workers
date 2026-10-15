@@ -5,13 +5,100 @@
  * invented in advance. The measurements are 2026-09-06, on seven days of
  * live fleet output.
  */
-import { describe, it, expect } from 'vitest';
-import { sliceForHorse, sportsShareFor, SOURCES_PER_HORSE } from './ClipSupply.js';
+import { describe, it, expect, vi } from 'vitest';
+const clipDb = vi.hoisted(() => ({
+  clips: [] as Array<Record<string, unknown>>,
+  durations: [] as Array<Record<string, unknown>>,
+  libraryError: false,
+  libraryChunks: [] as string[][],
+}));
+vi.mock('../supabase.js', () => ({ getSupabase: () => ({ from: (table: string) => {
+  let ids: string[] = [];
+  const q: Record<string, unknown> = {};
+  for (const method of ['select', 'eq', 'not', 'order', 'limit']) q[method] = () => q;
+  q.in = (_column: string, values: string[]) => { ids = values; return q; };
+  q.then = (resolve: (value: unknown) => void) => {
+    if (table === 'video_library_videos') {
+      clipDb.libraryChunks.push(ids);
+      resolve({ data: clipDb.durations.filter(row => ids.includes(String(row.youtube_video_id))),
+        error: clipDb.libraryError ? { message: 'duration metadata unavailable' } : null });
+    } else resolve({ data: table === 'content_sources' ? [] : clipDb.clips, error: null });
+  };
+  return q;
+} }) }));
+import { sliceForHorse, sportsShareFor, SOURCES_PER_HORSE, platformCandidateClips, clipDurationSeconds, clipFormatPriority, preferShortClips } from './ClipSupply.js';
 import { parseChannelFeed } from '../../routes/scrape-poker-clips.js';
 import { briefForPost } from './PostBrief.js';
 import { composeCaption, agentOf, anchorOf } from './Composer.js';
 import { styleSheetFor } from './StyleSheet.js';
 import { fleetHash } from './FleetScheduler.js';
+
+describe('known short excerpts precede full streams without invented duration', () => {
+  const clip = (id: string, url = `https://www.youtube.com/watch?v=${id}`) => ({
+    id, video_id: id, source_url: url, source: 'Qualified source', title: 'Phil Ivey makes a river call', category: 'poker', oembed_ok: true,
+  });
+  it.each([
+    ['03:00', 180], ['00:03:01', 181], ['PT2M30S', 150], ['PT1H2M3S', 3723], ['180', 180],
+    ['LIVE', null], ['', null], ['00:00', null], ['2:99', null], ['-20', null], ['PT', null],
+  ])('parses only an actual supported positive duration: %s', (value, expected) => {
+    expect(clipDurationSeconds(value)).toBe(expected);
+  });
+
+  it('prefers known shorts at the boundary, does not trust an unknown hostname, and keeps tier order stable', () => {
+    const short = { ...clip('shortvideo1'), duration_seconds: 180 };
+    const long = { ...clip('longvideo01', 'https://www.youtube.com/shorts/longvideo01'), duration_seconds: 181 };
+    const unknown = { ...clip('unknown0001', 'https://untrusted.example/shorts/unknown0001'), duration_seconds: null };
+    expect(clipFormatPriority(short)).toBe(0);
+    expect(clipFormatPriority(long)).toBe(3);
+    expect(clipFormatPriority(unknown)).toBe(2);
+    expect(preferShortClips([long, unknown, short, { ...unknown, id: 'another' }]).map(row => row.id))
+      .toEqual([short.id, unknown.id, 'another', long.id]);
+  });
+  it('joins the bounded existing pool by video identity and prioritizes real short duration', async () => {
+    clipDb.libraryError = false;
+    clipDb.libraryChunks = [];
+    clipDb.clips = [clip('longvideo01'), clip('unknown0001'), clip('shortvideo1'), clip('shortsurl01', 'https://www.youtube.com/shorts/shortsurl01')];
+    clipDb.durations = [
+      { youtube_video_id: 'longvideo01', duration: '02:30:00' },
+      { youtube_video_id: 'shortvideo1', duration: 'PT2M30S' },
+      { youtube_video_id: 'unknown0001', duration: 'LIVE' },
+    ];
+    const result = await platformCandidateClips('poker');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.clips.map(row => row.video_id)).toEqual(['shortvideo1', 'shortsurl01', 'unknown0001', 'longvideo01']);
+    expect(result.clips[0]).toHaveProperty('duration_seconds', 150);
+    expect(result.clips[1]).toHaveProperty('duration_seconds', null);
+    expect(result.clips[2]).toHaveProperty('duration_seconds', null);
+    expect(clipDb.libraryChunks.flat()).toHaveLength(4);
+  });
+
+  it('keeps unreadable metadata unknown and preserves every qualified asset', async () => {
+    clipDb.libraryError = true;
+    clipDb.libraryChunks = [];
+    clipDb.clips = [clip('unknown0001'), clip('shortsurl01', 'https://www.youtube.com/shorts/shortsurl01')];
+    clipDb.durations = [{ youtube_video_id: 'unknown0001', duration: '00:30' }];
+    const result = await platformCandidateClips('sports');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.clips.map(row => row.video_id)).toEqual(['shortsurl01', 'unknown0001']);
+    expect(result.clips.every(row => 'duration_seconds' in row && row.duration_seconds === null)).toBe(true);
+    clipDb.libraryError = false;
+  });
+
+  it('bounds duration reads to chunks and does not import unrelated library rows', async () => {
+    clipDb.libraryError = false;
+    clipDb.libraryChunks = [];
+    clipDb.clips = Array.from({ length: 205 }, (_, i) => clip(`video${String(i).padStart(6, '0')}`));
+    clipDb.durations = [{ youtube_video_id: 'unrelated01', duration: '00:20' }];
+    const result = await platformCandidateClips('poker');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.clips).toHaveLength(205);
+    expect(clipDb.libraryChunks.map(chunk => chunk.length)).toEqual([100, 100, 5]);
+    expect(result.clips.some(row => row.video_id === 'unrelated01')).toBe(false);
+  });
+});
 
 function fleetIds(n: number): string[] {
   const out: string[] = [];

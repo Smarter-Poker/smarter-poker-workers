@@ -82,24 +82,19 @@ describe('VoiceWriter model candidate gates', () => {
     expect(modelAttempt).toEqual({ attempted: true });
   });
 
-  it('uses a truthful source-attributed report for a fresh news title with no supported opinion', async () => {
+  it('never replaces an unsupported opinion with the rejected wire-service templates', async () => {
     mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
 
     const written = await writeCaption(horse, unsupportedNews);
 
-    expect(written.text).toContain('PokerNews');
-    expect(written.text).toContain('Neighborhood cardroom announces autumn hours after renovation');
-    expect(written.text).not.toMatch(/worth a look|stuck with me|I think|I believe/i);
-    expect(written.semanticKey).toContain('source report pokernews neighborhood cardroom announces autumn hours after renovation');
-    expect(written.relevance).toBeGreaterThanOrEqual(0.3);
+    expect(written.text).toBe('');
   });
 
-  it('preserves the complete source headline across horse style sheets', async () => {
+  it('does not bypass personal style by echoing a source headline across horses', async () => {
     mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
     for (const profile_id of ['horse-a', '00000000-0000-4000-8000-000000000001', 'horse-z']) {
       const written = await writeCaption({ ...horse, profile_id }, unsupportedNews);
-      expect(written.text).toContain(unsupportedNews.title);
-      expect(written.text).not.toMatch(/\.\.\.|…/);
+      expect(written.text).toBe('');
     }
   });
 
@@ -109,11 +104,11 @@ describe('VoiceWriter model candidate gates', () => {
     expect((await writeCaption(horse, { ...unsupportedNews, title: 'Neighborhood cardroom announces autumn hours and the' })).text).toBe('');
   });
 
-  it('keeps source-attributed news behind the same semantic freshness gate', async () => {
+  it('keeps exhausted subject-specific captions behind the same semantic freshness gate', async () => {
     mocks.writeModelCaption.mockResolvedValue({ status: 'disabled', reason: 'disabled' });
-    mocks.phraseRecentlyUsed.mockImplementation(async (key: string) => key.startsWith('meaning:source report'));
+    mocks.phraseRecentlyUsed.mockImplementation(async (key: string) => key.startsWith('meaning:subject:'));
 
-    const written = await writeCaption(horse, unsupportedNews);
+    const written = await writeCaption(horse, { ...asset, title: 'Phil Ivey fires a river bluff at the final table' });
 
     expect(written.text).toBe('');
     expect(written.stale).toBe(true);
