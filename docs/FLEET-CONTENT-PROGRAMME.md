@@ -405,8 +405,11 @@ Phase 9.1 as built, the workers side (2026-09-30): `GET/POST
 /cron/phase9-content` (`src/routes/phase9-content.ts`) is the hourly pick
 for the renderer. It reads the master switch and the `horse_post_modes`
 row `hand_clip` first, both failing closed (`engine_disabled`,
-`engine_unreadable`, `mode_disabled`, `mode_unreadable`) and reading no
-reviews when either says stop. The pool is the newest 2,000 winning rows of
+`engine_unreadable`, `mode_unreadable` as `skipped`) and reading no
+reviews when either says stop. A `hand_clip` row that reads off is the
+owner's approval hold, so since 2026-10-15 it reports `held: mode_disabled`
+rather than a skip, and the cron no-op detector never counts a held run as
+success while doing nothing. The pool is the newest 2,000 winning rows of
 `horse_hand_reviews` played in the last 24 hours (bounded on `played_at`,
 the table's only time index), ranked by pot in big blinds then `created_at`,
 pots under 20 big blinds dropped; hands the horse already has a
@@ -446,10 +449,14 @@ called) and writes nothing but one email through the Resend API, to
 `RESEND_FROM_EMAIL` (default `alerts@smarter.poker`) with
 `RESEND_API_KEY`, all read at call time. The switch states are reported,
 never obeyed: a week with the engine off still arrives as a digest that
-says OFF. The only gate is the recipient: `FLEET_DIGEST_EMAIL` unset is a
-200 with `skipped: recipient_unset` and the figures still computed, so the
-fire is visible in `cron_execution_log` as a measured no-op;
-`RESEND_API_KEY` unset is `skipped: resend_key_unset`; a Resend failure or
+says OFF. The only gate is the recipient: `FLEET_DIGEST_EMAIL`, or when it
+is unset the platform ops inbox `OPS_ALERT_EMAIL` (reported as
+`recipient_source`, never the address). Since 2026-10-15 a live fire that
+sends nothing is not a success: no recipient is a 503 with `ok: false` and
+`skipped: recipient_unset`, the figures still computed, so the cron log
+records an error instead of a success that did no work (it had read as
+CronJobsReportingSuccessWhileDoingNothing);
+`RESEND_API_KEY` unset is a 503 `skipped: resend_key_unset`; a Resend failure or
 the 30 second ceiling is a 500 naming the HTTP status, never the key, and
 the mail is never sent twice. `?dry_run=1` (or `?preview=1`) renders the
 subject and the text into the JSON and sends nothing. The dispatcher entry
