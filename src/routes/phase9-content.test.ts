@@ -170,11 +170,12 @@ describe('gates', () => {
     expect(db.log).toHaveLength(0);
   });
 
-  it('mode off: skipped mode_disabled and no review read', async () => {
+  it('mode off: held mode_disabled (an owner hold, not a skip) and no review read', async () => {
     h.readPostModeStates.mockResolvedValue({ [HAND_CLIP_MODE]: false });
     seedPickFixture();
     const body = await live();
-    expect(body).toMatchObject({ ok: true, skipped: 'mode_disabled', enqueued: 0, candidates: 0, gates: { engine: 'on', mode: 'off' } });
+    expect(body).toMatchObject({ ok: true, held: 'mode_disabled', enqueued: 0, candidates: 0, gates: { engine: 'on', mode: 'off' } });
+    expect(body.skipped).toBeUndefined();
     expect(h.readPostModeStates).toHaveBeenCalledWith([HAND_CLIP_MODE]);
     expect(db.log).toHaveLength(0);
   });
@@ -364,12 +365,12 @@ describe('the caption', () => {
 
   it('refuses emoji, dashes and anything outside the template (a name cannot fit)', () => {
     expect(captionPassesLaw('Hand review: No Limit Hold\'em, big blind 5. Pot 201.0 BB, won from seat 3. \u{1F525}')).toBe(false);
-    expect(captionPassesLaw('Hand review: No Limit Hold\'em \u2014 big blind 5. Pot 201.0 BB, won from seat 3.')).toBe(false);
-    expect(captionPassesLaw('Hand review: No Limit Hold\'em \u2013 big blind 5. Pot 201.0 BB, won from seat 3.')).toBe(false);
+    expect(captionPassesLaw('Hand review: No Limit Hold\'em — big blind 5. Pot 201.0 BB, won from seat 3.')).toBe(false);
+    expect(captionPassesLaw('Hand review: No Limit Hold\'em – big blind 5. Pot 201.0 BB, won from seat 3.')).toBe(false);
     expect(captionPassesLaw('Hand review: Dan won big, big blind 5. Pot 201.0 BB, won from seat 3.')).toBe(false);
     expect(captionPassesLaw('Hand review: No Limit Hold\'em, big blind 5. Pot 201.0 BB, won from seat 3 by Dan.')).toBe(false);
     expect(CAPTION_EMOJI.test('\u{1F3B0}')).toBe(true);
-    expect(CAPTION_DASHES.test('\u2014')).toBe(true);
+    expect(CAPTION_DASHES.test('—')).toBe(true);
   });
 });
 
@@ -509,8 +510,8 @@ describe('wiring and laws (static)', () => {
     }
     expect(CAPTION_EMOJI.flags).toBe('u');
     expect(CAPTION_DASHES.test('-')).toBe(false);
-    expect(CAPTION_DASHES.test('\u2013')).toBe(true);
-    expect(CAPTION_DASHES.test('\u2014')).toBe(true);
+    expect(CAPTION_DASHES.test('–')).toBe(true);
+    expect(CAPTION_DASHES.test('—')).toBe(true);
     expect(CAPTION_EMOJI.test("Hold'em")).toBe(false);
   });
 

@@ -31,10 +31,16 @@
  *      construction;
  *   5. `?dry_run=1` (or `?preview=1`, the Phase 7 spelling) returns the
  *      figures, the subject and the text, and sends nothing;
- *   6. an unset recipient is a 200 with skipped 'recipient_unset' and the
- *      figures still computed, so the first Monday fire is visible in
- *      cron_execution_log as a measured no-op; an unset key is
- *      'resend_key_unset'. Neither falls back to another address;
+ *   6. the recipient is FLEET_DIGEST_EMAIL, or, when that is unset, the
+ *      platform's ops inbox OPS_ALERT_EMAIL (the address World Hub probe and
+ *      audit failures already mail; recipient_source names which one, never
+ *      the address). A live fire that sends nothing is NOT a success
+ *      (2026-10-15): no recipient is a 503 with ok false and skipped
+ *      'recipient_unset', an unset key is 'resend_key_unset', and reads past
+ *      the deadline are 'deadline', each with the figures still computed. The
+ *      cron log records the fire as an error, so a Monday that mailed nobody
+ *      can no longer read as a job that succeeded while doing nothing
+ *      (CronJobsReportingSuccessWhileDoingNothing, 2026-10-12 to 10-15);
  *   7. one POST to the Resend API with the key as a bearer token, the
  *      recipients as an array, the subject and the text, under a 30 s
  *      ceiling. A non-2xx answer or a thrown request is a 500 whose error
@@ -72,7 +78,7 @@ export const DRY_RUN_WRITES_NOTE =
 
 /** The Phase 6 output law, as HandVoice.ts and phase9-content.ts pin it. */
 export const CAPTION_EMOJI = /\p{Extended_Pictographic}/u;
-export const CAPTION_DASHES = /[\u2013\u2014]/;
+export const CAPTION_DASHES = /[–—]/;
 
 type Supa = ReturnType<typeof getSupabase>;
 
@@ -134,14 +140,19 @@ export interface DigestWindow {
 
 export type DigestSkip = 'recipient_unset' | 'resend_key_unset' | 'deadline';
 
+/** Where the recipients came from: a source name, never an address. */
+export type RecipientSource = 'FLEET_DIGEST_EMAIL' | 'OPS_ALERT_EMAIL' | 'unset';
+
 export interface DigestResult {
-  ok: true;
+  /** False on a live fire that sent nothing: the route answers 503. */
+  ok: boolean;
   dry_run: boolean;
   window: { days: number; since: string; until: string };
   /** Emails sent: one mail, however many recipients. */
   sent: 0 | 1;
-  /** How many addresses FLEET_DIGEST_EMAIL names: a count, never the addresses. */
+  /** How many addresses the recipient variable names: a count, never the addresses. */
   recipients: number;
+  recipient_source: RecipientSource;
   resend_id?: string;
   skipped?: DigestSkip;
   engine: EngineSwitchState;
@@ -447,6 +458,20 @@ export function parseRecipients(value: string | undefined): string[] {
   return (value ?? '').split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
 }
 
+/**
+ * FLEET_DIGEST_EMAIL when it names anyone, else OPS_ALERT_EMAIL, the
+ * platform's sanctioned ops inbox (World Hub login, socket and audit probes
+ * already mail it). Both are read from the environment at call time and only
+ * the source name is ever reported.
+ */
+export function resolveRecipients(env: Record<string, string | undefined>): { recipients: string[]; source: RecipientSource } {
+  const own = parseRecipients(env.FLEET_DIGEST_EMAIL);
+  if (own.length > 0) return { recipients: own, source: 'FLEET_DIGEST_EMAIL' };
+  const ops = parseRecipients(env.OPS_ALERT_EMAIL);
+  if (ops.length > 0) return { recipients: ops, source: 'OPS_ALERT_EMAIL' };
+  return { recipients: [], source: 'unset' };
+}
+
 async function readMetrics(supa: Supa): Promise<unknown> {
   const { data, error } = await supa.rpc(METRICS_FUNCTION, { p_days: WINDOW_DAYS });
   if (error) throw new Error(`${METRICS_FUNCTION} failed: ${error.message}`);
@@ -531,8 +556,9 @@ export async function runDigest(options: RunOptions): Promise<DigestResult> {
   const deadlineMs = options.deadlineMs ?? DEADLINE_MS;
   const now = options.now ?? new Date();
 
-  // 1. The variables, at call time. No default for the recipient, ever.
-  const recipients = parseRecipients(process.env.FLEET_DIGEST_EMAIL);
+  // 1. The variables, at call time. The digest's own recipient first, then the
+  //    platform ops inbox; never an address written in code.
+  const { recipients, source: recipientSource } = resolveRecipients(process.env);
   const key = (process.env.RESEND_API_KEY ?? '').trim();
   const from = (process.env.RESEND_FROM_EMAIL ?? '').trim() || DEFAULT_FROM_EMAIL;
 
@@ -555,6 +581,7 @@ export async function runDigest(options: RunOptions): Promise<DigestResult> {
     window: { days: window.days, since: window.since, until: window.until },
     sent: 0,
     recipients: recipients.length,
+    recipient_source: recipientSource,
     engine,
     modes_on: modes.filter((row) => row.enabled).map((row) => row.mode),
     modes_off: modes.filter((row) => !row.enabled).map((row) => row.mode),
@@ -565,7 +592,11 @@ export async function runDigest(options: RunOptions): Promise<DigestResult> {
     timestamp: '',
   };
   const finish = (skipped?: DigestSkip): DigestResult => {
-    if (skipped) result.skipped = skipped;
+    if (skipped) {
+      // A live fire that mailed nobody did not do its job: never ok.
+      result.skipped = skipped;
+      result.ok = false;
+    }
     result.duration_ms = clock() - startedAt;
     result.timestamp = new Date().toISOString();
     return result;
@@ -580,7 +611,7 @@ export async function runDigest(options: RunOptions): Promise<DigestResult> {
 
   // 6. The only gates: a recipient and a key. A measured no-op, logged as such.
   if (recipients.length === 0) {
-    result.notes.push('FLEET_DIGEST_EMAIL is unset; the figures were computed and nothing was sent');
+    result.notes.push('FLEET_DIGEST_EMAIL and OPS_ALERT_EMAIL are both unset; the figures were computed and nothing was sent');
     return finish('recipient_unset');
   }
   if (!key) {
@@ -606,7 +637,10 @@ export async function runDigest(options: RunOptions): Promise<DigestResult> {
 export async function fleetWeeklyDigest(c: Context) {
   const dryRun = c.req.query('dry_run') === '1' || c.req.query('preview') === '1';
   try {
-    return c.json(await runDigest({ dryRun }));
+    const result = await runDigest({ dryRun });
+    // A live fire that sent nothing answers 503, so the cron log records an
+    // error rather than a success that did no work.
+    return c.json(result, result.ok ? 200 : 503);
   } catch (error) {
     // The reason never carries the key or an address: the send scrubs both.
     const reason = message(error);
