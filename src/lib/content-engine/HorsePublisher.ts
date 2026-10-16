@@ -75,6 +75,8 @@ import { extractArticleImageUrl, resolveArticleImageUrl, safeArticleUrl } from '
 import { publishHorseNewsAtomically } from './HorseNewsPublication.js';
 import { freshVideoCaptionCandidates } from './VideoCandidateFreshness.js';
 import { orderedNewsSources, type NewsFeedCandidate } from './NewsSourceFallback.js';
+import { balancedVideoPriority, balancedVideoTypes, readRecentVideoContext, type RecentVideoContext } from './VideoFeedBalance.js';
+import { readHorseVideoPublicationEvidence, type PublicationEvidence } from './PublicationEvidence.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -114,6 +116,7 @@ export interface PublishResult {
   postId?: string;
   reelId?: string;
   created?: boolean;
+  publicationEvidence?: PublicationEvidence;
   caption?: string;
   collided?: boolean;
   error?: string;
@@ -133,6 +136,8 @@ export interface PublishResult {
 export interface SharedHorseVideoSupply {
   poker: SupplyClip[];
   sports: SupplyClip[];
+  /** Mutable run-local preference memory, not a dedup/verification authority. */
+  recent?: RecentVideoContext[];
 }
 
 export interface SharedHorseVideoSupplyCount {
@@ -140,6 +145,12 @@ export interface SharedHorseVideoSupplyCount {
   verified: number;
   /** Fresh positive assets whose stored metadata can ground a safe caption. */
   captionable: number;
+  uniqueAssets?: number;
+  shorts?: number;
+  sources?: number;
+  unverified?: number;
+  ungroundable?: number;
+  lowSupply?: boolean;
 }
 
 export type PreparedSharedHorseVideoSupply =
@@ -362,24 +373,24 @@ function sharedVideoSupplyPasses(
   kinds: readonly HorseVideoTopic[], supply?: SharedHorseVideoSupply,
 ): Array<{kind: HorseVideoTopic; supply: SharedHorseVideoSupply | undefined}> {
   if (!supply) return kinds.map(kind => ({kind, supply}));
-  const short: SharedHorseVideoSupply = {poker: [], sports: []};
-  const other: SharedHorseVideoSupply = {poker: [], sports: []};
+  const short: SharedHorseVideoSupply = {poker: [], sports: [], recent:supply.recent};
+  const other: SharedHorseVideoSupply = {poker: [], sports: [], recent:supply.recent};
   for (const kind of kinds) for (const clip of supply[kind]) {
     (clipFormatPriority(clip) <= 1 ? short : other)[kind].push(clip);
   }
-  return [short, other].flatMap(tier => kinds.filter(kind => tier[kind].length > 0)
+  return [short, other].flatMap(tier => balancedVideoTypes(kinds, tier, supply.recent ?? [])
     .map(kind => ({kind, supply: tier})));
 }
 
 /** Randomised without replacement, so one bad/stale clip cannot monopolise an attempt. */
 export function takeRandomCandidates<T extends { source_url: string; duration_seconds?: number | null }>(rows: readonly T[], limit: number, priorityOf: (row: T) => number = clipFormatPriority): T[] {
-  const remaining = [...rows];
+  const remaining = rows.map(row=>({row,priority:priorityOf(row)}));
   const selected: T[] = [];
   while (selected.length < limit && remaining.length > 0) {
-    const priority = Math.min(...remaining.map(priorityOf));
-    const eligible = remaining.map((row,index)=>({row,index})).filter(({row})=>priorityOf(row)===priority);
+    const priority = Math.min(...remaining.map(item=>item.priority));
+    const eligible = remaining.map((item,index)=>({item,index})).filter(({item})=>item.priority===priority);
     const index = eligible[Math.floor(Math.random() * eligible.length)]!.index;
-    selected.push(remaining.splice(index, 1)[0]!);
+    selected.push(remaining.splice(index, 1)[0]!.row);
   }
   return selected;
 }
@@ -437,10 +448,11 @@ export async function prepareSharedHorseVideoSupply(
       if (pool.status === 'unknown') {
         return { status: 'unknown', error: `${kind}: ${pool.error}` };
       }
+      const seen = new Set<string>();
       const canonical = pool.clips.filter((clip) => (
         /^[A-Za-z0-9_-]{11}$/.test(clip.video_id)
         && assetKeyFor(clip.source_url) === `yt:${clip.video_id}`
-      ));
+      )).filter(clip => { if (seen.has(clip.video_id)) return false; seen.add(clip.video_id); return true; });
       const lookup = await readFreshSharedYouTubeVerificationIds(
         canonical.map((clip) => clip.video_id),
       );
@@ -454,6 +466,14 @@ export async function prepareSharedHorseVideoSupply(
         scanned: canonical.length,
         verified: verified.length,
         captionable: captionable.length,
+        uniqueAssets: canonical.length,
+        shorts: captionable.filter(clip=>clipFormatPriority(clip)<=1).length,
+        sources: new Set(captionable.map(clip=>clip.source.toLowerCase())).size,
+        unverified: canonical.length-verified.length,
+        ungroundable: verified.length-captionable.length,
+        // Two original jobs each create at most two per hour. This is an
+        // inventory heads-up, not a promise of four fresh meanings/assets.
+        lowSupply: captionable.length < 4,
       };
     }
   } catch (error) {
@@ -461,6 +481,9 @@ export async function prepareSharedHorseVideoSupply(
     return { status: 'unknown', error: `shared video supply outcome unknown: ${message}` };
   }
 
+  const recent = await readRecentVideoContext();
+  supply.recent = recent.items;
+  bumpSupplyStat(`recent_video_context_${recent.status}`, 1);
   return {
     status: 'ok',
     supply,
@@ -753,6 +776,8 @@ export async function publishVideoClip(
     // A fresh asset is not necessarily a fresh thought. Screen the complete
     // bounded verified snapshot before taking six publication candidates.
     let fresh = await freshFrom(verifiedCaptionable);
+    bumpSupplyStat(`${clipType}_asset_fresh_candidates`, fresh.length);
+    bumpSupplyStat(`${clipType}_asset_reused_candidates`, verifiedCaptionable.length-fresh.length);
     if (!fresh.length) {
       if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
         return {
@@ -776,6 +801,8 @@ export async function publishVideoClip(
     fresh = captionFresh.clips;
     bumpSupplyStat(`${clipType}_caption_preflight_scanned`, captionFresh.scanned);
     bumpSupplyStat(`${clipType}_caption_preflight_stale`, captionFresh.stale);
+    bumpSupplyStat(`${clipType}_usable_meaning_fresh_candidates`, fresh.length);
+    if (fresh.length < 4) bumpSupplyStat(`${clipType}_low_usable_supply_heads_up`);
     if (!fresh.length) {
       return { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
         error: `No fresh caption meaning in bounded ${clipType} supply (scanned=${captionFresh.scanned}, keys=${captionFresh.keys})` };
@@ -784,7 +811,7 @@ export async function publishVideoClip(
     // pool discards the short/excerpt preference and can lead with a full
     // tournament broadcast while a qualified short is still available.
     captionCandidates = takeRandomCandidates(fresh, Math.min(MAX_VIDEO_CAPTION_CANDIDATES, captionAttemptBudget?.remaining ?? MAX_VIDEO_CAPTION_CANDIDATES),
-      clip => videoCaptionCandidatePriority(clip, clipType) * 2 + (mine.has(clip.source) ? 0 : 1));
+      clip => balancedVideoPriority(clip, clipType, sharedSupply.recent ?? [], mine.has(clip.source), horse.profile_id));
     if (captionCandidates.some(candidate => !mine.has((candidate as SupplyClip).source))) {
       bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
     }
@@ -1030,12 +1057,21 @@ export async function publishVideoClip(
       };
     }
     await recordBrief(published.postId, written.brief);
+    const publicationEvidence = await readHorseVideoPublicationEvidence({postId:published.postId,
+      reelId:published.reelId,authorId:horse.profile_id,caption:picked.text,assetKey:key});
+    bumpSupplyStat(`publication_${publicationEvidence.status}`);
+    if (published.created !== false && sharedSupply?.recent) {
+      sharedSupply.recent.unshift({title:storedTitle,caption:picked.text,
+        source:(candidate as SportsClipRow).source ?? '',topic:clipType});
+      sharedSupply.recent.splice(12);
+    }
     return {
       ...base,
       success: true,
       postId: published.postId,
       reelId: published.reelId,
       created: published.created,
+      publicationEvidence,
       type: `${clipType}_video`,
       caption: picked.text.slice(0, 60),
       collided: picked.collided,

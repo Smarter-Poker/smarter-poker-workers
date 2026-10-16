@@ -16,6 +16,7 @@
  * a failure, with no ledger rows and no alert.
  */
 import type { Context } from 'hono';
+import { publicationDeliverySummary } from '../lib/content-engine/PublicationEvidence.js';
 import {
   fleetHash,
   isDueForPost,
@@ -261,6 +262,7 @@ export async function horseVideoReels(c: Context) {
       due: due.length,
       attempted: results.length,
       posted: posted.length,
+      delivery: publicationDeliverySummary(results),
       created: posted.filter((result) => result.created === true).length,
       publication_budget: { limit: MAX_NEW_HORSE_VIDEO_REELS_PER_RUN, created,
         hit: created >= MAX_NEW_HORSE_VIDEO_REELS_PER_RUN },

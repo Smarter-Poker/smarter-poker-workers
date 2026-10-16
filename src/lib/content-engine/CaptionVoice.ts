@@ -205,13 +205,14 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 4,
+    version: 5,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
     cadence: voiceChoice(style.profileId,'voice-cadence:v2',3),
-    intent: voiceChoice(style.profileId,'voice-intent:v1',6),
-    preface: voiceChoice(style.profileId,'voice-preface:v1',8),
+    intent: voiceChoice(style.profileId,'voice-intent:v1',10),
+    preface: voiceChoice(style.profileId,'voice-preface:v1',12),
+    questionHabit: voiceChoice(style.profileId,'voice-question-habit:v1',4),
     contrast: voiceChoice(style.profileId,'voice-contrast:v1',4),
     density: style.length === 'terse' ? 'terse' : style.length === 'short' ? 'short' : style.length === 'two_sentence' || style.length === 'three_sentence' ? 'developed' : 'single',
     viewpoint: style.voice,
@@ -252,15 +253,21 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const focusOptions = FOCUS[`${family}:${angle.key}`]!;
   const focus = focusOptions[plan.focus[`${family}:${angle.key}`]!]!;
   const questions = alternatives.filter(x=>x.endsWith('?'));
-  const question = questions[plan.questions[family]?.[ANGLES[family].findIndex(a=>a.key===angle.key)] ?? 0]!;
+  const sourceQuestion = questions[plan.questions[family]?.[ANGLES[family].findIndex(a=>a.key===angle.key)] ?? 0]!;
+  // A stable question habit is actually spoken across topics, not an unused
+  // profile fingerprint. Every alternative asks about an established fact;
+  // none asserts an unseen play, experience, motive or result.
+  const question = plan.questionHabit < 2 ? sourceQuestion : plan.questionHabit === 2
+    ? `For ${fact.subject}, what should we examine about ${focus}?`
+    : `Which details of ${focus} matter when assessing ${fact.subject}?`;
   const judgement = style.slang === 'none' ? 'assessment' : style.slang === 'heavy' ? 'read' : 'take';
   const aJudgement = `${judgement === 'assessment' ? 'an' : 'a'} ${judgement}`;
   const relation = judgement === 'assessment' ? 'of' : 'on';
   const intent = {
-    first: ["I'd start with", 'I want to check', 'I would look at', 'My starting point is', "I'm interested in", "I'd begin with"],
-    impersonal: ['Start with', 'The starting point is', 'The useful context is', 'First, consider', 'Begin with', 'The focus belongs on'],
-    second: ['Start with', 'Look at', 'Check', 'Consider', 'Put the focus on', 'Go back to'],
-    plural: ["We'd start with", 'We should check', 'We can look at', 'Our starting point is', 'We need to consider', "We'd begin with"],
+    first: ["I'd start with", 'I want to check', 'I would look at', 'My starting point is', "I'm interested in", "I'd begin with", 'My first question concerns', 'I would examine', 'My attention goes to', 'I want to understand'],
+    impersonal: ['Start with', 'The starting point is', 'The useful context is', 'First, consider', 'Begin with', 'The focus belongs on', 'The first question concerns', 'Examine', 'Give some attention to', 'Try to understand'],
+    second: ['Start with', 'Look at', 'Check', 'Consider', 'Put the focus on', 'Go back to', 'Ask first about', 'Examine', 'Pay attention to', 'Try to understand'],
+    plural: ["We'd start with", 'We should check', 'We can look at', 'Our starting point is', 'We need to consider', "We'd begin with", 'Our first question concerns', 'We could examine', 'Our attention goes to', 'We need to understand'],
   }[style.voice][plan.intent]!;
   const starting = `${intent} ${focus} for ${fact.subject}`;
   const preface = [
@@ -268,6 +275,8 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `To get a read on ${fact.subject}`, `For a closer look at ${fact.subject}`,
     `When assessing ${fact.subject}`, `Before deciding about ${fact.subject}`,
     `To understand ${fact.subject}`, `For context on ${fact.subject}`,
+    `Before drawing conclusions about ${fact.subject}`, `For a discussion of ${fact.subject}`,
+    `To put ${fact.subject} in perspective`, `When looking more closely at ${fact.subject}`,
   ][plan.preface]!;
   const contrast = [
     `The result alone doesn't settle ${fact.subject}`,

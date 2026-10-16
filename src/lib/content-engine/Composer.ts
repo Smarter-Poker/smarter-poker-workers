@@ -29,6 +29,7 @@ import { fleetHash } from './FleetScheduler.js';
 import { render, targetWords, type StyleSheet } from './StyleSheet.js';
 import { isDisagreement, isQuestion } from './ReplyEngine.js';
 import { subjectCaption } from './CaptionVoice.js';
+import { captionQuality } from './CaptionQuality.js';
 
 // ─── takes, by concept ───────────────────────────────────────────────────
 // {anchor} is the subject named in the post. {amount} is a real number from
@@ -712,6 +713,7 @@ export function composeCaption(
       question, noOpener: true, noCloser: true,
     });
     if (!style.contractions) text = text.replace(/\bI'd\b/gi, 'I would').replace(/\bI'm\b/gi, 'I am').replace(/\bwe'd\b/gi, 'we would');
+    if (!captionQuality(text, {subject: subject.subject}).pass) return { text: '', relevance: 0, grounding: [] };
     return { ...subject, text, relevance: relevanceOf(text, b) };
   }
 
@@ -748,6 +750,7 @@ export function composeCaption(
   // ever ends in "?". Appending "?" after render() published "what is your
   // read. i keep coming back to that?" and "...what is your read...?" (P2C-10).
   const text = render(lines, style, seed, { question, varyCloser: true });
+  if (!captionQuality(text).pass) return { text: '', relevance: 0, grounding: [] };
   return { text, relevance: relevanceOf(text, b), grounding, semanticKey: meaningKey(lines[0]!) };
 }
 

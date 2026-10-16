@@ -28,6 +28,7 @@
  * due, posted, skipped (by reason), failed, collided (caption pool ran dry).
  */
 import type { Context } from 'hono';
+import { publicationDeliverySummary } from '../lib/content-engine/PublicationEvidence.js';
 import { isDueForPost, DUE_WINDOW_HOURS } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled, engineSwitch } from '../lib/content-engine/Fleet.js';
 import {
@@ -161,6 +162,9 @@ export async function horsePosts(c: Context) {
       due: due.length,
       attempted: results.length,
       posted: posted.length,
+      delivery: publicationDeliverySummary(results),
+      post_ids: posted.map(result=>result.postId).filter(Boolean),
+      reel_ids: posted.map(result=>result.reelId).filter(Boolean),
       publication_budget: {
         limit: MAX_NEW_HORSE_POSTS_PER_RUN,
         created: run.created,
