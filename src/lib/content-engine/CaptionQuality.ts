@@ -30,6 +30,11 @@ export function captionQuality(text: string, options: CaptionQualityOptions = {}
     const subject = words(options.subject).join(' ');
     const normalized = tokens.join(' ');
     if (subject && normalized.split(subject).length > 2) reasons.push('repeated_source_subject');
+    // Compound guarantee frames previously repeated the event noun in the
+    // fact, the focus and a typed reference despite mentioning the full
+    // source phrase only once. Permit a necessary two-way distinction,
+    // refuse the observed circular three-or-more rendering.
+    if (/\bguarantee\b/.test(subject) && tokens.filter(token => token === 'guarantee').length >= 3) reasons.push('circular_event_focus');
   }
   const phrases = new Set<string>();
   for (let i = 0; i + 5 <= tokens.length; i++) {
