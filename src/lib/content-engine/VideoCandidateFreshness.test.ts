@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const db = vi.hoisted(() => ({ used: new Set<string>(), error: false, truncated: false, malformed: false,
+  failures: [] as Array<{status?: number; code?: string; throws?: boolean; message?: string}>,
+  persistent: null as {status?: number; code?: string; throws?: boolean; message?: string} | null,
   reads: [] as Array<{table:string;column:string;keys:string[];mine:boolean;since:string}> }));
 vi.mock('../supabase.js',()=>({getSupabase:()=>({from:(table:string)=>{
   const read={table,column:'',keys:[] as string[],mine:false,since:''};
@@ -7,7 +9,11 @@ vi.mock('../supabase.js',()=>({getSupabase:()=>({from:(table:string)=>{
     in:(_column:string,keys:string[])=>{read.keys=keys;return chain;},
     gte:(_column:string,since:string)=>{read.since=since;return chain;},
     eq:()=>{read.mine=true;return chain;},limit:()=>chain,
-    abortSignal:async()=>{db.reads.push(read);return {error:db.error?{message:'offline'}:null,
+    abortSignal:async()=>{db.reads.push(read);
+      const failure=db.failures.shift() ?? db.persistent;
+      if(failure?.throws)throw Object.assign(new Error(failure.message ?? 'Socket failure'),{cause:{code:failure.code}});
+      if(failure)return {status:failure.status ?? 0,data:null,error:{message:failure.message ?? 'Read unavailable',code:failure.code}};
+      return {error:db.error?{message:'offline'}:null,
       data:db.malformed?[{[read.column]:'foreign-key'}]:db.truncated?Array.from({length:1000},()=>({[read.column]:read.keys[0]})):
         read.keys.filter(key=>db.used.has(`${table}:${key}`)).map(key=>({[read.column]:key}))};},
   };return chain;
@@ -17,7 +23,7 @@ import type { SupplyClip } from './ClipSupply.js';
 const profile='00000000-0000-4000-8000-000000000001';
 const clip=(index:number,title='Navigating a five-way all-in'):SupplyClip=>({id:String(index),video_id:`Factual000${index}`,
   source_url:`https://www.youtube.com/watch?v=Factual000${index}`,source:'PokerGO',title,category:'poker',oembed_ok:true,duration_seconds:60});
-beforeEach(()=>{db.used.clear();db.error=false;db.truncated=false;db.malformed=false;db.reads=[];});
+beforeEach(()=>{db.used.clear();db.error=false;db.truncated=false;db.malformed=false;db.reads=[];db.failures=[];db.persistent=null;});
 describe('bounded semantic screening before video selection',()=>{
   it('reaches a fresh factual seventh clip rather than cycling six stale known facts',async()=>{
     const stale=Array.from({length:6},(_,index)=>clip(index));
@@ -50,5 +56,32 @@ describe('bounded semantic screening before video selection',()=>{
   it('refuses an over-limit snapshot before any database work',async()=>{
     expect(await freshVideoCaptionCandidates(Array.from({length:1001},(_,i)=>clip(i)),'poker',profile)).toMatchObject({status:'unknown'});
     expect(db.reads).toHaveLength(0);
+  });
+  it.each([502,503,504])('repeats only the failed SELECT once after HTTP %s',async status=>{
+    db.failures=[{status}];
+    const result=await freshVideoCaptionCandidates([clip(0)],'poker',profile);
+    expect(result).toMatchObject({status:'ok',clips:[clip(0)]});
+    expect(db.reads).toHaveLength(5);
+    expect(db.reads[4]).toEqual(db.reads[0]);
+  });
+  it.each(['ECONNRESET','ETIMEDOUT','UND_ERR_SOCKET'])('recovers a structured %s SELECT failure once',async code=>{
+    db.failures=[{throws:true,code}];
+    expect(await freshVideoCaptionCandidates([clip(0)],'poker',profile)).toMatchObject({status:'ok',clips:[clip(0)]});
+    expect(db.reads).toHaveLength(5);
+  });
+  it('keeps a second transient read failure unknown and never makes a third attempt',async()=>{
+    db.persistent={status:502};
+    expect(await freshVideoCaptionCandidates([clip(0)],'poker',profile)).toMatchObject({status:'unknown'});
+    expect(db.reads).toHaveLength(8);
+  });
+  it.each([400,401,403,429,500])('never repeats a non-transient HTTP %s refusal',async status=>{
+    db.persistent={status};
+    expect(await freshVideoCaptionCandidates([clip(0)],'poker',profile)).toMatchObject({status:'unknown'});
+    expect(db.reads).toHaveLength(4);
+  });
+  it('does not mistake error-message words for a structured retryable failure',async()=>{
+    db.persistent={message:'502 socket ECONNRESET unavailable'};
+    expect(await freshVideoCaptionCandidates([clip(0)],'poker',profile)).toMatchObject({status:'unknown'});
+    expect(db.reads).toHaveLength(4);
   });
 });

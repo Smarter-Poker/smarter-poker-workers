@@ -42,7 +42,7 @@ import {
   phraseUsedOnPost,
   recentFrameKeys,
 } from './ContentLedger.js';
-import { areFriends, tagCandidateFor, renderTag, type FriendCandidate } from './FriendGraph.js';
+import { areFriends, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
 import { pickHandStory, pickSessionStory } from './HandStory.js';
@@ -63,7 +63,7 @@ export interface WrittenText {
   belowFloor: boolean;
   /** True when the ledger had seen every draft we tried. */
   stale: boolean;
-  /** The friend tagged, if any. */
+  /** The friend tagged, if any. Legacy field name; alias is the public username. */
   tagged?: { alias: string; reason: string };
   /**
    * For grounded posts: the sentence skeleton used, so the publisher can
@@ -204,6 +204,28 @@ export interface AuthorHorse extends FriendCandidate {
   name?: string;
 }
 
+/** Optional mention identity comes from the current public horse profile. */
+async function publicHorseTag(profileId: string, legacyAlias: string | null | undefined): Promise<{ name: string; username: string } | null> {
+  try {
+    const { data, error } = await getSupabase().from('profiles')
+      .select('id, is_horse, username, display_name').eq('id', profileId).eq('is_horse', true).maybeSingle();
+    if (error || !data || data.id !== profileId || data.is_horse !== true) return null;
+    const username = typeof data.username === 'string' ? data.username : '';
+    const name = typeof data.display_name === 'string' ? data.display_name.trim() : '';
+    // Matches the maintained social mention renderer's complete 2–30 character
+    // token, not a valid prefix of an unsafe or truncated username.
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_.]{0,28}[A-Za-z0-9_]$/.test(username)) return null;
+    if (!/^[\p{L}][\p{L}\p{M} .'’-]{0,119}$/u.test(name)) return null;
+    const oldAlias = (legacyAlias ?? '').trim().toLowerCase();
+    if (oldAlias && (username.toLowerCase() === oldAlias || name.toLowerCase() === oldAlias)) return null;
+    return { name, username };
+  } catch {
+    // This read cannot authorize a post or invalidate an otherwise qualified
+    // caption. Missing/unreadable identities simply omit the optional tag.
+    return null;
+  }
+}
+
 /**
  * A caption for something this horse is about to post.
  * `fleet` is only needed for tagging; pass an empty array to skip it.
@@ -258,13 +280,12 @@ export async function writeCaption(
     const roll = (fleetHash(seed, 'tagroll') % 100) / 100;
     if (roll < style.tagRate) {
       const cand = tagCandidateFor(horse, fleet, { domain: brief.domain, concepts: brief.concepts, sport: brief.sport }, seed);
-      if (cand?.friend.alias) {
+      if (cand) {
+        const target = await publicHorseTag(cand.friend.profile_id, cand.friend.alias);
+        if (!target) return out;
         const lead = style.lexicon.tags[fleetHash(seed, 'taglead') % style.lexicon.tags.length]!;
-        const tag = renderTag(cand.friend.alias, lead);
-        if (tag) {
-          out.text = `${out.text}\n\n${tag}`;
-          out.tagged = { alias: cand.friend.alias, reason: cand.reason };
-        }
+        out.text = `${out.text}\n\n${lead} ${target.name} (@${target.username})`;
+        out.tagged = { alias: target.username, reason: cand.reason };
       }
     }
   }

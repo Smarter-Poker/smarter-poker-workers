@@ -8,6 +8,62 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('does not expand canned stakes takes for vague headlines while retaining quantified stake grounding',()=>{
+    const vague=brief('The SICKEST HAND in High Stakes Poker HISTORY!!!');
+    expect(vague.concepts).toContain('high_stakes');
+    expect(vague.concepts).not.toContain('stakes');
+    const quantified=brief('Fun HIGH STAKES $50/100 NLH');
+    expect(quantified.concepts).toContain('stakes');
+    expect(captionFact(quantified)).toMatchObject({action:'stakes_context',identity:'stakes:50:100:unit:dollars'});
+    expect(composeCaption(quantified,styleSheetFor(ids[0]!)).relevance).toBeGreaterThanOrEqual(.3);
+  });
+  it.each([
+    ['If Phil Ivey fires a river bluff','poker'],
+    ['Unless Phil Ivey fires a river bluff','poker'],
+    ['Phil Ivey fires a river bluff unless his opponent calls','poker'],
+    ['Stephen Curry hits a three if the defense switches','sports'],
+    ["Phil Ivey couldn’t fire a river bluff",'poker'],
+    ['Phil Ivey may fire a river bluff','poker'],
+  ] as const)('does not turn a conditional known-actor action into an established fact: %s',(title,domain)=>{
+    expect(captionFact(brief(title,domain))).toBeNull();
+  });
+  it('recognizes the literal folds verb for a source-grounded familiar-name voice',()=>{
+    const b=brief('Daniel Negreanu folds the river');
+    const familiar=ids.map(styleSheetFor).find(style=>style.slang==='heavy')!;
+    expect(b.concepts).toContain('fold');
+    const out=composeCaption(b,familiar);
+    expect(out.text).toContain('Negreanu');
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    expect(out.semanticKey).toBe('meaning:subject:daniel negreanu:fold:range');
+  });
+  it('realizes independent question habits in the formerly identical long impersonal clauses',()=>{
+    const pair=['710c13a2-68e6-4530-a9a1-9f9f1274e9d5','f9d1432c-db72-4d02-90be-714269f1111f'].map(styleSheetFor);
+    for(const style of pair){
+      expect(style.length).toBe('long');expect(style.voice).toBe('impersonal');
+      expect(style.captionSyntax).toBe(4);expect(captionVoiceProfile(style).cadence).toBe(1);
+    }
+    const titles=['Phil Ivey makes a huge river call','Phil Ivey fires a river bluff','Daniel Negreanu folds the river','Phil Ivey wins his 11th WSOP bracelet','Stephen Curry hits a three pointer','LeBron James dunks from the baseline'];
+    const rows=pair.map(style=>titles.map(title=>subjectCaption(brief(title,/Curry|James/.test(title)?'sports':'poker'),style)!));
+    expect(rows[0]!.map(row=>row.semanticKey)).toEqual(rows[1]!.map(row=>row.semanticKey));
+    expect(rows[0]!.map(row=>row.text)).not.toEqual(rows[1]!.map(row=>row.text));
+    expect(rows[0]!.some((row,i)=>row.text!==rows[1]![i]!.text)).toBe(true);
+  });
+  it.each([
+    ["Cedric Mullins' solo shot draws the Rays within 1 in the 8th!",'baseball_home_run_context'],
+    ['Jackson Chourio ties the game with a 2-run blast','baseball_home_run_context'],
+    ["Bryan Baker closes out the Rays' ALCS Game 2 win!",'baseball_close_context'],
+    ['Kelvin Yeboah 15 GOALS on the season!','soccer_goal_total_context'],
+  ])('wires a strict sports quantity through the real composer: %s',(title,action)=>{
+    const b=brief(title,'sports');
+    expect(captionFact(b)?.action).toBe(action);
+    const out=composeCaption(b,styleSheetFor(ids[0]!));
+    expect(out.text).not.toBe('');
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    expect(out.grounding).toContain(`title_action:${action}`);
+    expect(out.text).not.toMatch(/I watched|I played|save|strikeout|ninth|9th|this year|current season/i);
+    expect(captionFact({...b,kind:'link'})?.action).not.toBe(action);
+  });
+
   it.each([
     ['Adrian Mateos Completes Unwanted Hat Trick of Poker Masters Bubbles','poker','news_bubble'],
     ['APT Championship Returns to Taiwan in November With $8.1 Million Guaranteed','poker','news_guarantee'],

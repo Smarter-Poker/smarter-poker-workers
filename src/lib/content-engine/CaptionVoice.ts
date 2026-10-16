@@ -7,50 +7,34 @@
 import { fleetHash } from './FleetScheduler.js';
 import { publicFigureDomain, type PostBrief } from './PostBrief.js';
 import type { StyleSheet } from './StyleSheet.js';
-import { RANKS, rankWord } from './PokerEvaluator.js';
-import { sayHolding } from './HandVoice.js';
+import {captionHolding} from './CaptionHolding.js';
+export {captionHolding} from './CaptionHolding.js';
 import { pokerVideoContextFact } from './VideoContextFact.js';
 import { newsTitleFact } from './NewsTitleFact.js';
+import {sportsVideoFact} from './SportsVideoFact.js';
 
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep';
+  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context';
   subject: string;
 }
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}`;
 
-/** Caption-source notation, validated and spoken by the existing poker rules. */
-export function captionHolding(value: string): { key: string; spoken: string } | null {
-  const raw=value.trim().toLowerCase();
-  let notation=raw.replace(/[\s-]+/g,'');
-  if (!/^[akqjt2-9]{2}[so]?$/.test(notation)) {
-    const words=raw.replace(/-/g,' ').split(/\s+/);
-    const ranks=new Map(RANKS.map(rank=>[rankWord(rank),rank]));
-    if (words.length < 2 || words.length > 3 || !ranks.has(words[0]!) || !ranks.has(words[1]!)) return null;
-    const suffix=words[2] === 'suited' ? 's' : words[2] === 'offsuit' ? 'o' : words[2] ? null : '';
-    if (suffix === null) return null;
-    notation=`${ranks.get(words[0]!)}${ranks.get(words[1]!)}${suffix}`;
-  }
-  const a=notation[0]!.toUpperCase();const b=notation[1]!.toUpperCase();
-  const suffix=notation.slice(2).toLowerCase();
-  if (a===b && suffix) return null;
-  const ordered=RANKS.indexOf(a as typeof RANKS[number])>=RANKS.indexOf(b as typeof RANKS[number])?`${a}${b}`:`${b}${a}`;
-  const canonical=`${ordered}${suffix}`;
-  const spoken=sayHolding(canonical,'NLH');
-  return spoken?{key:canonical.toLowerCase(),spoken}:null;
-}
-
 /** Conservative actor/action binding, not entity presence mistaken for agency. */
 export function captionFact(b: PostBrief): CaptionFact | null {
   if ((b.kind !== 'video' && b.kind !== 'link') || b.isQuestion) return null;
   const titleForGuards = b.title.replace(/[\u2018\u2019]/g,"'");
-  if (/\b(?:not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|might)\b/i.test(titleForGuards)) return null;
+  if (/\b(?:not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|couldn't|wouldn't|shouldn't|might|may|if|unless)\b/i.test(titleForGuards)) return null;
   if (b.kind === 'link') {
     const report = newsTitleFact(b);
     if (report) return report;
+  }
+  if(b.kind==='video'&&b.domain==='sports'){
+    const context=sportsVideoFact(b);
+    if(context)return context;
   }
   // Typed context facts do not assign an unnamed action to a person. These
   // are literal variant/holding/amount bindings, not a title or video-id salt.
@@ -109,6 +93,24 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  baseball_home_run_context: [
+    {key:'at_bat_context',variants:s=>[`What is the at-bat context for ${s}?`,`I'd examine the pitch sequence around ${s}.`,`What leads up to ${s}?`]},
+  ],
+  baseball_close_context: [
+    {key:'closing_context',variants:s=>[`What is the closing context for ${s}?`,`I'd look at the final-inning sequence around ${s}.`,`How does the final inning develop in ${s}?`]},
+  ],
+  soccer_goal_total_context: [
+    {key:'season_context',variants:s=>[`What season context sits behind ${s}?`,`I'd look at the chances behind ${s}.`,`What is the scoring context for ${s}?`]},
+  ],
+  holding_context: [
+    {key:'opposing_ranges',variants:s=>[`What opposing ranges belong in a discussion of ${s}?`,`I'd consider the opposing ranges when looking at ${s}.`,`Which ranges are relevant to ${s}?`]},
+  ],
+  stakes_context: [
+    {key:'effective_stacks',variants:s=>[`What effective stacks sit behind ${s}?`,`I'd look at the effective stacks when discussing ${s}.`,`How much stack depth is available at ${s}?`]},
+  ],
+  prize_context: [
+    {key:'payout_structure',variants:s=>[`What payout structure accompanies ${s}?`,`I'd examine the payout schedule around ${s}.`,`How is ${s} situated within the payout structure?`]},
+  ],
   news_guarantee: [
     {key:'guarantee_terms',variants:s=>[`What are the terms behind ${s}?`,`I'd distinguish the guarantee from the eventual payouts when reading about ${s}.`,`Which details define ${s}?`]},
   ],
@@ -162,6 +164,12 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'baseball_home_run_context:at_bat_context': ['the pitch sequence','the count before the swing','the at-bat context','the pitches leading to the swing'],
+  'baseball_close_context:closing_context': ['the final-inning sequence','the closing situation','the final-inning context','the sequence leading to the final out'],
+  'soccer_goal_total_context:season_context': ['the chances behind the goal total','the scoring opportunities across the season','the context of the goal total','the chances rather than just the total'],
+  'holding_context:opposing_ranges': ['the opposing ranges','the hands in the opposing ranges','the ranges around the holding','the relevant opposing combinations'],
+  'stakes_context:effective_stacks': ['the effective stacks','the stack depth in big blinds','the available stack depth','the effective stacks rather than just the stake label'],
+  'prize_context:payout_structure': ['the payout schedule','the distribution around the top prize','the wider payout structure','the distinction between the top prize and the total pool'],
   'news_guarantee:guarantee_terms': ['the terms of the guarantee','the guaranteed prize pool','the guarantee rather than an assumed payout','the details attached to the guarantee'],
   'news_bubble:bubble_decisions': ['the decisions around the bubbles','the context of the bubble finishes','the decisions around those bubbles','the circumstances of those bubble finishes'],
   'news_sweep:series_context': ['the individual games of the series','the matchups across the series','the course of the series','the games behind the series result'],
@@ -197,7 +205,7 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 2,
+    version: 3,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
@@ -219,7 +227,7 @@ export function captionVoiceProfile(style: StyleSheet) {
       key, voiceChoice(style.profileId, `voice-focus:${key}`, values.length),
     ])),
     questions: Object.fromEntries(Object.entries(ANGLES).map(([family, angles])=>[
-      family, angles.map(a=>fleetHash(style.profileId, `voice-question:${family}`) % a.variants('subject').filter(t=>t.endsWith('?')).length),
+      family, angles.map(a=>voiceChoice(style.profileId, `voice-question:${family}:${a.key}`, a.variants('subject').filter(t=>t.endsWith('?')).length)),
     ])),
   };
 }
@@ -369,7 +377,9 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
         : fact.action === 'dunk' ? 'that finish' : fact.action === 'bracelet' ? 'that win'
           : fact.action === 'pot_contribution' ? 'that contribution' : fact.action === 'pot_context' ? 'that pot'
             : fact.action === 'all_in_context' ? 'that all-in' : fact.action === 'river_context' ? 'that river' : fact.action === 'aces_cracked_context' ? 'that hand'
-              : fact.action === 'news_guarantee' ? 'that guarantee' : fact.action === 'news_bubble' ? 'that bubble run' : fact.action === 'news_sweep' ? 'that series' : 'that decision';
+              : fact.action === 'news_guarantee' ? 'that guarantee' : fact.action === 'news_bubble' ? 'that bubble run' : fact.action === 'news_sweep' ? 'that series'
+                : fact.action === 'stakes_context' ? 'those stakes' : fact.action === 'prize_context' ? 'that listed prize' : fact.action === 'holding_context' ? 'that holding'
+                  : fact.action === 'baseball_home_run_context' ? 'that home run' : fact.action === 'baseball_close_context' ? 'that close' : fact.action === 'soccer_goal_total_context' ? 'that goal total' : 'that decision';
   return {
     text,
     subject: fact.subject,

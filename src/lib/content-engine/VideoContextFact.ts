@@ -1,5 +1,6 @@
 import type { CaptionFact } from './CaptionVoice.js';
 import { publicFigureDomain } from './PostBrief.js';
+import {captionHolding} from './CaptionHolding.js';
 
 const PAIRS: Record<string, string> = {
   aces: 'aa', kings: 'kk', queens: 'qq', jacks: 'jj', tens: 'tt',
@@ -8,11 +9,113 @@ const PAIRS: Record<string, string> = {
 };
 const COUNTS: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
 const pairPattern = Object.keys(PAIRS).join('|');
+const HOLDING=`(?:pocket (?:${pairPattern})|[akqjt2-9][- ]?[akqjt2-9](?: (?:suited|offsuit))?)`;
+const MONEY = '(?<![a-z0-9.$,-])(\\$?)([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(million|thousand|m|k)?(?:(?![a-z0-9.,])|(?=gtd\\b))';
+
+function quantity(raw:string, scale:string|undefined):number|null {
+  if(!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(raw)) return null;
+  const multiplier=/^(?:million|m)$/.test(scale??'')?1_000_000:/^(?:thousand|k)$/.test(scale??'')?1_000:1;
+  const value=Number(raw.replace(/,/g,''))*multiplier;
+  return Number.isSafeInteger(value)&&value>0?value:null;
+}
+function denomination(symbol:string):string {return symbol?'dollars':'unspecified';}
+function displayAmount(value:number,symbol:string):string {return `${symbol?'$':''}${value.toLocaleString('en-US')}`;}
+function parsedHolding(raw:string){
+  const pair=raw.match(/^pocket (.+)$/)?.[1];
+  return captionHolding(pair?PAIRS[pair]??'':raw);
+}
+
+function holdingContext(title:string):CaptionFact|null {
+  const literal=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,'').replace(/\s*#[\s\S]*$/,'').replace(/[.!]+$/,'').trim();
+  const bet=literal.match(new RegExp(`^([34]|three|four)[- ]betting (${HOLDING})(?: (out of position|in position))?(?: into \\$[0-9,.]+[mk]?)?$`));
+  if(bet) {
+    const holding=parsedHolding(bet[2]!);
+    const level=bet[1]==='three'?3:bet[1]==='four'?4:Number(bet[1]);
+    const position=bet[3]==='out of position'?'oop':bet[3]==='in position'?'ip':null;
+    if(holding)return {person:'',action:'holding_context',identity:`holding:${holding.key}:bet_level:${level}${position?`:position:${position}`:''}`,subject:`the ${level===3?'three':'four'}-bet with ${holding.spoken}${bet[3]?` ${bet[3]}`:''}`};
+  }
+  const multi=literal.match(new RegExp(`^(${HOLDING}) in (?:a |the )?([2-9]|two|three|four|five|six|seven|eight|nine)[- ]way (?:hand|pot|nightmare)$`));
+  if(multi) {
+    const holding=parsedHolding(multi[1]!),count=COUNTS[multi[2]!]??Number(multi[2]);
+    if(holding)return {person:'',action:'holding_context',identity:`holding:${holding.key}:players:${count}`,subject:`${holding.spoken} in a ${count}-way hand`};
+  }
+  const pair=literal.match(new RegExp(`^(?:(?:one time|baiting the trap with|trapping with|playing) )?(pocket (?:${pairPattern}))$`));
+  if(pair) {
+    const holding=parsedHolding(pair[1]!);
+    if(holding)return {person:'',action:'holding_context',identity:`holding:${holding.key}`,subject:holding.spoken};
+  }
+  return null;
+}
+
+// These are event entities, not source brands, arbitrary title fingerprints or
+// entire fixture strings. Values/roles still have to bind explicitly below.
+const EVENTS:Array<[RegExp,string,string]>=[
+  [/\bsuper high roller bowl\b/,'super high roller bowl','Super High Roller Bowl'],
+  [/\bpgt plo (?:series|event|championship)\b/,'pgt plo series','PGT PLO Series'],
+  [/\btrailblazer signature\b/,'trailblazer signature','Trailblazer Signature'],
+  [/\btrailblazer warm[- ]up\b/,'trailblazer warm up','Trailblazer Warm-Up'],
+  [/\blone star showdown\b/,'lone star showdown','Lone Star Showdown'],
+  [/\btexas trailblazer\b/,'texas trailblazer','Texas Trailblazer'],
+  [/\beven bigger one\b/,'even bigger one','Even Bigger One'],
+  [/\bwsopc\b.*\bmain event\b|\bmain event\b.*\bwsopc\b/,'wsopc main event','WSOPC Main Event'],
+  [/\bwsopc\b.*\bplo ring event\b|\bplo ring event\b.*\bwsopc\b/,'wsopc plo ring event','WSOPC PLO Ring Event'],
+];
+
+/** Bound quantities have distinct roles: pot, commitment, stakes and prize. */
+function quantifiedContext(title:string):CaptionFact|null {
+  if(/(?:-\s*\$|\$\s*-)\s*\d/.test(title))return null;
+  const amountAllIn=title.match(new RegExp(`\\ball[- ]in for ${MONEY}(?![a-z0-9])`))
+    ?? title.match(new RegExp(`${MONEY}\\s+all[- ]in\\b`));
+  if(amountAllIn && !/\bpot\b/.test(title)) {
+    const value=quantity(amountAllIn[2]!,amountAllIn[3]);
+    // An additional monetary amount would make the selected role ambiguous.
+    const amounts=[...title.matchAll(/\$[\d,.]+|\b\d+(?:\.\d+)?\s*(?:k|m|million|thousand)\b/g)];
+    if(value && amounts.length<=1) return {person:'',action:'all_in_context',identity:`all_in:amount:${value}:unit:${denomination(amountAllIn[1]!)}`,subject:`the ${displayAmount(value,amountAllIn[1]!)} all-in`};
+  }
+  const matchup=title.match(new RegExp(`\\b(${pairPattern}) (?:vs\\.?|versus) (${pairPattern}) for (?:a |the )?${MONEY}\\s+pot\\b`));
+  if(matchup && PAIRS[matchup[1]!]!==PAIRS[matchup[2]!]) {
+    if((title.match(/\bpot\b/g)?.length??0)!==1)return null;
+    const value=quantity(matchup[4]!,matchup[5]);
+    const holdings=[PAIRS[matchup[1]!]!,PAIRS[matchup[2]!]!].sort();
+    if(value) return {person:'',action:'pot_context',identity:`pot:matchup:${holdings.join(':')}:amount:${value}:unit:${denomination(matchup[3]!)}`,subject:`the ${displayAmount(value,matchup[3]!)} pot with pocket ${matchup[1]} and pocket ${matchup[2]}`};
+  }
+  const wonPot=title.match(new RegExp(`\\bwinning (?:a |the )?${MONEY}\\s+pot\\b`));
+  if(wonPot) {
+    const value=quantity(wonPot[2]!,wonPot[3]);
+    if(value) return {person:'',action:'pot_context',identity:`pot:amount:${value}:unit:${denomination(wonPot[1]!)}`,subject:`the ${displayAmount(value,wonPot[1]!)} pot`};
+  }
+  const stakes=title.match(/(?:\bhigh stakes\s+|\bcash (?:game )?)(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])/)
+    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe)\b/);
+  if(stakes) {
+    const small=quantity(stakes[2]!,undefined),big=quantity(stakes[3]!,undefined);
+    if(small && big && big>small) return {person:'',action:'stakes_context',identity:`stakes:${small}:${big}:unit:${denomination(stakes[1]!)}`,subject:`the ${displayAmount(small,stakes[1]!)}/${displayAmount(big,stakes[1]!)} stakes`};
+  }
+  const events=EVENTS.filter(([pattern])=>pattern.test(title));
+  if(events.length!==1) return null;
+  const [,eventKey,eventName]=events[0]!;
+  const prizes=[...title.matchAll(new RegExp(`${MONEY}\\s+(?:top|1st[- ]place|first[- ]place) prize\\b`,'g'))];
+  const guarantees=[...title.matchAll(new RegExp(`${MONEY}\\s*(?:gtd|guaranteed)\\b`,'g'))];
+  if(prizes.length>1||guarantees.length>1)return null;
+  const prize=prizes[0],guarantee=guarantees[0];
+  if(prize && guarantee) return null;
+  const amount=prize??guarantee;
+  if(!amount) return null;
+  const value=quantity(amount[2]!,amount[3]);
+  if(!value) return null;
+  const role=prize?'top_prize':'guarantee';
+  return {person:'',action:prize?'prize_context':'news_guarantee',identity:`event:${eventKey}:${role}:${value}:unit:${denomination(amount[1]!)}`,subject:`the ${displayAmount(value,amount[1]!)} ${prize?'listed top prize':'guarantee'} for ${eventName}`};
+}
 
 /** Literal context only: no actor, winner, bet size or cards are inferred. */
 export function pokerVideoContextFact(rawTitle: string): CaptionFact | null {
   const title = rawTitle.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').trim();
-  if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed|versus|vs|against)\b/.test(title)) return null;
+  if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(title)) return null;
+  // A literal pair-v-pair matchup is not ambiguous actor agency. Other use of
+  // versus/against still fails closed in the pre-existing context grammar.
+  if(/\b(?:versus|vs|against)\b/.test(title)) {
+    const matchup=quantifiedContext(title);
+    return matchup?.identity?.startsWith('pot:matchup:')?matchup:null;
+  }
   // Bind the count to its own noun phrase, not any number elsewhere in a title.
   const countPattern = '(two|three|four|five|six|seven|eight|nine|[2-9])';
   const allInCount = title.match(new RegExp(`\\b${countPattern}[- ]ways? all[- ]in\\b`))?.[1]
@@ -23,7 +126,12 @@ export function pokerVideoContextFact(rawTitle: string): CaptionFact | null {
   const multiway = count !== null || /\bmulti[- ]?way (?:side[- ])?pot\b/.test(title);
   const allIn = /\ball[- ]in\b/.test(title);
   const sidePot = /\bside[- ]pot\b/.test(title);
-  if (allIn && /\bpot\b/.test(title)) return null;
+  if (allIn && /\bpot\b/.test(title)) {
+    const combined=title.match(new RegExp(`^(?:the )?${countPattern}[- ]ways? all[- ]in for (?:a |the )?${MONEY}\\s+pot[.!]*$`));
+    const value=combined?quantity(combined[3]!,combined[4]):null;
+    const players=combined?(COUNTS[combined[1]!]??Number(combined[1])):null;
+    return combined&&value&&players?{person:'',action:'all_in_context',identity:`all_in:players:${players}:pot:${value}:unit:${denomination(combined[2]!)}`,subject:`the ${players}-way all-in for a ${displayAmount(value,combined[2]!)} pot`}:null;
+  }
   if ((title.match(/\ball[- ]in\b/g)?.length ?? 0) > 1 || (title.match(/\bpot\b/g)?.length ?? 0) > 1) return null;
   const allInPair = title.match(new RegExp(`\\ball[- ]in with (?:pocket )?(${pairPattern})\\b`))?.[1];
   const potPair = title.match(new RegExp(`\\bpot with (?:pocket )?(${pairPattern})\\b`))?.[1]
@@ -65,5 +173,5 @@ export function pokerVideoContextFact(rawTitle: string): CaptionFact | null {
     person:'',action:'river_context',identity:`river:player:${riverPerson}:card`,
     subject:`the river card for ${riverPerson.replace(/\b[a-z]/g,letter=>letter.toUpperCase())}`,
   };
-  return null;
+  return holdingContext(title)??quantifiedContext(title);
 }

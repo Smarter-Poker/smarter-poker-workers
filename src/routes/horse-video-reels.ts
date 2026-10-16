@@ -34,6 +34,7 @@ import {
 import type { HorseVideoTopic } from '../lib/content-engine/HorseVideoPublication.js';
 
 export const MAX_HORSE_VIDEO_REELS_PER_RUN = 80;
+export const MAX_NEW_HORSE_VIDEO_REELS_PER_RUN = 2;
 export const HORSE_VIDEO_REELS_DEADLINE_MS = 540_000;
 export const HORSE_VIDEO_QUEUE_STRATEGY = 'deterministic_round_robin_v1';
 
@@ -148,6 +149,9 @@ export async function horseVideoReels(c: Context) {
           posted: 0,
           failed: 0,
           unknown: queue.length,
+          halted_on_unknown: true,
+          not_attempted: queue.length,
+          publication_budget: { limit: MAX_NEW_HORSE_VIDEO_REELS_PER_RUN, created: 0, hit: false },
           supply_preflight: 'unknown',
           supply: takeSupplyStats(),
           modes: { poker_video: pokerEnabled, sports_video: sportsEnabled },
@@ -182,17 +186,20 @@ export async function horseVideoReels(c: Context) {
     }
     const results: PublishResult[] = [];
     let deadlineHit = false;
+    let created = 0;
+    let haltedOnUnknown = false;
 
     // One writer at a time. The asset ledger protects durable retries, while
     // serialization prevents two horses in this run selecting the same fresh
     // clip before the first transaction records it.
     for (const item of queue) {
+      if (created >= MAX_NEW_HORSE_VIDEO_REELS_PER_RUN) break;
       if (Date.now() - startedAt > HORSE_VIDEO_REELS_DEADLINE_MS) {
         deadlineHit = true;
         break;
       }
       try {
-        results.push(await publishVideoForHorse(item.horse, {
+        const result = await publishVideoForHorse(item.horse, {
           fleet,
           now,
           allowedTypes: runnableTypes,
@@ -201,20 +208,31 @@ export async function horseVideoReels(c: Context) {
           // clock, so the fleet route and an overlapping run of this one
           // name the same slot and build the same publication key.
           slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
-        }));
+        });
+        results.push(result);
+        if (result.success && result.created !== false) created += 1;
+        if (result.outcome === 'unknown' || result.skipped === 'guard_unreadable') {
+          // A lost ACK may conceal a committed pair: do not spend another
+          // stock slot behind an unresolved publication operation.
+          haltedOnUnknown = true;
+          break;
+        }
       } catch (error) {
+        haltedOnUnknown = true;
         results.push({
           success: false,
+          outcome: 'unknown',
           horse: item.horse.name,
           profile_id: item.horse.profile_id,
           error: error instanceof Error ? error.message : String(error),
         });
+        break;
       }
     }
 
     const posted = results.filter((result) => result.success);
     const skipped = results.filter((result) => result.skipped === 'posted_recently');
-    const unknown = results.filter((result) => result.outcome === 'unknown');
+    const unknown = results.filter((result) => result.outcome === 'unknown' || result.skipped === 'guard_unreadable');
     const failed = results.filter(
       (result) => !result.success && !result.skipped && result.outcome !== 'unknown',
     );
@@ -234,6 +252,7 @@ export async function horseVideoReels(c: Context) {
     // successful runs with their detailed counts intact.
     const systemicFailure = (
       deadlineHit
+      || haltedOnUnknown
       || (posted.length === 0 && failed.length + unknown.length > 0)
     );
     const payload = {
@@ -243,6 +262,9 @@ export async function horseVideoReels(c: Context) {
       attempted: results.length,
       posted: posted.length,
       created: posted.filter((result) => result.created === true).length,
+      publication_budget: { limit: MAX_NEW_HORSE_VIDEO_REELS_PER_RUN, created,
+        hit: created >= MAX_NEW_HORSE_VIDEO_REELS_PER_RUN },
+      not_attempted: queue.length - results.length,
       replayed: posted.filter((result) => result.created === false).length,
       skipped_recent: skipped.length,
       // Another producer or run already published this horse's slot (23505
@@ -264,6 +286,7 @@ export async function horseVideoReels(c: Context) {
       supply: { ...sharedSupplyCounts, runtime: takeSupplyStats() },
       supply_preflight: queue.length > 0 ? 'ok' : 'not_needed',
       deadline_hit: deadlineHit,
+      halted_on_unknown: haltedOnUnknown,
       cap_hit: due.length > MAX_HORSE_VIDEO_REELS_PER_RUN,
       queue_strategy: HORSE_VIDEO_QUEUE_STRATEGY,
       queue_cursor: selection.cursor,
