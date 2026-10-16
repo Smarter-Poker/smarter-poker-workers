@@ -75,6 +75,7 @@ import {
   prepareSharedHorseVideoSupply,
   publishVideoClip,
   publishVideoForHorse,
+  videoKindOrder,
   YOUTUBE_OEMBED_TIMEOUT_MS,
   youtubeValidity,
 } from './HorsePublisher.js';
@@ -82,6 +83,11 @@ import {
 const originalFetch = globalThis.fetch;
 /** The FleetScheduler slot the route found the horse due for. */
 const SLOT = '2026-09-26T14';
+const formatClip = (id:string,title:string,duration_seconds:number,source='PokerGO') => ({id,video_id:id,
+  source_url:`https://youtube.com/watch?v=${id}`,source,title,category:source==='NBA'?'basketball':'poker',oembed_ok:true,duration_seconds});
+const formatNow = new Date('2026-10-16T17:00:00Z');
+const pokerFirstProfile = () => Array.from({length:100},(_,index)=>`short-order-${index}`)
+  .find(id=>videoKindOrder(id,formatNow,['poker','sports'])[0]==='poker')!;
 
 beforeEach(() => {
   _resetValidityCache();
@@ -115,6 +121,63 @@ afterEach(() => {
 });
 
 describe('horse video oEmbed proof', () => {
+  it('falls back to a genuine long format only after both approved short categories are exhausted',async()=>{
+    const poker=[formatClip('AAAAAAAAAAA','All in on the river stale',40),formatClip('BBBBBBBBBBB','Final table river call',12000)];
+    const sports=[formatClip('CCCCCCCCCCC','LeBron James dunks stale',15,'NBA')];
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA','yt:BBBBBBBBBBB','yt:CCCCCCCCCCC']));
+    mocks.writeCaption.mockImplementation(async (_horse,asset)=>({text:asset.title.includes('stale')?'':'A fresh grounded caption',
+      semanticKey:'meaning:fresh',stale:true,brief:{},relevance:1,grounding:['title'],attempts:1,belowFloor:false}));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({success:true,postId:'long-post',reelId:'long-reel',created:true});
+    expect(await publishVideoForHorse({id:1,name:'Alpha',profile_id:pokerFirstProfile()},
+      {now:formatNow,skipGuard:true,slot:SLOT,allowedTypes:['poker','sports'],sharedSupply:{poker,sports}}))
+      .toMatchObject({success:true,type:'poker_video'});
+    expect(mocks.writeCaption.mock.calls.map(call=>call[1].title)).toEqual([poker[0]!.title,sports[0]!.title,poker[1]!.title]);
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({topic:'poker',videoUrl:poker[1]!.source_url}));
+    expect(new Set(mocks.writeCaption.mock.calls.map(call=>call[3].modelAttempt)).size).toBe(1);
+  });
+
+  it('never attempts long fallback after an unknown short-video publication acknowledgement',async()=>{
+    const poker=[formatClip('AAAAAAAAAAA','All in on the river stale',40),formatClip('BBBBBBBBBBB','Final table river call',12000)];
+    const sports=[formatClip('CCCCCCCCCCC','LeBron James dunks',15,'NBA')];
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA','yt:BBBBBBBBBBB','yt:CCCCCCCCCCC']));
+    mocks.writeCaption.mockImplementation(async (_horse,asset)=>({text:asset.title.includes('stale')?'':'A fresh grounded caption',
+      semanticKey:'meaning:fresh',stale:true,brief:{},relevance:1,grounding:['title'],attempts:1,belowFloor:false}));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({success:false,outcome:'unknown',error:'acknowledgement lost'});
+    expect(await publishVideoForHorse({id:1,name:'Alpha',profile_id:pokerFirstProfile()},
+      {now:formatNow,skipGuard:true,slot:SLOT,allowedTypes:['poker','sports'],sharedSupply:{poker,sports}}))
+      .toMatchObject({success:false,outcome:'unknown'});
+    expect(mocks.writeCaption.mock.calls.map(call=>call[1].title)).toEqual([poker[0]!.title,sports[0]!.title]);
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares a six-caption category budget across short and long tiers instead of doubling attempts',async()=>{
+    const poker=Array.from({length:8},(_,index)=>formatClip(String(index).padStart(11,'D'),`All in on the river stale ${index}`,index<3?40:12000));
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map(clip=>`yt:${clip.video_id}`)));
+    mocks.writeCaption.mockResolvedValue({text:'',semanticKey:'meaning:stale',stale:true,brief:{},relevance:1,grounding:['title'],attempts:6,belowFloor:false});
+    expect(await publishVideoForHorse({id:1,name:'Alpha',profile_id:pokerFirstProfile()},
+      {now:formatNow,skipGuard:true,slot:SLOT,allowedTypes:['poker'],sharedSupply:{poker,sports:[]}}))
+      .toMatchObject({success:false,skipped:'caption_exhausted'});
+    expect(mocks.writeCaption).toHaveBeenCalledTimes(6);
+    expect(mocks.publishHorseVideoAtomically).not.toHaveBeenCalled();
+    expect(mocks.writeCaption.mock.calls.filter(call=>poker.slice(0,3).some(clip=>clip.title===call[1].title))).toHaveLength(3);
+  });
+  it('tries a fresh sports short before a poker broadcast when poker shorts are stale', async () => {
+    const now = new Date('2026-10-16T17:00:00Z');
+    const profileId=Array.from({length:100},(_,index)=>`short-order-${index}`)
+      .find(id=>videoKindOrder(id,now,['poker','sports'])[0]==='poker')!;
+    const make=(id:string,title:string,source:string,duration_seconds:number)=>({id,video_id:id,
+      source_url:`https://youtube.com/watch?v=${id}`,source,title,category:source==='NBA'?'basketball':'poker',oembed_ok:true,duration_seconds});
+    const poker=[make('AAAAAAAAAAA','All in on the river stale','PokerGO',40),make('BBBBBBBBBBB','Final table river call','PokerGO',12000)];
+    const sports=[make('CCCCCCCCCCC','LeBron James dunks','NBA',15)];
+    mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA','yt:BBBBBBBBBBB','yt:CCCCCCCCCCC']));
+    mocks.writeCaption.mockImplementation(async (_horse,asset)=>({text:asset.title.includes('stale')?'':'A fresh grounded caption',
+      semanticKey:'meaning:fresh',stale:asset.title.includes('stale'),brief:{},relevance:1,grounding:['title'],attempts:1,belowFloor:false}));
+    mocks.publishHorseVideoAtomically.mockResolvedValue({success:true,postId:'short-post',reelId:'short-reel',created:true});
+    const result=await publishVideoForHorse({id:1,name:'Alpha',profile_id:profileId},
+      {now,skipGuard:true,slot:SLOT,allowedTypes:['poker','sports'],sharedSupply:{poker,sports}});
+    expect(result).toMatchObject({success:true,type:'sports_video'});
+    expect(mocks.publishHorseVideoAtomically).toHaveBeenCalledWith(expect.objectContaining({topic:'sports',videoUrl:sports[0]!.source_url}));
+  });
   it('prepares one shared-registry batch per enabled category and retains category purity', async () => {
     mocks.platformCandidateClips.mockImplementation(async (domain: 'poker' | 'sports') => ({
       status: 'ok',

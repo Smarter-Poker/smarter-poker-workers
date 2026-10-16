@@ -422,6 +422,31 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(feed.parseURL).not.toHaveBeenCalled();
   });
 
+  it('tries the other category short before a preferred-category broadcast in the mixed publisher',async()=>{
+    modes.grounded=false;vi.spyOn(Math,'random').mockReturnValue(.9);
+    const make=(id:string,title:string,source:string,duration_seconds:number)=>({id,video_id:id,
+      source_url:`https://www.youtube.com/watch?v=${id}`,source,title,category:source==='NBA'?'basketball':'poker',oembed_ok:true,duration_seconds});
+    const poker=[make('AAAAAAAAAAA','All in on the river stale','PokerGO',40),make('BBBBBBBBBBB','Final table river call','PokerGO',12000)];
+    const sports=[make('CCCCCCCCCCC','LeBron James dunks','NBA',15)];
+    const good=await voice.writeCaption.getMockImplementation()!(horse(horseId(0)),{});
+    voice.writeCaption.mockImplementation(async (_horse,asset)=>asset.title.includes('stale')?{...good,text:'',stale:true}:good);
+    const result=await publishForHorse(horse(horseId(0)),{skipGuard:true,slot:SLOT,sharedVideoSupply:{poker,sports}});
+    expect(result).toMatchObject({success:true,type:'sports_video'});
+    expect(db.rpcCalls.find(call=>call.name==='publish_horse_video_reel')?.args).toMatchObject({p_topic:'sports',p_video_url:sports[0]!.source_url});
+  });
+
+  it.each([{poker:[],sports:[]},undefined])('does not bypass a failed shared preflight through empty tiers or grounded/news fallback (%j)',async sharedVideoSupply=>{
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(true)),{skipGuard:true,slot:SLOT,
+      sharedVideoSupply,sharedVideoSupplyError:'shared registry unavailable'});
+    expect(result).toMatchObject({success:false,outcome:'unknown',error:'shared registry unavailable'});
+    expect(voice.writeGrounded).not.toHaveBeenCalled();
+    expect(voice.writeCaption).not.toHaveBeenCalled();
+    expect(feed.parseURL).not.toHaveBeenCalled();
+    expect(db.rpcCalls).toHaveLength(0);
+    expect(db.inserts).toHaveLength(0);
+    expect(db.reads).toHaveLength(0);
+  });
+
   it('keeps known short/excerpt candidates ahead of full streams even under hostile random draws', () => {
     vi.spyOn(Math,'random').mockReturnValue(.9999);
     const rows=[{source_url:'https://www.youtube.com/watch?v=AbCdEfGhIjK',duration_seconds:12000}, {source_url:'https://www.youtube.com/watch?v=ShortClip01',duration_seconds:43}, {source_url:'https://www.youtube.com/shorts/ShortClip02',duration_seconds:null}];

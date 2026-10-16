@@ -355,6 +355,21 @@ export const YOUTUBE_OEMBED_TIMEOUT_MS = 8_000;
 export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
 /** Bound live verifier work in the ordinary mixed publisher. */
 export const MAX_LIVE_VIDEO_CANDIDATES = 3;
+interface VideoCaptionAttemptBudget { remaining: number }
+
+/** Keep both approved categories' shorts ahead of any unknown/long format. */
+function sharedVideoSupplyPasses(
+  kinds: readonly HorseVideoTopic[], supply?: SharedHorseVideoSupply,
+): Array<{kind: HorseVideoTopic; supply: SharedHorseVideoSupply | undefined}> {
+  if (!supply) return kinds.map(kind => ({kind, supply}));
+  const short: SharedHorseVideoSupply = {poker: [], sports: []};
+  const other: SharedHorseVideoSupply = {poker: [], sports: []};
+  for (const kind of kinds) for (const clip of supply[kind]) {
+    (clipFormatPriority(clip) <= 1 ? short : other)[kind].push(clip);
+  }
+  return [short, other].flatMap(tier => kinds.filter(kind => tier[kind].length > 0)
+    .map(kind => ({kind, supply: tier})));
+}
 
 /** Randomised without replacement, so one bad/stale clip cannot monopolise an attempt. */
 export function takeRandomCandidates<T extends { source_url: string; duration_seconds?: number | null }>(rows: readonly T[], limit: number, priorityOf: (row: T) => number = clipFormatPriority): T[] {
@@ -689,6 +704,7 @@ export async function publishVideoClip(
   publicationKey?: string,
   sharedSupplyError?: string,
   modelAttemptContext?: ModelAttemptContext,
+  captionAttemptBudget?: VideoCaptionAttemptBudget,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
   if (!(await postModeEnabled(`${clipType}_video`))) {
@@ -703,6 +719,10 @@ export async function publishVideoClip(
   if (sharedSupplyError) {
     return { ...base, success: false, outcome: 'unknown', error: sharedSupplyError };
   }
+  if (captionAttemptBudget && captionAttemptBudget.remaining <= 0) {
+    return { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
+      error: `${clipType} caption attempt budget exhausted` };
+  }
   let captionCandidates: Array<LibraryClip | SportsClipRow> = [];
 
   if (sharedSupply) {
@@ -711,7 +731,7 @@ export async function publishVideoClip(
       return {
         ...base,
         success: false,
-        ...(scheduler === 'fleet' ? { skipped: 'supply_exhausted' as const, publicationKey } : {}),
+        skipped: 'supply_exhausted', publicationKey,
         error: `No fresh public verified caption-ready ${clipType} clips in supply`,
       };
     }
@@ -745,7 +765,7 @@ export async function publishVideoClip(
       return {
         ...base,
         success: false,
-        ...(scheduler === 'fleet' ? { skipped: 'supply_exhausted' as const, publicationKey } : {}),
+        skipped: 'supply_exhausted', publicationKey,
         error: `All ${clipType} verified clips already posted`,
       };
     }
@@ -763,7 +783,7 @@ export async function publishVideoClip(
     // Randomize within each format/factual-context tier. A rotation across the entire
     // pool discards the short/excerpt preference and can lead with a full
     // tournament broadcast while a qualified short is still available.
-    captionCandidates = takeRandomCandidates(fresh, MAX_VIDEO_CAPTION_CANDIDATES,
+    captionCandidates = takeRandomCandidates(fresh, Math.min(MAX_VIDEO_CAPTION_CANDIDATES, captionAttemptBudget?.remaining ?? MAX_VIDEO_CAPTION_CANDIDATES),
       clip => videoCaptionCandidatePriority(clip, clipType) * 2 + (mine.has(clip.source) ? 0 : 1));
     if (captionCandidates.some(candidate => !mine.has((candidate as SupplyClip).source))) {
       bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
@@ -886,6 +906,10 @@ export async function publishVideoClip(
   let verificationUnknown = 0;
   const modelAttempt = modelAttemptContext ?? {};
   for (const candidate of captionCandidates) {
+    if (captionAttemptBudget) {
+      if (captionAttemptBudget.remaining <= 0) break;
+      captionAttemptBudget.remaining -= 1;
+    }
     bumpSupplyStat(`${clipType}_caption_candidate_attempted`);
 
     if (!sharedSupply) {
@@ -1116,22 +1140,29 @@ export async function publishVideoForHorse(
     return { ...base, success: false, error: 'All horse video modes await approval' };
   }
 
-  const errors: string[] = [];
   const captionExhaustions: string[] = [];
   const modelAttempt: ModelAttemptContext = {};
-  for (const kind of videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved)) {
+  const budgets = {poker:{remaining:MAX_VIDEO_CAPTION_CANDIDATES},sports:{remaining:MAX_VIDEO_CAPTION_CANDIDATES}};
+  const disabled = new Set<HorseVideoTopic>();
+  const passes = sharedVideoSupplyPasses(videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved), opts.sharedSupply);
+  if (!passes.length) return { ...base, success:false, skipped:'supply_exhausted', publicationKey,
+    error:approved.map(kind => `${kind}_video: No fresh public verified caption-ready ${kind} clips in supply`).join(' | ') };
+  for (const {kind, supply} of passes) {
+    if (disabled.has(kind)) continue;
     const result = await publishVideoClip(
       horse,
       kind,
       opts.fleet ?? [],
       'horse-video-reels',
-      opts.sharedSupply,
+      supply,
       publicationKey,
       undefined,
       modelAttempt,
+      budgets[kind],
     );
     if (result.success) return result;
-    if (result.skipped === 'caption_exhausted') {
+    if (result.skipped === 'caption_exhausted' || result.skipped === 'supply_exhausted' || result.skipped === 'mode_disabled') {
+      if (result.skipped === 'mode_disabled') disabled.add(kind);
       captionExhaustions.push(`${kind}_video: ${result.error ?? 'caption candidates exhausted'}`);
       continue;
     }
@@ -1140,19 +1171,10 @@ export async function publishVideoForHorse(
     // Do not try the alternate topic in the same run or relabel uncertainty
     // as a definite failure; the durable author/asset retry owns recovery.
     if (result.outcome === 'unknown') return result;
-    errors.push(`${kind}_video: ${result.error ?? 'failed'}`);
+    return result;
   }
-  if (errors.length === 0 && captionExhaustions.length > 0) {
-    return {
-      ...base,
-      success: false,
-      skipped: 'caption_exhausted',
-      publicationKey,
-      error: captionExhaustions.join(' | '),
-    };
-  }
-  errors.unshift(...captionExhaustions);
-  return { ...base, success: false, error: errors.join(' | ') };
+  return { ...base, success: false, skipped:'caption_exhausted', publicationKey,
+    error:captionExhaustions.join(' | ') || 'No eligible verified video candidates' };
 }
 
 async function postNewsLink(
@@ -1454,6 +1476,11 @@ export async function publishForHorse(
   const slot = opts.slot ?? fleetSlotId(horse.profile_id, horse.timezone, new Date());
   if (!slot) return { ...base, success: false, skipped: 'no_slot' };
   const publicationKey = fleetPublicationKey(horse.profile_id, slot);
+  // A failed shared preflight is authoritative even when its supplied
+  // snapshot is empty. No tier, news or grounded branch may bypass it.
+  if (opts.sharedVideoSupplyError) {
+    return { ...base, success:false, outcome:'unknown', publicationKey, error:opts.sharedVideoSupplyError };
+  }
   if (!opts.skipGuard) {
     const guard = await recentPostGuard(horse.profile_id);
     if (guard !== 'clear') return { ...base, success: false, skipped: guard, publicationKey };
@@ -1526,24 +1553,29 @@ export async function publishForHorse(
     else if (!grounded.skipped) attempts.push(`grounded: ${grounded.error}`);
   }
 
-  for (const kind of [preferred, other]) {
+  const videoBudgets = {poker:{remaining:MAX_VIDEO_CAPTION_CANDIDATES},sports:{remaining:MAX_VIDEO_CAPTION_CANDIDATES}};
+  const disabledVideoKinds = new Set<HorseVideoTopic>();
+  for (const {kind, supply} of sharedVideoSupplyPasses([preferred, other], opts.sharedVideoSupply)) {
+    if (disabledVideoKinds.has(kind)) continue;
     const result = await publishVideoClip(
       horse,
       kind,
       opts.fleet ?? [],
       'fleet',
-      opts.sharedVideoSupply,
+      supply,
       publicationKey,
       opts.sharedVideoSupplyError,
       modelAttempt,
+      videoBudgets[kind],
     );
     if (result.success) return result;
+    if (result.skipped === 'mode_disabled') disabledVideoKinds.add(kind);
     if (result.skipped && recordAttempt(`${kind}_video`, result) === 'return') return result;
     // The mixed publisher is disabled, but retain the same lost-ACK law if it
     // is ever re-enabled: an unknown atomic outcome may already be committed,
     // so no alternate category or grounded fallback may publish behind it.
     if (result.outcome === 'unknown') return result;
-    if (!result.skipped) attempts.push(`${kind}_video: ${result.error}`);
+    if (!result.skipped) return result;
   }
 
   for (const kind of [preferred, other]) {

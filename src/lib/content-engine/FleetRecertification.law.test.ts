@@ -216,7 +216,11 @@ describe('fleet duplicate protection lives in the database', () => {
     expect(isolatedBody).toMatch(/const slot = opts\.slot \?\? fleetSlotId\(horse\.profile_id, horse\.timezone, /);
     expect(isolatedBody).toMatch(/if \(!slot\) return \{ \.\.\.base, success: false, skipped: 'no_slot' \};/);
     expect(isolatedBody).toMatch(/const publicationKey = fleetPublicationKey\(horse\.profile_id, slot\);/);
-    expect(isolatedBody).toMatch(/'horse-video-reels',\s+opts\.sharedSupply,\s+publicationKey,/);
+    // Tiered selection still derives every pass from the caller's verified
+    // snapshot and carries the unchanged slot key into each atomic attempt.
+    expect(isolatedBody).toMatch(/sharedVideoSupplyPasses\(videoKindOrder\([\s\S]*?opts\.sharedSupply\)/);
+    expect(isolatedBody).toMatch(/for \(const \{kind, supply\} of passes\)/);
+    expect(isolatedBody).toMatch(/'horse-video-reels',\s+supply,\s+publicationKey,/);
   });
 
   it('the recent-post guard fails closed', () => {
