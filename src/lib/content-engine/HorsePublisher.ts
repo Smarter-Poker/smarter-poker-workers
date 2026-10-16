@@ -71,8 +71,10 @@ import {
 } from './HorseVideoPublication.js';
 import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
 import { captionModelIdempotencyKey, takeModelWriterStats } from './ModelWriter.js';
-import { resolveArticleImageUrl, safeArticleUrl } from './NewsImage.js';
+import { extractArticleImageUrl, resolveArticleImageUrl, safeArticleUrl } from './NewsImage.js';
 import { publishHorseNewsAtomically } from './HorseNewsPublication.js';
+import { freshVideoCaptionCandidates } from './VideoCandidateFreshness.js';
+import { orderedNewsSources, type NewsFeedCandidate } from './NewsSourceFallback.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -234,6 +236,7 @@ function isDuplicateSlotMessage(message: string | undefined): boolean {
 const rssParser = new Parser({
   headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
   timeout: 8000,
+  customFields: { item: [['media:content', 'media:content', { keepArray: true }], ['media:thumbnail', 'media:thumbnail', { keepArray: true }]] },
 });
 
 /**
@@ -255,7 +258,7 @@ export async function fetchFeed(url: string): Promise<FeedItem[]> {
   }
   try {
     const feed = await rssParser.parseURL(url);
-    const items = (feed.items ?? []) as FeedItem[];
+    const items = (feed.items ?? []) as unknown as FeedItem[];
     feedCache.set(url, { items, at: Date.now() });
     bumpSupplyStat('rss_ok');
     return items;
@@ -713,7 +716,6 @@ export async function publishVideoClip(
     const sourceNames = [...new Set(verifiedCaptionable.map((candidate) => candidate.source).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
     const mine = new Set(sliceForHorse(sourceNames, horse.profile_id));
-    const preferred = verifiedCaptionable.filter((candidate) => mine.has(candidate.source));
     const freshFrom = async (rows: SupplyClip[]) => {
       const keys = rows.map((candidate) => assetKeyFor(candidate.source_url)).filter(Boolean) as string[];
       const usable = await filterUnusedAssets(keys, horse.profile_id);
@@ -724,16 +726,9 @@ export async function publishVideoClip(
           && isCaptionableSharedVideoClip(candidate, clipType);
       });
     };
-    let fresh = preferred.length ? await freshFrom(preferred) : [];
-    const priorityOf = (clip: SupplyClip) => videoCaptionCandidatePriority(clip, clipType);
-    if ((!fresh.some(clip=>clipFormatPriority(clip)<=1) || !fresh.some(clip=>priorityOf(clip)===0)) && preferred.length !== verifiedCaptionable.length) {
-      const wider = await freshFrom(verifiedCaptionable);
-      if (!fresh.length || wider.some(clip=>clipFormatPriority(clip)<=1) && !fresh.some(clip=>clipFormatPriority(clip)<=1)
-        || wider.some(clip=>priorityOf(clip)===0) && !fresh.some(clip=>priorityOf(clip)===0)) {
-        fresh = wider;
-        bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
-      }
-    }
+    // A fresh asset is not necessarily a fresh thought. Screen the complete
+    // bounded verified snapshot before taking six publication candidates.
+    let fresh = await freshFrom(verifiedCaptionable);
     if (!fresh.length) {
       if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
         return {
@@ -750,10 +745,25 @@ export async function publishVideoClip(
         error: `All ${clipType} verified clips already posted`,
       };
     }
+    const captionFresh = await freshVideoCaptionCandidates(fresh, clipType, horse.profile_id);
+    if (captionFresh.status === 'unknown') {
+      return { ...base, success: false, outcome: 'unknown', publicationKey, error: captionFresh.error };
+    }
+    fresh = captionFresh.clips;
+    bumpSupplyStat(`${clipType}_caption_preflight_scanned`, captionFresh.scanned);
+    bumpSupplyStat(`${clipType}_caption_preflight_stale`, captionFresh.stale);
+    if (!fresh.length) {
+      return { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
+        error: `No fresh caption meaning in bounded ${clipType} supply (scanned=${captionFresh.scanned}, keys=${captionFresh.keys})` };
+    }
     // Randomize within each format/factual-context tier. A rotation across the entire
     // pool discards the short/excerpt preference and can lead with a full
     // tournament broadcast while a qualified short is still available.
-    captionCandidates = takeRandomCandidates(fresh,MAX_VIDEO_CAPTION_CANDIDATES,priorityOf);
+    captionCandidates = takeRandomCandidates(fresh, MAX_VIDEO_CAPTION_CANDIDATES,
+      clip => videoCaptionCandidatePriority(clip, clipType) * 2 + (mine.has(clip.source) ? 0 : 1));
+    if (captionCandidates.some(candidate => !mine.has((candidate as SupplyClip).source))) {
+      bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
+    }
     bumpSupplyStat(`${clipType}_shared_verified_selected`);
   } else if (clipType === 'poker') {
     // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
@@ -1155,22 +1165,47 @@ async function postNewsLink(
   // answer and falls back too, because no feeds registered still means this
   // horse has something to say.
   const registered = await newsSources(newsType);
-  let candidates: Array<{ name: string; rss: string }>;
+  let candidates: NewsFeedCandidate[];
   if (registered && registered.length) {
     // Each horse reads its own slice of the feeds, the same way it draws its
     // own slice of channels: a thousand horses all quoting CardPlayer is the
     // repetition this phase exists to end.
     const mine = sliceForHorse(registered, horse.profile_id, Math.min(3, registered.length));
-    candidates = mine.map((r) => ({ name: r.name, rss: r.feed_url }));
+    candidates = [...mine, ...registered.filter(row => !mine.includes(row))]
+      .map((r) => ({ name: r.name, rss: r.feed_url, fallback_urls: r.fallback_urls }));
     bumpSupplyStat('news_from_registry');
   } else {
     candidates = FALLBACK_NEWS_SOURCES[newsType];
     bumpSupplyStat(registered ? 'news_registry_empty' : 'news_registry_unreadable');
   }
-  const source = candidates[fleetHash(horse.profile_id, `news:${newsType}`) % candidates.length]!;
+  const failures: string[] = [];
+  for (const source of orderedNewsSources(candidates, fleetHash(horse.profile_id, `news:${newsType}`) % Math.min(3, candidates.length))) {
+    const result = await postNewsFromSource(horse, newsType, fleet, publicationKey, modelAttempt, source);
+    // Unknown reads/acknowledgements and authoritative slot/recent decisions
+    // remain terminal. Only definite no-write exhaustion or upstream failure
+    // may advance to another configured feed inside this original request.
+    if (result.success || result.outcome === 'unknown'
+      || result.skipped === 'duplicate_slot' || result.skipped === 'posted_recently') return result;
+    failures.push(`${source.name}: ${result.error ?? result.skipped ?? 'unavailable'}`);
+    bumpSupplyStat(`${newsType}_news_source_advanced`);
+  }
+  return { ...base, success: false, skipped: 'supply_exhausted', publicationKey,
+    error: `No eligible fresh illustrated ${newsType} article after bounded feed failover: ${failures.join(' | ')}` };
+}
 
+async function postNewsFromSource(
+  horse: FleetHorse, newsType: 'poker' | 'sports', fleet: AuthorHorse[], publicationKey: string,
+  modelAttempt: ModelAttemptContext, source: {name: string; rss: string},
+): Promise<PublishResult> {
+  const base = { horse: horse.name, profile_id: horse.profile_id };
+  let items: FeedItem[];
+  try { items = await fetchFeed(source.rss); }
+  catch (error) {
+    return { ...base, success: false, skipped: 'supply_exhausted', publicationKey,
+      error: `Feed unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
   try {
-    const articles = (await fetchFeed(source.rss)).slice(0, 20).flatMap((article) => {
+    const articles = items.slice(0, 20).flatMap((article) => {
       const link = safeArticleUrl(article.link);
       return link ? [{ ...article, link }] : [];
     });
@@ -1187,7 +1222,7 @@ async function postNewsLink(
     });
     if (!fresh.length) {
       if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
-        return { ...base, success: false, error: 'All articles already posted (asset ledger unreadable)' };
+        return { ...base, success: false, outcome: 'unknown', error: 'All articles already posted (asset ledger unreadable)' };
       }
       return {
         ...base, success: false, skipped: 'supply_exhausted', publicationKey,
@@ -1200,7 +1235,11 @@ async function postNewsLink(
     const illustrated: Array<{ article: typeof fresh[number]; image: string }> = [];
     // Bounded first-party metadata work with in-flight/cache deduplication
     // across horses, never another story used as a thumbnail substitute.
-    for (const article of fresh.slice(0, 3)) {
+    // Inspect supplied art across the entire twenty-item feed before spending
+    // the three bounded first-party metadata requests. Three blank leading
+    // stories must not hide the genuine artwork on the fourth story.
+    const ranked = [...fresh].sort((a,b) => Number(!extractArticleImageUrl(a)) - Number(!extractArticleImageUrl(b)));
+    for (const article of ranked.slice(0, 3)) {
       const image = await resolveArticleImageUrl(article);
       if (image) illustrated.push({ article, image });
     }
@@ -1208,87 +1247,101 @@ async function postNewsLink(
       bumpSupplyStat(`${newsType}_news_no_story_image`);
       return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'No fresh article has genuine associated story artwork' };
     }
-    const selected = illustrated[Math.floor(Math.random() * illustrated.length)]!;
-    const article = selected.article;
-    const articleImage = selected.image;
     await seedMemoryFromHistory(horse.profile_id);
+    const remaining = [...illustrated];
+    let exhaustion: PublishResult = { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
+      error: 'All illustrated article candidates exhausted' };
+    // All artwork is already resolved. Try each of these at most three
+    // candidates once, without additional feed/image requests. A definitively
+    // unsuitable article must not hide a grounded fresh peer in this feed.
+    while (remaining.length > 0) {
+      const selected = remaining.splice(Math.floor(Math.random() * remaining.length), 1)[0]!;
+      const article = selected.article;
+      const articleImage = selected.image;
 
-    const articleKey = assetKeyFor(article.link);
-    if (!articleKey) {
-      return { ...base, success: false, error: 'Selected article has no canonical asset identity' };
-    }
-    const written = await writeCaption(
-      horse as AuthorHorse,
-      { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
-      fleet,
-      { modelIdempotencyKey: captionModelIdempotencyKey(publicationKey, articleKey), modelAttempt },
-    );
-    if (!written.text) {
-      return {
-        ...base,
-        success: false,
-        skipped: 'caption_exhausted',
+      const articleKey = assetKeyFor(article.link);
+      if (!articleKey) {
+        return { ...base, success: false, error: 'Selected article has no canonical asset identity' };
+      }
+      const written = await writeCaption(
+        horse as AuthorHorse,
+        { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
+        fleet,
+        { modelIdempotencyKey: captionModelIdempotencyKey(publicationKey, articleKey), modelAttempt },
+      );
+      if (!written.text) {
+        exhaustion = {
+          ...base,
+          success: false,
+          skipped: 'caption_exhausted',
+          publicationKey,
+          error: 'No fresh caption cleared the quality gate',
+        };
+        continue;
+      }
+      const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
+      const content = `${picked.text}\n\n${article.link}`;
+
+      if (!written.semanticKey) {
+        return { ...base, success: false, error: 'Caption cleared without a semantic freshness key' };
+      }
+      const published = await publishHorseNewsAtomically({
+        authorId: horse.profile_id,
+        content,
+        linkUrl: article.link,
+        linkTitle: article.title ?? '',
+        linkImage: articleImage,
+        linkSiteName: source.name,
+        newsType,
         publicationKey,
-        error: 'No fresh caption cleared the quality gate',
-      };
-    }
-    const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
-    const content = `${picked.text}\n\n${article.link}`;
-
-    if (!written.semanticKey) {
-      return { ...base, success: false, error: 'Caption cleared without a semantic freshness key' };
-    }
-    const published = await publishHorseNewsAtomically({
-      authorId: horse.profile_id,
-      content,
-      linkUrl: article.link,
-      linkTitle: article.title ?? '',
-      linkImage: articleImage,
-      linkSiteName: source.name,
-      newsType,
-      publicationKey,
-      assetKey: articleKey,
-      phraseNorm: picked.norm,
-      semanticKey: written.semanticKey,
-      brief: written.brief,
-    });
-    if (!published.success) {
-      if (published.reason === 'already_published' || published.reason === 'duplicate_slot') {
-        return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
+        assetKey: articleKey,
+        phraseNorm: picked.norm,
+        semanticKey: written.semanticKey,
+        brief: written.brief,
+      });
+      if (!published.success) {
+        if (published.reason === 'already_published' || published.reason === 'duplicate_slot') {
+          return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
+        }
+        if (published.reason === 'posted_recently') {
+          return { ...base, success: false, skipped: 'posted_recently', publicationKey };
+        }
+        if (published.reason === 'asset_used') {
+          exhaustion = { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'Article became used before publication' };
+          continue;
+        }
+        if (published.reason === 'phrase_used') {
+          exhaustion = { ...base, success: false, skipped: 'caption_exhausted', publicationKey, error: 'Caption became used before publication' };
+          continue;
+        }
+        return {
+          ...base,
+          success: false,
+          // Only the RPC's explicit no-write outcomes above permit failover.
+          // An unexpected database refusal/acknowledgement never does.
+          outcome: published.outcome ?? 'unknown',
+          error: published.error ?? 'Atomic horse news publication failed',
+        };
       }
-      if (published.reason === 'posted_recently') {
-        return { ...base, success: false, skipped: 'posted_recently', publicationKey };
-      }
-      if (published.reason === 'asset_used') {
-        return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'Article became used before publication' };
-      }
-      if (published.reason === 'phrase_used') {
-        return { ...base, success: false, skipped: 'caption_exhausted', publicationKey, error: 'Caption became used before publication' };
-      }
+      const postId = published.postId!;
       return {
         ...base,
-        success: false,
-        outcome: published.outcome,
-        error: published.error ?? 'Atomic horse news publication failed',
+        success: true,
+        postId: postId ?? undefined,
+        type: `${newsType}_news`,
+        caption: (article.title ?? '').slice(0, 60),
+        collided: picked.collided,
+        relevance: written.relevance,
+        grounding: written.grounding,
+        drafts: written.attempts,
+        belowFloor: written.belowFloor,
+        tagged: written.tagged?.alias,
+        briefSummary: summarise(written.brief),
       };
     }
-    const postId = published.postId!;
-    return {
-      ...base,
-      success: true,
-      postId: postId ?? undefined,
-      type: `${newsType}_news`,
-      caption: (article.title ?? '').slice(0, 60),
-      collided: picked.collided,
-      relevance: written.relevance,
-      grounding: written.grounding,
-      drafts: written.attempts,
-      belowFloor: written.belowFloor,
-      tagged: written.tagged?.alias,
-      briefSummary: summarise(written.brief),
-    };
+    return exhaustion;
   } catch (e) {
-    return { ...base, success: false, error: e instanceof Error ? e.message : String(e) };
+    return { ...base, success: false, outcome: 'unknown', error: e instanceof Error ? e.message : String(e) };
   }
 }
 

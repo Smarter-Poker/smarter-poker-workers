@@ -29,6 +29,10 @@ const db = vi.hoisted(() => ({
   reads: [] as string[],
 }));
 const ledger = vi.hoisted(() => ({ recordPhrase: vi.fn(), recordAssetUse: vi.fn(), recordBrief: vi.fn() }));
+// This suite qualifies slot atomicity; the real meaning scan has its own
+// database-bound regression suite (VideoCandidateFreshness.test.ts).
+vi.mock('./VideoCandidateFreshness.js', () => ({ freshVideoCaptionCandidates: async (clips: unknown[]) =>
+  ({status:'ok', clips, scanned:clips.length, stale:0, keys:clips.length}) }));
 
 vi.mock('../supabase.js', () => ({
   getSupabase: () => ({

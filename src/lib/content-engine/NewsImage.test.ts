@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import Parser from 'rss-parser';
 import { _resetArticleImageCache, extractArticleImageUrl, resolveArticleImageUrl, safeArticleUrl } from './NewsImage.js';
 
 afterEach(()=>{vi.unstubAllGlobals();_resetArticleImageCache();});
@@ -34,6 +35,44 @@ describe('article image extraction', () => {
         '<figure><img src="https://cdn.example/stories/table-action.webp"></figure>',
       ].join(''),
     })).toBe('https://cdn.example/stories/table-action.webp');
+  });
+  it('reads real rss-parser output instead of assuming raw XML description survives', async () => {
+    const parser = new Parser();
+    const parsed = await parser.parseString('<rss version="2.0"><channel><title>PokerNews</title><item><title>Adrian Mateos</title><link>https://www.pokernews.com/news/2026/10/story-52617.htm</link><description><![CDATA[<img src="https://s.pnimg.net/story52617.webp" /><p>Actual story summary.</p>]]></description></item></channel></rss>');
+    expect(parsed.items[0]).not.toHaveProperty('description');
+    expect(extractArticleImageUrl(parsed.items[0]!)).toBe('https://s.pnimg.net/story52617.webp');
+  });
+  it('reads preserved Media RSS arrays and refuses a leading generic logo', async () => {
+    const parser = new Parser({ customFields: { item: [['media:content', 'media:content', { keepArray: true }]] } });
+    const parsed = await parser.parseString('<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>News</title><item><title>Story</title><media:content url="https://cdn.example/logo.jpg"/><media:content url="https://cdn.example/story.jpg"/></item></channel></rss>');
+    expect(extractArticleImageUrl(parsed.items[0]!)).toBe('https://cdn.example/story.jpg');
+  });
+});
+
+describe('exact public CardPlayer story metadata', () => {
+  const link = 'https://www.cardplayer.com/poker-news/1762590-2026-card-player-poy-race';
+  const image = 'https://www.cardplayer.com/wp-content/uploads/2026/10/POY-Update-October-scaled.jpg';
+  const html = (canonical = link, artwork = image) => `<meta content="${canonical}" property="og:url"><meta property='og:image' content='${artwork}'>`;
+  it('fetches only the exact public story and requires matching article identity', async () => {
+    const fetcher = vi.fn(async () => new Response(html(), { headers: { 'content-type': 'text/html' } }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await resolveArticleImageUrl({ link: `${link}?utm_source=rss` })).toBe(image);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(link);
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' });
+  });
+  it.each(['mismatch', 'logo', 'oversize', 'refused', 'not_html'])('fails closed for %s instead of inventing artwork', async mode => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      mode === 'oversize' ? ' '.repeat(524289) : html(mode === 'mismatch' ? `${link}-different` : link, mode === 'logo' ? 'https://cdn.example/logo.jpg' : image),
+      { status: mode === 'refused' ? 429 : 200, headers: { 'content-type': mode === 'not_html' ? 'application/json' : 'text/html' } },
+    )));
+    expect(await resolveArticleImageUrl({ link })).toBeNull();
+  });
+  it('refuses lookalike domains, other paths, nonstandard ports and insecure story fetches', async () => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    for (const value of [link.replace('www.cardplayer.com', 'www.cardplayer.com.evil.test'), link.replace('/poker-news/', '/account/'), link.replace('https:', 'http:'), link.replace('.com/', '.com:8443/')]) {
+      expect(await resolveArticleImageUrl({ link: value })).toBeNull();
+    }
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
 

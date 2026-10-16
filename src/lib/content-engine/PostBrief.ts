@@ -115,6 +115,7 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   high_stakes: ['high stakes', 'nosebleed', 'nosebleeds'],
   cash_game: ['cash game', 'cash games'],
   tournament: ['tournament', 'tournaments', 'mtt', 'tourney', 'wsop', 'world series'],
+  guarantee: ['guarantee', 'guaranteed'],
   plo: ['plo', 'omaha', 'pot limit omaha'],
   short_deck: ['short deck', 'six plus', '6+'],
   study: ['study', 'studying', 'review', 'leak', 'leaks'],
@@ -159,7 +160,7 @@ const TEAMS: Record<string, Sport> = {
   bears: 'nfl', bills: 'nfl', ravens: 'nfl', bengals: 'nfl', lions: 'nfl', vikings: 'nfl',
   dolphins: 'nfl', jets: 'nfl', giants: 'nfl', steelers: 'nfl', broncos: 'nfl',
   yankees: 'mlb', dodgers: 'mlb', 'red sox': 'mlb', cubs: 'mlb', mets: 'mlb', braves: 'mlb',
-  astros: 'mlb', phillies: 'mlb', padres: 'mlb', orioles: 'mlb',
+  astros: 'mlb', phillies: 'mlb', padres: 'mlb', orioles: 'mlb', brewers: 'mlb',
 };
 
 /** Channels that tell us the sport without reading the title. */
@@ -184,6 +185,7 @@ const POKER_SOURCE = /poker|upswing|cardplayer|wsop|pokernews|hustler|triton|pok
  * possessive, count. Lower-cased for matching.
  */
 const KNOWN_POKER_PEOPLE = [
+  'adrian mateos',
   'garrett adelstein', 'phil ivey', 'daniel negreanu', 'phil hellmuth', 'tom dwan',
   'patrik antonius', 'doug polk', 'jason koon', 'bryn kenney', 'justin bonomo',
   'stephen chidwick', 'fedor holz', 'dan smith', 'nick petrangelo', 'alex foxen',
@@ -208,12 +210,15 @@ const KNOWN_SPORT_PEOPLE = [
   // Named in real clip titles and missed (p2-voice-c fixtures, 2026-09-21).
   'kristaps porzingis', 'tyrese maxey', 'jaylen brown', 'paul george', 'trae young',
   'paolo banchero', 'tom brady',
+  // Literal named clips in the verified sports library (2026-10-16).
+  'jeremy doku', 'og anunoby', 'tyler kolek',
 ];
 
 const KNOWN_PEOPLE = [...KNOWN_POKER_PEOPLE, ...KNOWN_SPORT_PEOPLE];
 
 /** How a known name is written when a horse says it. */
 const KNOWN_DISPLAY: Record<string, string> = {
+  'og anunoby': 'OG Anunoby',
   'lebron james': 'LeBron James',
   'ceedee lamb': 'CeeDee Lamb',
   'shai gilgeous-alexander': 'Shai Gilgeous-Alexander',

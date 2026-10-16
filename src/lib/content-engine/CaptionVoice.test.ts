@@ -1,13 +1,68 @@
 import { describe, it, expect } from 'vitest';
 import { captionFact, captionHolding, captionVoiceProfile, subjectCaption } from './CaptionVoice.js';
 import { briefForAsset } from './PostBrief.js';
-import { composeCaption } from './Composer.js';
+import { composeCaption, hasSpecificTake } from './Composer.js';
 import { styleId, styleSheetFor } from './StyleSheet.js';
 
 const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => briefForAsset({kind:'video', title, domainHint, source:domainHint==='poker'?'PokerGO':'NBA'});
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it.each([
+    ['Adrian Mateos Completes Unwanted Hat Trick of Poker Masters Bubbles','poker','news_bubble'],
+    ['APT Championship Returns to Taiwan in November With $8.1 Million Guaranteed','poker','news_guarantee'],
+    ['Brewers sweep Dodgers in NLCS, advance to 1st World Series in 44 years','sports','news_sweep'],
+  ] as const)('renders a strict report fact even when the legacy generic take pool has no category: %s',(title,domain,action)=>{
+    const b=briefForAsset({kind:'link',title,source:domain==='poker'?'PokerNews':'ESPN',domainHint:domain});
+    expect(hasSpecificTake(b)).toBe(false);
+    expect(captionFact(b)?.action).toBe(action);
+    const out=composeCaption(b,styleSheetFor(ids[0]!));
+    expect(out.text).not.toBe('');
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    expect(out.semanticKey).toMatch(/^meaning:subject:/);
+    expect(out.grounding).toContain(`title_action:${action}`);
+    expect(out.text).not.toMatch(/Reading from|reports:|won the prize|awarded|I played|I watched/i);
+  });
+  it.each([
+    ["Jeremy Doku’s Trademark Goal ☄️",'Jeremy Doku','goal'],
+    ['OG Anunoby Turns The Corner And Throws Down A Powerful Slam 💥','OG Anunoby','dunk'],
+    ['Tyler Kolek Gets The Friendly Bounce On A Clutch Go-Ahead Three 🎯','Tyler Kolek','three'],
+  ])('binds a literal verified sports title to the correct known actor: %s',(title,person,action)=>{
+    const b=brief(title,'sports');
+    expect(captionFact(b)).toMatchObject({person,action});
+    const out=composeCaption(b,styleSheetFor(ids[0]!));
+    expect(out.text).toContain(person);
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    expect(out.grounding).toContain(`actor:${person}`);
+    expect(out.text).not.toMatch(/won|wins|victory|champion|I watched|I played/i);
+  });
+
+  it.each([
+    "Could Jeremy Doku's trademark goal win the game?",
+    "Jeremy Doku's trademark goal never happened",
+    "Jeremy Doku watches LeBron James score a goal",
+    "If OG Anunoby throws down a powerful slam",
+    "OG Anunoby couldn't throw down a powerful slam",
+    'OG Anunoby watches Tyler Kolek throw down a powerful slam',
+    'Tyler Kolek might get the friendly bounce on a clutch go-ahead three',
+    'Did Tyler Kolek get the friendly bounce on a clutch go-ahead three?',
+    'A mystery player throws down a powerful slam',
+  ])('does not promote a conditional, other-actor or unknown actor sports title: %s',title=>{
+    expect(captionFact(brief(title,'sports'))).toBeNull();
+  });
+
+  it('coalesces equivalent literal sports actions independently of wording or asset identity',()=>{
+    const pairs=[
+      ["Jeremy Doku’s Trademark Goal!","Jeremy Doku's goal"],
+      ['OG Anunoby turns the corner and throws down a powerful slam','OG Anunoby throws down a slam'],
+      ['Tyler Kolek gets the friendly bounce on a clutch go-ahead three','Tyler Kolek gets a friendly bounce on a three'],
+    ];
+    for(const [first,second] of pairs){
+      expect(subjectCaption(brief(first!,'sports'),styleSheetFor(ids[0]!))?.semanticKey)
+        .toBe(subjectCaption({...brief(second!,'sports'),postId:'different-asset'},styleSheetFor(ids[0]!))?.semanticKey);
+    }
+  });
+
   it('does not stitch the same selected angle into a question and a repeated statement', () => {
     const b=brief('Navigating A Chaos 5-Way All-In');
     const kane=styleSheetFor('2de39d61-a269-451a-9e7c-37fc1aa25ad7');
@@ -105,7 +160,7 @@ describe('source-bound individual caption voices', () => {
     const b=brief('Phil Ivey makes a huge river call');
     for(const id of ids.slice(0,100)) {
       const out=subjectCaption(b,{...styleSheetFor(id),length:'medium',captionSyntax:3})!;
-      expect(out.text).toContain('the discussion starts with');
+      expect(out.text).toMatch(/the discussion starts with|is where I(?: would|'d) ask about|is the starting point I(?: would|'d) use/);
       expect(out.text).not.toContain('pot odds belongs');
     }
     expect(subjectCaption(brief('Stephen Curry hits a three pointer','sports'),styleSheetFor(ids[0]!))?.reference).toBe('that shot');
@@ -130,5 +185,27 @@ describe('source-bound individual caption voices', () => {
     const bare = new Set(rows.map(({out})=>out.text.toLowerCase().replace(/[^a-z ]/g,'').replace(/\s+/g,' ')));
     expect(bare.size).toBeGreaterThan(20);
     expect(new Set(rows.map(({out})=>out.semanticKey)).size).toBe(3);
+  });
+
+  it('realizes stable cadence in six-context output, not only unused profile fingerprints', () => {
+    const titles = [
+      'Phil Ivey makes a huge river call', 'Phil Ivey fires a river bluff',
+      'Daniel Negreanu folds the river', 'Phil Ivey wins his 11th WSOP bracelet',
+      'Stephen Curry hits a three pointer', 'LeBron James dunks from the baseline',
+    ];
+    const compose=(id:string)=>titles.map(title=>composeCaption(brief(title,/Curry|James/.test(title)?'sports':'poker'),styleSheetFor(id)));
+    const rows=ids.map(id=>({id,outputs:compose(id)}));
+    const normalized=(text:string)=>text.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+    expect(new Set(rows.map(row=>row.outputs.map(out=>normalized(out.text)).join('|'))).size).toBeGreaterThan(900);
+    expect(new Set(ids.map(id=>captionVoiceProfile(styleSheetFor(id)).cadence))).toEqual(new Set([0,1,2]));
+    for(const row of rows){
+      expect(row.outputs).toEqual(compose(row.id));
+      for(const out of row.outputs){
+        expect(out.text).not.toMatch(/I (?:played|watched|won|lost)|when I was|last night|reading from|reports:/i);
+        expect(out.text).not.toMatch(/—|[\u{1F300}-\u{1FAFF}]/u);
+      }
+    }
+    // Rephrasing never produces a fresh factual proposition.
+    expect(new Set(ids.map(id=>subjectCaption(brief(titles[1]!),styleSheetFor(id))!.semanticKey)).size).toBe(3);
   });
 });
