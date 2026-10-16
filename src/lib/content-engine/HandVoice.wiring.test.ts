@@ -27,6 +27,12 @@ const db = vi.hoisted(() => ({
   writes: [] as Array<{ table: string; op: string; row: unknown }>,
 }));
 
+// rss-parser uses node:http rather than global fetch. Keep the unrelated news
+// fallback empty here so real publisher headlines cannot change this gate test.
+vi.mock('rss-parser', () => ({
+  default: class { async parseURL() { return { items: [] }; } },
+}));
+
 vi.mock('../supabase.js', () => {
   function builder(table: string): unknown {
     const filters: Array<(r: Row) => boolean> = [];
