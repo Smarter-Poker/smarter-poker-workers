@@ -229,7 +229,7 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 7,
+    version: 8,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
@@ -282,34 +282,34 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // profile fingerprint. Every alternative asks about an established fact;
   // none asserts an unseen play, experience, motive or result.
   const question = plan.questionHabit < 2 ? sourceQuestion : plan.questionHabit === 2
-    ? `For ${fact.subject}, what should we examine about ${focus}?`
-    : `Which details of ${focus} matter when assessing ${fact.subject}?`;
+    ? `For ${fact.subject}, what would you want to know about ${focus}?`
+    : `What do you make of ${focus} in ${fact.subject}?`;
   // In a compound frame the opening already establishes the source fact.
   // A context-only question develops it without circling through the same
   // event noun in a source, a typed reference and a focus phrase.
   const followupQuestion = [
-    `What should we examine about ${focus}?`,
-    `How should ${focus} inform the assessment?`,
+    `What would you want to know about ${focus}?`,
+    `Where does ${focus} fit here?`,
     `Which details of ${focus} matter?`,
-    `What context is missing about ${focus}?`,
+    `What else do we need to know about ${focus}?`,
   ][plan.questionHabit]!;
-  const judgement = style.slang === 'none' ? 'assessment' : style.slang === 'heavy' ? 'read' : 'take';
-  const aJudgement = `${judgement === 'assessment' ? 'an' : 'a'} ${judgement}`;
-  const relation = judgement === 'assessment' ? 'of' : 'on';
+  const judgement = style.slang === 'heavy' ? 'read' : 'take';
+  const aJudgement = `a ${judgement}`;
+  const relation = 'on';
   const intent = {
-    first: ["I'd start with", 'I want to check', 'I would look at', 'My starting point is', "I'm interested in", "I'd begin with", 'My first question concerns', 'I would examine', 'My attention goes to', 'I want to understand'],
-    impersonal: ['Start with', 'The starting point is', 'The useful context is', 'First, consider', 'Begin with', 'The focus belongs on', 'The first question concerns', 'Examine', 'Give some attention to', 'Try to understand'],
-    second: ['Start with', 'Look at', 'Check', 'Consider', 'Put the focus on', 'Go back to', 'Ask first about', 'Examine', 'Pay attention to', 'Try to understand'],
-    plural: ["We'd start with", 'We should check', 'We can look at', 'Our starting point is', 'We need to consider', "We'd begin with", 'Our first question concerns', 'We could examine', 'Our attention goes to', 'We need to understand'],
+    first: ["I'd start with", 'I want to check', 'I would look at', 'My first question is about', "I'm interested in", "I'd begin with", 'I want to know more about', 'I would dig into', 'I keep thinking about', 'I want to understand'],
+    impersonal: ['Start with', 'Take a look at', 'Worth asking about', 'First, look at', 'Begin with', 'Keep an eye on', 'The first question is about', 'Look more closely at', 'Pay attention to', 'Try to understand'],
+    second: ['Start with', 'Look at', 'Check', 'Think about', 'Keep an eye on', 'Go back to', 'Ask first about', 'Take a closer look at', 'Pay attention to', 'Try to understand'],
+    plural: ["We'd start with", 'We should check', 'We can look at', 'Our first question is about', 'We need to think about', "We'd begin with", 'We need to know more about', 'We could dig into', 'We should pay attention to', 'We need to understand'],
   }[style.voice][plan.intent]!;
   const starting = `${intent} ${focus} for ${fact.subject}`;
   const preface = [
     `Before judging ${fact.subject}`, `Before settling on ${aJudgement} ${relation} ${fact.subject}`,
     `To get a read on ${fact.subject}`, `For a closer look at ${fact.subject}`,
-    `When assessing ${fact.subject}`, `Before deciding about ${fact.subject}`,
-    `To understand ${fact.subject}`, `For context on ${fact.subject}`,
+    `When talking about ${fact.subject}`, `Before deciding about ${fact.subject}`,
+    `To understand ${fact.subject}`, `When it comes to ${fact.subject}`,
     `Before drawing conclusions about ${fact.subject}`, `For a discussion of ${fact.subject}`,
-    `To put ${fact.subject} in perspective`, `When looking more closely at ${fact.subject}`,
+    `To make sense of ${fact.subject}`, `When looking more closely at ${fact.subject}`,
   ][plan.preface]!;
   const contrast = [
     `The result alone doesn't settle ${fact.subject}`,
@@ -325,7 +325,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     question,
     starting,
     `${preface}, ${wanting} ${focus}`,
-    `For ${fact.subject}, the discussion starts with ${focus}`,
+    `For ${fact.subject}, I'd start with ${focus}`,
     fact.action === 'news_guarantee' ? `${fact.subject}: ${followupQuestion}` : `${contrast}. ${followupQuestion}`,
     `Hard to judge ${fact.subject} without ${focus}`,
     `${intent} ${focus} when considering ${fact.subject}`,
@@ -333,35 +333,35 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     fact.action === 'news_guarantee' ? `For ${fact.subject}, I'd want to understand ${focus}` : `I'd separate the outcome of ${fact.subject} from ${focus}`,
     `What would ${focus} add to ${aJudgement} ${relation} ${fact.subject}?`,
     `${preface}, ${continuingIntent} ${focus}`,
-    `${aJudgement.charAt(0).toUpperCase() + aJudgement.slice(1)} ${relation} ${fact.subject} needs context: ${focus}`,
+    `I'd want ${focus} before making up my mind about ${fact.subject}`,
   ];
   const conversational = [
     `On ${fact.subject}, what about ${focus}?`,
-    `${fact.subject} has me asking about ${focus}`,
+    `What I want to know about ${fact.subject} is ${focus}`,
     `I need ${focus} to form ${aJudgement} ${relation} ${fact.subject}`,
     `${fact.subject} is where I'd ask about ${focus}`,
     fact.action === 'news_guarantee' ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
-    `${fact.subject} is a question about ${focus} for me`,
+    `With ${fact.subject}, I'd want to know about ${focus}`,
     `For me, ${focus} comes before a verdict on ${fact.subject}`,
-    fact.action === 'news_guarantee' ? `My question about ${fact.subject} concerns ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
-    `Anyone looking at ${focus} when assessing ${fact.subject}?`,
-    `${fact.subject}: ${continuingIntent} ${focus}`,
-    `A little context for ${fact.subject} first: ${focus}`,
+    fact.action === 'news_guarantee' ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
+    `Anyone looking at ${focus} for ${fact.subject}?`,
+    `For ${fact.subject}, ${continuingIntent} ${focus}`,
+    `With ${fact.subject}, I'd want to know more about ${focus}`,
   ];
   const analytical = [
-    `How should ${focus} inform a read on ${fact.subject}?`,
+    `What can ${focus} tell us about ${fact.subject}?`,
     `The question behind ${fact.subject} is ${focus}`,
-    `Assessing ${fact.subject} starts with a look at ${focus}`,
-    `${focus} is the starting point I'd use for ${fact.subject}`,
+    `I'd look at ${focus} before judging ${fact.subject}`,
+    `I'd start by looking at ${focus} for ${fact.subject}`,
     fact.action === 'news_guarantee' ? `Looking more closely at ${fact.subject}: ${followupQuestion}` : `Looking beyond the result of ${fact.subject}: ${followupQuestion}`,
-    `${fact.subject} needs to be considered alongside ${focus}`,
+    `You'd have to look at ${focus} for ${fact.subject}`,
     `With ${fact.subject}, my focus would be ${focus}`,
-    `Context before conclusions on ${fact.subject}: ${focus}`,
-    fact.action === 'news_guarantee' ? `An assessment of ${fact.subject} should account for ${focus}` : `Separate the outcome from the analysis of ${fact.subject}: consider ${focus}`,
+    `Before calling ${fact.subject} either way, I'd check ${focus}`,
+    fact.action === 'news_guarantee' ? `For ${fact.subject}, the bit I'd check is ${focus}` : `With ${fact.subject}, I'd separate the result from ${focus}`,
     `What would a closer look at ${focus} change about a read on ${fact.subject}?`,
-    `Put ${focus} at the centre of the discussion of ${fact.subject}`,
-    `The context I'd ask for on ${fact.subject} is ${focus}`,
+    `Let's talk about ${focus} for ${fact.subject}`,
+    `For ${fact.subject}, I still want to know about ${focus}`,
   ];
   let text = [structures, conversational, analytical][plan.cadence]![style.captionSyntax % structures.length]!;
   // Terse and short voices choose a whole short clause. Never truncate a
@@ -385,24 +385,24 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `${fact.subject}: I'd check ${focus}`,
     `${focus} first for ${fact.subject}`,
     `${fact.subject}: where does ${focus} fit?`,
-    `For me, ${fact.subject} needs ${focus}`,
+    `I'd want ${focus} for ${fact.subject}`,
     `${fact.subject}? Start with ${focus}`,
     `I'd want ${focus} before judging ${fact.subject}`,
     `Anyone else asking about ${focus} for ${fact.subject}?`,
     `My focus for ${fact.subject}: ${focus}`,
     `Before judging ${fact.subject}: ${focus}`,
-    `${fact.subject} has me asking about ${focus}`,
+    `My question about ${fact.subject} is ${focus}`,
     `I'm interested in ${focus} for ${fact.subject}`,
   ];
   const compactAnalytical = [
     `${fact.subject}: how does ${focus} fit?`,
-    `Start with ${fact.subject}, then examine ${focus}`,
+    `Start with ${fact.subject}, then look at ${focus}`,
     `${fact.subject}, viewed through ${focus}`,
-    `How does ${focus} inform ${fact.subject}?`,
-    `Assess ${fact.subject} in light of ${focus}`,
-    `${fact.subject} needs context: ${focus}`,
+    `How would ${focus} help explain ${fact.subject}?`,
+    `Think about ${focus} when looking at ${fact.subject}`,
+    `With ${fact.subject}, I'd ask about ${focus}`,
     `Put ${focus} first when considering ${fact.subject}`,
-    `What does ${focus} clarify about ${fact.subject}?`,
+    `What could ${focus} clarify about ${fact.subject}?`,
     `For ${fact.subject}, the context is ${focus}`,
     `${focus}: the question behind ${fact.subject}`,
     `A closer look at ${fact.subject}: ${focus}`,
@@ -411,6 +411,15 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   if (style.length === 'terse' || style.length === 'short') {
     text = [compact, compactConversational, compactAnalytical][plan.cadence]![style.captionSyntax % compact.length]!;
   }
+  // Only authored framing is simplified. A title-bound event name, score,
+  // card holding or hyphenated fact stays byte-for-byte intact here.
+  const naturalFrame = (part: string) => part
+    .replace(/:/g, ',')
+    .replace(/\bcontext\b/gi, 'details')
+    .replace(/\bexamine\b/gi, 'look at')
+    .replace(/\bassessment\b/gi, 'take')
+    .replace(/\bwhen assessing\b/gi, 'when looking at');
+  text = text.split(fact.subject).map(naturalFrame).join(fact.subject);
   // A stable contraction register is grammatical variation, not random noise.
   if (!style.contractions) text = text.replace(/I'd\b/g, 'I would').replace(/I'm\b/g, 'I am');
   const reference = fact.action === 'river_call' ? 'that call'
@@ -433,7 +442,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     text,
     subject: fact.subject,
     reference,
-    statement: alternatives[1]!.replace(fact.subject, reference),
+    statement: naturalFrame(alternatives[1]!.replace(fact.subject, reference)),
     semanticKey: `meaning:subject:${(fact.identity ?? fact.person).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:${angle.key}`,
     grounding: [fact.person ? `actor:${fact.person}` : `context:${fact.identity}`, `title_action:${fact.action}`, `angle:${angle.key}`],
   };

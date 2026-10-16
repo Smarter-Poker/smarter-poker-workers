@@ -26,9 +26,9 @@
  */
 import { briefForComment, publicFigureDomain, type PostBrief } from './PostBrief.js';
 import { fleetHash } from './FleetScheduler.js';
-import { render, targetWords, type StyleSheet } from './StyleSheet.js';
+import { render, targetWords, withCaptionEmoji, type CaptionEmojiTopic, type StyleSheet } from './StyleSheet.js';
 import { isDisagreement, isQuestion } from './ReplyEngine.js';
-import { subjectCaption } from './CaptionVoice.js';
+import { captionFact, subjectCaption } from './CaptionVoice.js';
 import { captionQuality } from './CaptionQuality.js';
 
 // ─── takes, by concept ───────────────────────────────────────────────────
@@ -685,6 +685,14 @@ export function composeCaption(
   style: StyleSheet,
   variantSeed = '0',
 ): ComposeResult {
+  const fact = captionFact(b);
+  // Source brands are not sport identity: an NBA-labelled source can carry
+  // a baseball report. Only the established typed fact selects a sport.
+  const emojiTopic: CaptionEmojiTopic | undefined = b.domain === 'poker' ? 'poker'
+    : fact?.identity?.startsWith('baseball:') || fact?.action.startsWith('baseball_') || fact?.action === 'news_sweep' ? 'baseball'
+      : fact?.identity?.startsWith('basketball:') || fact?.action === 'three' || fact?.action === 'dunk' ? 'basketball'
+        : fact?.identity?.startsWith('soccer:') || fact?.action.startsWith('soccer_') || fact?.action === 'goal' ? 'soccer' : undefined;
+  const ornament = (text: string) => withCaptionEmoji(text, style, `${b.domain}:${b.source}:${b.title}`, emojiTopic);
   // A title alone is not comprehension. The old fallback wrapped arbitrary
   // scraped text in "worth a look" and scored the repeated title as relevant,
   // allowing poker posts about aliens and sports clips with clipped captions.
@@ -714,7 +722,7 @@ export function composeCaption(
     });
     if (!style.contractions) text = text.replace(/\bI'd\b/gi, 'I would').replace(/\bI'm\b/gi, 'I am').replace(/\bwe'd\b/gi, 'we would');
     if (!captionQuality(text, {subject: subject.subject}).pass) return { text: '', relevance: 0, grounding: [] };
-    return { ...subject, text, relevance: relevanceOf(text, b) };
+    return { ...subject, text: ornament(text), relevance: relevanceOf(text, b) };
   }
 
   const seed = `${style.profileId}:${b.postId ?? b.title}:${variantSeed}`;
@@ -751,7 +759,7 @@ export function composeCaption(
   // read. i keep coming back to that?" and "...what is your read...?" (P2C-10).
   const text = render(lines, style, seed, { question, varyCloser: true });
   if (!captionQuality(text).pass) return { text: '', relevance: 0, grounding: [] };
-  return { text, relevance: relevanceOf(text, b), grounding, semanticKey: meaningKey(lines[0]!) };
+  return { text: ornament(text), relevance: relevanceOf(text, b), grounding, semanticKey: meaningKey(lines[0]!) };
 }
 
 /**
