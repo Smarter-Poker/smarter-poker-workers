@@ -205,7 +205,7 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 3,
+    version: 4,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
@@ -380,6 +380,11 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
               : fact.action === 'news_guarantee' ? 'that guarantee' : fact.action === 'news_bubble' ? 'that bubble run' : fact.action === 'news_sweep' ? 'that series'
                 : fact.action === 'stakes_context' ? 'those stakes' : fact.action === 'prize_context' ? 'that listed prize' : fact.action === 'holding_context' ? 'that holding'
                   : fact.action === 'baseball_home_run_context' ? 'that home run' : fact.action === 'baseball_close_context' ? 'that close' : fact.action === 'soccer_goal_total_context' ? 'that goal total' : 'that decision';
+  // Compound frames already establish the full source fact in their preface.
+  // Refer back to it in the question instead of repeating the whole headline.
+  // Keep the source fact once, and never change its canonical meaning key.
+  const [opening, ...mentions] = text.split(fact.subject);
+  if (mentions.length > 1) text = `${opening}${fact.subject}${mentions.join(reference)}`;
   return {
     text,
     subject: fact.subject,
