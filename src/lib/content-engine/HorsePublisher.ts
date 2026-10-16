@@ -1247,87 +1247,99 @@ async function postNewsFromSource(
       bumpSupplyStat(`${newsType}_news_no_story_image`);
       return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'No fresh article has genuine associated story artwork' };
     }
-    const selected = illustrated[Math.floor(Math.random() * illustrated.length)]!;
-    const article = selected.article;
-    const articleImage = selected.image;
     await seedMemoryFromHistory(horse.profile_id);
+    const remaining = [...illustrated];
+    let exhaustion: PublishResult = { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
+      error: 'All illustrated article candidates exhausted' };
+    // All artwork is already resolved. Try each of these at most three
+    // candidates once, without additional feed/image requests. A definitively
+    // unsuitable article must not hide a grounded fresh peer in this feed.
+    while (remaining.length > 0) {
+      const selected = remaining.splice(Math.floor(Math.random() * remaining.length), 1)[0]!;
+      const article = selected.article;
+      const articleImage = selected.image;
 
-    const articleKey = assetKeyFor(article.link);
-    if (!articleKey) {
-      return { ...base, success: false, error: 'Selected article has no canonical asset identity' };
-    }
-    const written = await writeCaption(
-      horse as AuthorHorse,
-      { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
-      fleet,
-      { modelIdempotencyKey: captionModelIdempotencyKey(publicationKey, articleKey), modelAttempt },
-    );
-    if (!written.text) {
-      return {
-        ...base,
-        success: false,
-        skipped: 'caption_exhausted',
+      const articleKey = assetKeyFor(article.link);
+      if (!articleKey) {
+        return { ...base, success: false, error: 'Selected article has no canonical asset identity' };
+      }
+      const written = await writeCaption(
+        horse as AuthorHorse,
+        { kind: 'link', title: article.title ?? '', source: source.name, domainHint: newsType },
+        fleet,
+        { modelIdempotencyKey: captionModelIdempotencyKey(publicationKey, articleKey), modelAttempt },
+      );
+      if (!written.text) {
+        exhaustion = {
+          ...base,
+          success: false,
+          skipped: 'caption_exhausted',
+          publicationKey,
+          error: 'No fresh caption cleared the quality gate',
+        };
+        continue;
+      }
+      const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
+      const content = `${picked.text}\n\n${article.link}`;
+
+      if (!written.semanticKey) {
+        return { ...base, success: false, error: 'Caption cleared without a semantic freshness key' };
+      }
+      const published = await publishHorseNewsAtomically({
+        authorId: horse.profile_id,
+        content,
+        linkUrl: article.link,
+        linkTitle: article.title ?? '',
+        linkImage: articleImage,
+        linkSiteName: source.name,
+        newsType,
         publicationKey,
-        error: 'No fresh caption cleared the quality gate',
-      };
-    }
-    const picked = { text: written.text, norm: normalizePhrase(written.text), collided: written.stale };
-    const content = `${picked.text}\n\n${article.link}`;
-
-    if (!written.semanticKey) {
-      return { ...base, success: false, error: 'Caption cleared without a semantic freshness key' };
-    }
-    const published = await publishHorseNewsAtomically({
-      authorId: horse.profile_id,
-      content,
-      linkUrl: article.link,
-      linkTitle: article.title ?? '',
-      linkImage: articleImage,
-      linkSiteName: source.name,
-      newsType,
-      publicationKey,
-      assetKey: articleKey,
-      phraseNorm: picked.norm,
-      semanticKey: written.semanticKey,
-      brief: written.brief,
-    });
-    if (!published.success) {
-      if (published.reason === 'already_published' || published.reason === 'duplicate_slot') {
-        return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
+        assetKey: articleKey,
+        phraseNorm: picked.norm,
+        semanticKey: written.semanticKey,
+        brief: written.brief,
+      });
+      if (!published.success) {
+        if (published.reason === 'already_published' || published.reason === 'duplicate_slot') {
+          return { ...base, success: false, skipped: 'duplicate_slot', publicationKey };
+        }
+        if (published.reason === 'posted_recently') {
+          return { ...base, success: false, skipped: 'posted_recently', publicationKey };
+        }
+        if (published.reason === 'asset_used') {
+          exhaustion = { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'Article became used before publication' };
+          continue;
+        }
+        if (published.reason === 'phrase_used') {
+          exhaustion = { ...base, success: false, skipped: 'caption_exhausted', publicationKey, error: 'Caption became used before publication' };
+          continue;
+        }
+        return {
+          ...base,
+          success: false,
+          // Only the RPC's explicit no-write outcomes above permit failover.
+          // An unexpected database refusal/acknowledgement never does.
+          outcome: published.outcome ?? 'unknown',
+          error: published.error ?? 'Atomic horse news publication failed',
+        };
       }
-      if (published.reason === 'posted_recently') {
-        return { ...base, success: false, skipped: 'posted_recently', publicationKey };
-      }
-      if (published.reason === 'asset_used') {
-        return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'Article became used before publication' };
-      }
-      if (published.reason === 'phrase_used') {
-        return { ...base, success: false, skipped: 'caption_exhausted', publicationKey, error: 'Caption became used before publication' };
-      }
+      const postId = published.postId!;
       return {
         ...base,
-        success: false,
-        // Only the RPC's explicit no-write outcomes above permit failover.
-        // An unexpected database refusal/acknowledgement never does.
-        outcome: published.outcome ?? 'unknown',
-        error: published.error ?? 'Atomic horse news publication failed',
+        success: true,
+        postId: postId ?? undefined,
+        type: `${newsType}_news`,
+        caption: (article.title ?? '').slice(0, 60),
+        collided: picked.collided,
+        relevance: written.relevance,
+        grounding: written.grounding,
+        drafts: written.attempts,
+        belowFloor: written.belowFloor,
+        tagged: written.tagged?.alias,
+        briefSummary: summarise(written.brief),
       };
     }
-    const postId = published.postId!;
-    return {
-      ...base,
-      success: true,
-      postId: postId ?? undefined,
-      type: `${newsType}_news`,
-      caption: (article.title ?? '').slice(0, 60),
-      collided: picked.collided,
-      relevance: written.relevance,
-      grounding: written.grounding,
-      drafts: written.attempts,
-      belowFloor: written.belowFloor,
-      tagged: written.tagged?.alias,
-      briefSummary: summarise(written.brief),
-    };
+    return exhaustion;
   } catch (e) {
     return { ...base, success: false, outcome: 'unknown', error: e instanceof Error ? e.message : String(e) };
   }

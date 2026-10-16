@@ -546,6 +546,42 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
   });
 
+  it('tries an already-illustrated factual second article after the first caption is unsupported', async () => {
+    modes.grounded=false;modes.video=false;
+    vi.spyOn(Math,'random').mockReturnValue(0);
+    feed.parseURL.mockResolvedValue({items:[
+      {title:'Unsupported lucky-charm headline',link:'https://news.example/unsupported',content:'<img src="https://cdn.news.example/photos/first.jpg">'},
+      {title:'APT Championship offers $8.1 million guaranteed',link:'https://news.example/guarantee',content:'<img src="https://cdn.news.example/photos/second.jpg">'},
+    ]});
+    const good=await voice.writeCaption.getMockImplementation()!(horse(horseId(0)),{});
+    voice.writeCaption.mockResolvedValueOnce({...good,text:'',belowFloor:true}).mockResolvedValueOnce(good);
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
+    expect(result.success).toBe(true);
+    expect(feed.parseURL).toHaveBeenCalledTimes(1);
+    expect(voice.writeCaption).toHaveBeenCalledTimes(2);
+    expect(voice.writeCaption.mock.calls.map(call=>call[1].title)).toEqual([
+      'Unsupported lucky-charm headline','APT Championship offers $8.1 million guaranteed',
+    ]);
+    expect(voice.writeCaption.mock.calls[0]?.[3].modelAttempt).toBe(voice.writeCaption.mock.calls[1]?.[3].modelAttempt);
+    expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
+    expect(db.rpcCalls.find(call=>call.name==='publish_horse_news_post')?.args.p_link_url).toBe('https://news.example/guarantee');
+  });
+
+  it('does not advance to an illustrated second article after an unknown atomic acknowledgement', async () => {
+    modes.grounded=false;modes.video=false;
+    vi.spyOn(Math,'random').mockReturnValue(0);
+    feed.parseURL.mockResolvedValue({items:[
+      {title:'First factual article',link:'https://news.example/first',content:'<img src="https://cdn.news.example/photos/first.jpg">'},
+      {title:'Second factual article',link:'https://news.example/second',content:'<img src="https://cdn.news.example/photos/second.jpg">'},
+    ]});
+    db.newsRpcResult={data:null,error:{message:'Connection lost after request'}};
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
+    expect(result).toMatchObject({success:false,outcome:'unknown'});
+    expect(feed.parseURL).toHaveBeenCalledTimes(1);
+    expect(voice.writeCaption).toHaveBeenCalledTimes(1);
+    expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
+  });
+
   it('a news insert carries the actual safe article image in link_image', async () => {
     modes.grounded = false;
     modes.video = false;
