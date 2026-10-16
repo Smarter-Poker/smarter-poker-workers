@@ -37,6 +37,8 @@ import {
   groundedPhraseRecentlyUsed,
   normalizePhrase,
   phraseRecentlyUsed,
+  phraseUseStatus,
+  videoSemanticUseStatus,
   phraseUsedOnPost,
   recentFrameKeys,
 } from './ContentLedger.js';
@@ -111,11 +113,17 @@ async function writeGated(
   echoes?: (text: string) => boolean,
   preferred?: { text: string; relevance: number; grounding: string[]; semanticKey?: string; skip?: undefined },
   maxDrafts = MAX_DRAFTS,
+  videoCaption = false,
 ): Promise<Omit<WrittenText, 'brief' | 'style'>> {
   let best: { text: string; relevance: number; grounding: string[]; semanticKey?: string } | null = null;
   let attempts = 0;
   let sawFresh = false;
   let echoed = 0;
+  // This invocation only remembers positive database refusals. Unknown reads
+  // are rechecked and counted; unused keys are never cached. Atomic publication
+  // still owns concurrency, so this cannot authorize a write from memory.
+  const refusedMeanings = new Set<string>();
+  const refusedPhrases = new Set<string>();
 
   const totalDrafts = maxDrafts + (preferred ? 1 : 0);
   for (let i = 0; i < totalDrafts; i++) {
@@ -136,9 +144,33 @@ async function writeGated(
       continue;
     }
     if (draft.semanticKey && postId && await phraseUsedOnPost(draft.semanticKey, postId)) continue;
-    if (draft.semanticKey && !postId && await phraseRecentlyUsed(draft.semanticKey, horseId)) continue;
+    if (draft.semanticKey && !postId) {
+      if (videoCaption) {
+        if (refusedMeanings.has(draft.semanticKey)) continue;
+        // Older caption paths ledgered meaning keys as phrases. Retain that
+        // restriction first: exhausted legacy pools then avoid unnecessary
+        // semantic-table round trips as well as duplicate draft checks.
+        const legacy = await phraseUseStatus(draft.semanticKey, horseId);
+        if (legacy !== 'unused') {
+          if (legacy === 'used') refusedMeanings.add(draft.semanticKey);
+          continue;
+        }
+        const canonical = await videoSemanticUseStatus(draft.semanticKey, horseId);
+        if (canonical !== 'unused') {
+          if (canonical === 'used') refusedMeanings.add(draft.semanticKey);
+          continue;
+        }
+      } else if (await phraseRecentlyUsed(draft.semanticKey, horseId)) continue;
+    }
     const norm = normalizePhrase(draft.text);
-    if (await phraseRecentlyUsed(norm, horseId)) continue;
+    if (videoCaption) {
+      if (refusedPhrases.has(norm)) continue;
+      const status = await phraseUseStatus(norm, horseId);
+      if (status !== 'unused') {
+        if (status === 'used') refusedPhrases.add(norm);
+        continue;
+      }
+    } else if (await phraseRecentlyUsed(norm, horseId)) continue;
 
     sawFresh = true;
     return {
@@ -210,6 +242,8 @@ export async function writeCaption(
         semanticKey: model.semanticKey,
       }
       : undefined,
+    MAX_DRAFTS,
+    asset.kind === 'video',
   );
 
   // A headline in four attribution wrappers is not a horse's voice. Both

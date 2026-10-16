@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   phraseRecentlyUsed: vi.fn(),
+  phraseUseStatus: vi.fn(),
   writeModelCaption: vi.fn(),
 }));
 
@@ -12,6 +13,8 @@ vi.mock('./ContentLedger.js', () => ({
   groundedPhraseRecentlyUsed: vi.fn(async () => false),
   normalizePhrase: (value: string) => `norm:${value.toLowerCase()}`,
   phraseRecentlyUsed: mocks.phraseRecentlyUsed,
+  phraseUseStatus: mocks.phraseUseStatus,
+  videoSemanticUseStatus: vi.fn(async () => 'unused'),
   phraseUsedOnPost: vi.fn(async () => false),
   recentFrameKeys: vi.fn(async () => new Set()),
 }));
@@ -36,6 +39,7 @@ const unsupportedNews = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.phraseRecentlyUsed.mockResolvedValue(false);
+  mocks.phraseUseStatus.mockImplementation(async (key: string, horseId: string) => await mocks.phraseRecentlyUsed(key, horseId) ? 'used' : 'unused');
   mocks.writeModelCaption.mockResolvedValue({
     status: 'accepted',
     text: 'Phil Ivey made the river bluff work because the line held together.',
@@ -112,5 +116,14 @@ describe('VoiceWriter model candidate gates', () => {
 
     expect(written.text).toBe('');
     expect(written.stale).toBe(true);
+  });
+
+  it('does not memoize an unreadable rendered-phrase guard as a definite refusal', async () => {
+    mocks.phraseUseStatus.mockImplementation(async (key: string) => key.startsWith('norm:') ? 'unknown' : 'unused');
+    const written = await writeCaption(horse,{...asset,title:'Bluffing With Nine Seven!'});
+    expect(written.text).toBe('');
+    const checks = mocks.phraseUseStatus.mock.calls.filter(([key])=>String(key).startsWith('norm:'));
+    expect(checks).toHaveLength(6);
+    expect(new Set(checks.map(([key])=>key)).size).toBeLessThan(6);
   });
 });

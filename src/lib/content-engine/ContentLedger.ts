@@ -52,7 +52,7 @@ export class LedgerUnreadableError extends Error {
 
 const readFailures: Record<string, number> = {};
 
-function noteReadFailure(kind: 'phrase' | 'post_phrase' | 'frame' | 'asset', message: string): void {
+function noteReadFailure(kind: 'phrase' | 'semantic' | 'post_phrase' | 'frame' | 'asset', message: string): void {
   readFailures[kind] = (readFailures[kind] ?? 0) + 1;
   console.warn(`[content-ledger] ${kind} read failed; treating as used:`, message);
 }
@@ -232,36 +232,56 @@ export async function recordAssetUse(
  * on 2026-09-05 21:10 while the result claimed collided: 0. The same shape
  * of bug the audit found in the old 48h dedup.
  */
-export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): Promise<boolean> {
-  if (!phraseNorm) return false;
-  const supa = getSupabase();
+export type RecentUseStatus = 'used' | 'unused' | 'unknown';
+
+/** Same existence predicates as the atomic video RPC, without conflating an
+ * unreadable guard with a conclusively used key. Never caches a fresh result. */
+async function recentUseStatus(
+  table: 'horse_phrase_ledger' | 'horse_semantic_ledger',
+  column: 'phrase_norm' | 'semantic_key',
+  key: string,
+  horseId: string,
+): Promise<RecentUseStatus> {
+  if (!key) return 'unused';
+  const kind = table === 'horse_semantic_ledger' ? 'semantic' : 'phrase';
   const globalSince = new Date(Date.now() - PHRASE_GLOBAL_HOURS * 3_600_000).toISOString();
   const horseSince = new Date(Date.now() - PHRASE_HORSE_DAYS * 86_400_000).toISOString();
-
-  const recent = await supa
-    .from('horse_phrase_ledger')
-    .select('id')
-    .eq('phrase_norm', phraseNorm)
-    .gte('used_at', globalSince)
-    .limit(1);
-  if (recent.error) {
-    noteReadFailure('phrase', recent.error.message);
-    return true;
+  try {
+    const supa = getSupabase();
+    const recent = await supa.from(table).select('id')
+      .eq(column, key).gte('used_at', globalSince).limit(1);
+    if (recent.error || !Array.isArray(recent.data)) {
+      noteReadFailure(kind, recent.error?.message ?? 'malformed ledger response');
+      return 'unknown';
+    }
+    if (recent.data.length > 0) return 'used';
+    const mine = await supa.from(table).select('id')
+      .eq(column, key).eq('horse_id', horseId).gte('used_at', horseSince).limit(1);
+    if (mine.error || !Array.isArray(mine.data)) {
+      noteReadFailure(kind, mine.error?.message ?? 'malformed ledger response');
+      return 'unknown';
+    }
+    return mine.data.length > 0 ? 'used' : 'unused';
+  } catch (error) {
+    noteReadFailure(kind, error instanceof Error ? error.message : String(error));
+    return 'unknown';
   }
-  if ((recent.data ?? []).length > 0) return true;
+}
 
-  const mine = await supa
-    .from('horse_phrase_ledger')
-    .select('id')
-    .eq('phrase_norm', phraseNorm)
-    .eq('horse_id', horseId)
-    .gte('used_at', horseSince)
-    .limit(1);
-  if (mine.error) {
-    noteReadFailure('phrase', mine.error.message);
-    return true;
-  }
-  return (mine.data ?? []).length > 0;
+export function phraseUseStatus(phraseNorm: string, horseId: string): Promise<RecentUseStatus> {
+  return recentUseStatus('horse_phrase_ledger', 'phrase_norm', phraseNorm, horseId);
+}
+
+export async function phraseRecentlyUsed(phraseNorm: string, horseId: string): Promise<boolean> {
+  return await phraseUseStatus(phraseNorm, horseId) !== 'unused';
+}
+
+export function videoSemanticUseStatus(semanticKey: string, horseId: string): Promise<RecentUseStatus> {
+  return recentUseStatus('horse_semantic_ledger', 'semantic_key', semanticKey, horseId);
+}
+
+export async function videoSemanticRecentlyUsed(semanticKey: string, horseId: string): Promise<boolean> {
+  return await videoSemanticUseStatus(semanticKey, horseId) !== 'unused';
 }
 
 /**
