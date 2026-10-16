@@ -466,13 +466,17 @@ export function isCaptionableSharedVideoClip(
   clip: SupplyClip,
   topic: HorseVideoTopic,
 ): boolean {
-  return hasSpecificTake(briefForAsset({
+  const brief = briefForAsset({
     kind: 'video',
     title: clip.title,
     source: clip.source,
     domainHint: topic,
     sportHint: clip.category,
-  }));
+  });
+  // The real composer also accepts strict source-bound facts even when no
+  // older generic take pool knows this holding/action. Verification alone is
+  // still insufficient; the ordinary writer retains its relevance floor.
+  return hasSpecificTake(brief) || captionFact(brief) !== null;
 }
 
 export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {

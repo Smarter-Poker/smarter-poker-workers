@@ -12,6 +12,16 @@ const LEDGER_ROW_LIMIT = 1_000;
 const LEDGER_TIMEOUT_MS = 20_000;
 const DRAFTS = 6;
 
+/** Only an idempotent SELECT may repeat, and only after a transient failure. */
+function transientLedgerReadFailure(value: unknown, depth = 0): boolean {
+  if (!value || typeof value !== 'object' || depth > 2) return false;
+  const failure = value as {status?: unknown; code?: unknown; error?: unknown; cause?: unknown};
+  if ([502, 503, 504].includes(Number(failure.status))) return true;
+  if (typeof failure.code === 'string'
+    && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(failure.code)) return true;
+  return transientLedgerReadFailure(failure.error, depth + 1) || transientLedgerReadFailure(failure.cause, depth + 1);
+}
+
 /** The exact deterministic meanings the ordinary six-draft writer can use. */
 export function videoCandidateMeanings(clip: SupplyClip, topic: 'poker' | 'sports', profileId: string): string[] {
   const brief = briefForAsset({ kind: 'video', title: clip.title, source: clip.source, domainHint: topic, sportHint: clip.category });
@@ -44,18 +54,34 @@ export async function freshVideoCaptionCandidates(
       for (const [table, column] of [['horse_phrase_ledger', 'phrase_norm'], ['horse_semantic_ledger', 'semantic_key']] as const) {
         for (const mine of [false, true]) {
           queries.push((async () => {
-            let query = getSupabase().from(table).select(column).in(column, chunk)
-              .gte('used_at', mine ? horseSince : globalSince).limit(LEDGER_ROW_LIMIT);
-            if (mine) query = query.eq('horse_id', profileId);
-            const result = await query.abortSignal(AbortSignal.timeout(LEDGER_TIMEOUT_MS));
-            // PostgREST may truncate a full page. Absence cannot prove unused.
-            if (result.error || !Array.isArray(result.data) || result.data.length >= LEDGER_ROW_LIMIT) {
-              throw new Error(result.error?.message ?? 'Incomplete video freshness ledger response');
-            }
-            for (const row of result.data) {
-              const value = (row as unknown as Record<string, unknown>)[column];
-              if (typeof value !== 'string' || !chunk.includes(value)) throw new Error('Malformed video freshness ledger key');
-              used.add(value);
+            // Two total attempts, no delay or background repair. Construct a
+            // new SELECT each time; never repeat a mutation or RPC. A second
+            // failure remains unknown, just as before this bounded recovery.
+            for (let attempt = 0; attempt < 2; attempt++) {
+              let query = getSupabase().from(table).select(column).in(column, chunk)
+                .gte('used_at', mine ? horseSince : globalSince).limit(LEDGER_ROW_LIMIT);
+              if (mine) query = query.eq('horse_id', profileId);
+              let result;
+              try {
+                result = await query.abortSignal(AbortSignal.timeout(LEDGER_TIMEOUT_MS));
+              } catch (error) {
+                if (attempt === 0 && transientLedgerReadFailure(error)) continue;
+                throw error;
+              }
+              if (result.error || result.status >= 400) {
+                if (attempt === 0 && transientLedgerReadFailure(result)) continue;
+                throw new Error(result.error?.message ?? `Video freshness ledger HTTP ${result.status}`);
+              }
+              // PostgREST may truncate a full page. Absence cannot prove unused.
+              if (!Array.isArray(result.data) || result.data.length >= LEDGER_ROW_LIMIT) {
+                throw new Error('Incomplete video freshness ledger response');
+              }
+              for (const row of result.data) {
+                const value = (row as unknown as Record<string, unknown>)[column];
+                if (typeof value !== 'string' || !chunk.includes(value)) throw new Error('Malformed video freshness ledger key');
+                used.add(value);
+              }
+              return;
             }
           })());
         }

@@ -337,7 +337,7 @@ describe('horseVideoReels', () => {
     expect(c.captured.body).toMatchObject({ due: 1, attempted: 1, posted: 1 });
   });
 
-  it('prepares one shared proof snapshot for a 51-horse run instead of 306 YouTube probes', async () => {
+  it('prepares one shared proof snapshot and paces a 51-horse run after two fresh creations', async () => {
     const dueFleet = Array.from({ length: 51 }, (_, index) => ({
       id: index + 1,
       name: `Horse ${index + 1}`,
@@ -358,9 +358,10 @@ describe('horseVideoReels', () => {
     const c = context();
     await horseVideoReels(c);
     expect(c.captured.status).toBe(200);
-    expect(c.captured.body).toMatchObject({ due: 51, attempted: 51, posted: 51 });
+    expect(c.captured.body).toMatchObject({ due: 51, attempted: 2, posted: 2,not_attempted:49,
+      publication_budget:{limit:2,created:2,hit:true},cap_hit:false });
     expect(mocks.prepareSharedHorseVideoSupply).toHaveBeenCalledTimes(1);
-    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(51);
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(2);
   });
 
   it('keeps retries deterministic within an hour and rotates over-cap cohorts next hour', () => {
@@ -451,7 +452,7 @@ describe('horseVideoReels', () => {
 
   it('keeps one horse failure visible without dropping the rest of the run', async () => {
     mocks.publishVideoForHorse
-      .mockRejectedValueOnce(new Error('verification registry unavailable'))
+      .mockResolvedValueOnce({success:false,error:'verification registry unavailable'})
       .mockResolvedValueOnce({
         success: true,
         horse: 'Bravo',
@@ -575,11 +576,49 @@ describe('horseVideoReels', () => {
     expect(c.captured.status).toBe(503);
     expect(c.captured.body).toMatchObject({
       success: false,
-      attempted: 2,
+      attempted: 1,
       posted: 0,
       failed: 0,
-      unknown: 2,
+      unknown: 1,
+      halted_on_unknown:true,
+      not_attempted:1,
+      publication_budget:{limit:2,created:0,hit:false},
     });
+    // Unknown ACK may already have committed: conservation forbids admitting
+    // the second horse, while retaining the authoritative unknown outcome.
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues past exhausted/recent/replayed horses until two genuinely fresh pairs are created',async()=>{
+    const fleet=Array.from({length:6},(_,index)=>({id:index+1,name:`Horse${index}`,profile_id:`horse-${index}`,timezone:'UTC'}));
+    mocks.loadFleet.mockResolvedValue(fleet);
+    mocks.publishVideoForHorse.mockResolvedValueOnce({success:false,skipped:'caption_exhausted'})
+      .mockResolvedValueOnce({success:false,skipped:'posted_recently'})
+      .mockResolvedValueOnce({success:true,created:false,type:'poker_video',postId:'old-post',reelId:'old-reel'});
+    const c=context();await horseVideoReels(c);
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(5);
+    expect(c.captured.body).toMatchObject({attempted:5,posted:3,created:2,replayed:1,not_attempted:1,
+      caption_exhausted:1,skipped_recent:1,publication_budget:{limit:2,created:2,hit:true},cap_hit:false});
+  });
+
+  it('retains a confirmed pair but reports 503 and halts on a subsequent unknown ACK',async()=>{
+    mocks.loadFleet.mockResolvedValue([...horses,{id:3,name:'Charlie',profile_id:'horse-c',timezone:'UTC'}]);
+    mocks.publishVideoForHorse.mockResolvedValueOnce({success:true,created:true,type:'poker_video',postId:'post-first',reelId:'reel-first'})
+      .mockResolvedValueOnce({success:false,outcome:'unknown',error:'acknowledgement lost'});
+    const c=context();await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(2);
+    expect(c.captured.body).toMatchObject({success:false,posted:1,unknown:1,halted_on_unknown:true,not_attempted:1,
+      publication_budget:{limit:2,created:1,hit:false},post_ids:['post-first'],reel_ids:['reel-first']});
+  });
+
+  it('halts after an unexpected publisher exception without claiming unused publication capacity',async()=>{
+    mocks.publishVideoForHorse.mockRejectedValueOnce(new Error('publisher transport interrupted'));
+    const c=context();await horseVideoReels(c);
+    expect(c.captured.status).toBe(503);
+    expect(mocks.publishVideoForHorse).toHaveBeenCalledTimes(1);
+    expect(c.captured.body).toMatchObject({success:false,unknown:1,failed:0,halted_on_unknown:true,not_attempted:1,
+      publication_budget:{limit:2,created:0,hit:false},errors:{'publisher transport interrupted':1}});
   });
 
   it('is wired for GET and POST without the mixed publisher or master engine switch', () => {

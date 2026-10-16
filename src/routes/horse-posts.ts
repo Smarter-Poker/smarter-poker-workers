@@ -41,6 +41,8 @@ import { syncStyleSheets } from '../lib/content-engine/VoiceWriter.js';
 import { ledgerReadFailureTotal } from '../lib/content-engine/ContentLedger.js';
 
 export const MAX_POSTS_PER_RUN = 80;
+/** Pace finite eligible stock; this is a creation budget, not an attempt cap. */
+export const MAX_NEW_HORSE_POSTS_PER_RUN = 2;
 const DEADLINE_MS = 540_000;
 // One at a time. Two workers picking assets concurrently both saw the same
 // clip as fresh and both posted it (4 repeats on 2026-09-05); the ledger's
@@ -71,15 +73,18 @@ export async function horsePosts(c: Context) {
       ? await prepareSharedHorseVideoSupply(['poker', 'sports'])
       : null;
     const results: PublishResult[] = [];
-    const run: { cursor: number; deadlineHit: boolean; halt: Halt | null } = {
+    const run: { cursor: number; deadlineHit: boolean; halt: Halt | null; created: number; unknown: boolean } = {
       cursor: 0,
       deadlineHit: false,
       halt: null,
+      created: 0,
+      unknown: preparedVideoSupply?.status === 'unknown',
     };
 
     const ledgerFailuresBefore = ledgerReadFailureTotal();
     const worker = async () => {
-      while (run.cursor < queue.length && !run.halt) {
+      while (run.cursor < queue.length && !run.halt && !run.unknown) {
+        if (run.created >= MAX_NEW_HORSE_POSTS_PER_RUN) return;
         if (Date.now() - startedAt > DEADLINE_MS) {
           run.deadlineHit = true;
           return;
@@ -92,23 +97,32 @@ export async function horsePosts(c: Context) {
         }
         const item = queue[run.cursor++]!;
         try {
-          results.push(
-            await publishForHorse(item.horse, {
-              fleet,
-              sharedVideoSupply: preparedVideoSupply?.status === 'ok'
-                ? preparedVideoSupply.supply
-                : undefined,
-              sharedVideoSupplyError: preparedVideoSupply?.status === 'unknown'
-                ? preparedVideoSupply.error
-                : undefined,
-              // The slot this run found the horse due for, read from the same
-              // clock, so an overlapping run names the same slot and key.
-              slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
-            }),
-          );
+          const result = await publishForHorse(item.horse, {
+            fleet,
+            sharedVideoSupply: preparedVideoSupply?.status === 'ok'
+              ? preparedVideoSupply.supply
+              : undefined,
+            sharedVideoSupplyError: preparedVideoSupply?.status === 'unknown'
+              ? preparedVideoSupply.error
+              : undefined,
+            // The slot this run found the horse due for, read from the same
+            // clock, so an overlapping run names the same slot and key.
+            slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
+          });
+          results.push(result);
+          // News/grounded insert success has no created flag; video replay
+          // explicitly carries false and never spends fresh-stock capacity.
+          if (result.success && result.created !== false) run.created += 1;
+          // A lost acknowledgement may already have consumed stock. Admit
+          // no further horse behind that unresolved authoritative operation.
+          if (result.outcome === 'unknown' || result.skipped === 'guard_unreadable') run.unknown = true;
         } catch (err) {
+          // This boundary has no definite no-write exception contract. The
+          // publication may have been accepted before the exception surfaced.
+          run.unknown = true;
           results.push({
             success: false,
+            outcome: 'unknown',
             horse: item.horse.name,
             profile_id: item.horse.profile_id,
             error: err instanceof Error ? err.message : String(err),
@@ -129,7 +143,7 @@ export async function horsePosts(c: Context) {
     // with the code. Bounded, self-healing, and it never blocks a publish.
     // Not after the switch stopped the run: an engine that is off writes
     // nothing more.
-    const styles = run.halt ? { updated: 0 } : await syncStyleSheets(fleet);
+    const styles = run.halt || run.unknown ? { updated: 0 } : await syncStyleSheets(fleet);
 
     const posted = results.filter((r) => r.success);
     const failed = results.filter((r) => !r.success && !r.skipped);
@@ -139,13 +153,19 @@ export async function horsePosts(c: Context) {
     }
     const errors: Record<string, number> = {};
     for (const f of failed) errors[f.error ?? 'unknown'] = (errors[f.error ?? 'unknown'] ?? 0) + 1;
+    if (preparedVideoSupply?.status === 'unknown') errors[preparedVideoSupply.error] = 1;
 
     return c.json({
-      success: true,
+      success: !run.unknown,
       fleet: fleet.length,
       due: due.length,
       attempted: results.length,
       posted: posted.length,
+      publication_budget: {
+        limit: MAX_NEW_HORSE_POSTS_PER_RUN,
+        created: run.created,
+        hit: run.created >= MAX_NEW_HORSE_POSTS_PER_RUN,
+      },
       skipped_recent: skippedByReason.posted_recently ?? 0,
       // Fail closed: the recent-post guard could not be read, so no post.
       skipped_guard_unreadable: skippedByReason.guard_unreadable ?? 0,
@@ -156,6 +176,9 @@ export async function horsePosts(c: Context) {
       content_exhausted: skippedByReason.content_exhausted ?? 0,
       skipped_by_reason: skippedByReason,
       failed: failed.length,
+      unknown: results.filter(result => result.outcome === 'unknown' || result.skipped === 'guard_unreadable').length
+        + (preparedVideoSupply?.status === 'unknown' ? 1 : 0),
+      halted_on_unknown: run.unknown,
       collided: posted.filter((r) => r.collided).length,
       by_type: posted.reduce<Record<string, number>>((acc, r) => {
         const k = r.type ?? 'unknown';
@@ -186,7 +209,7 @@ export async function horsePosts(c: Context) {
       duration_ms: Date.now() - startedAt,
       timestamp: now.toISOString(),
       posted_horses: posted.map((r) => r.horse).slice(0, 80),
-    });
+    }, run.unknown ? 503 : 200);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn('[horse-posts] fatal:', msg);

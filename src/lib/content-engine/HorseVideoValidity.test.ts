@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { briefForAsset } from './PostBrief.js';
+import { hasSpecificTake } from './Composer.js';
 // Validity proof and meaning reuse are independent gates. This suite owns
 // the former; VideoCandidateFreshness.test.ts exercises the latter.
 vi.mock('./VideoCandidateFreshness.js', () => ({ freshVideoCaptionCandidates: async (clips: unknown[]) =>
@@ -253,6 +255,19 @@ describe('horse video oEmbed proof', () => {
         poker: { scanned: 4, verified: 4, captionable: 3 },
         sports: { scanned: 3, verified: 3, captionable: 0 },
       },
+    });
+  });
+
+  it('keeps a strict holding/action short in verified supply without admitting vague or unrelated titles', async () => {
+    const titles = ['4-Betting 9-7 Suited Into $141K', 'Keyboard shortcuts', 'Hitting the PALACE FEATURE with the Montoya Twins! #slots'];
+    expect(hasSpecificTake(briefForAsset({kind:'video',title:titles[0]!,source:'Mariano',domainHint:'poker',sportHint:'vlog'}))).toBe(false);
+    const clips = titles.map((title, i) => ({id:`fact-${i}`,video_id:['1ixc2FfAyBA','BBBBBBBBBBB','CCCCCCCCCCC'][i]!,
+      source_url:`https://www.youtube.com/watch?v=${['1ixc2FfAyBA','BBBBBBBBBBB','CCCCCCCCCCC'][i]}`,
+      title,source:'Mariano',category:'vlog',oembed_ok:true,duration_seconds:101}));
+    mocks.platformCandidateClips.mockResolvedValue({status:'ok',clips});
+    mocks.readFreshSharedYouTubeVerificationIds.mockResolvedValue({status:'ok',videoIds:new Set(clips.map(c=>c.video_id))});
+    await expect(prepareSharedHorseVideoSupply(['poker'])).resolves.toMatchObject({
+      status:'ok',supply:{poker:[{video_id:'1ixc2FfAyBA'}]},counts:{poker:{scanned:3,verified:3,captionable:1}},
     });
   });
 

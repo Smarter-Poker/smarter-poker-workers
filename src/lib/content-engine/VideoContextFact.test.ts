@@ -9,6 +9,58 @@ const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
 
 describe('literal video context facts',()=>{
  it.each([
+  ['3-Betting Pocket Threes Out Of Position','holding:33:bet_level:3:position:oop'],
+  ['4-Betting 9-7 Suited Into $141K','holding:97s:bet_level:4'],
+  ['J-8 Offsuit In A 4-Way Nightmare','holding:j8o:players:4'],
+  ['Baiting The Trap With Pocket Threes','holding:33'],
+  ['ONE TIME POCKET JACKS','holding:jj'],
+  ['THREE WAY ALL IN FOR A $25K POT','all_in:players:3:pot:25000:unit:dollars'],
+  ['Jacks vs. Threes For a 14K Pot','pot:matchup:33:jj:amount:14000:unit:unspecified'],
+  ['Lucas Jumalon is ALL IN for 22k On The Lodge Livestream!','all_in:amount:22000:unit:unspecified'],
+  ['$4000 ALL IN!','all_in:amount:4000:unit:dollars'],
+  ['Winning a 33k Pot Live On Stream Has To Feel Sooooooo Good','pot:amount:33000:unit:unspecified'],
+  ['Big Mike Plays HIGH STAKES $50/100 - Commentary by Raver','stakes:50:100:unit:dollars'],
+  ['Super High Roller Bowl Final Table with $1,150,000 Top Prize!','event:super high roller bowl:top_prize:1150000:unit:dollars'],
+  ['PGT PLO Series $25,000 Championship! $420,000 1st-Place Prize!','event:pgt plo series:top_prize:420000:unit:dollars'],
+  ['$250,000GTD Trailblazer Signature Final Table','event:trailblazer signature:guarantee:250000:unit:dollars'],
+ ])('grounds a reusable literal holding/quantity role: %s',(title,identity)=>{
+  expect(pokerVideoContextFact(title)?.identity).toBe(identity);
+  expect(captionFact(brief(title))?.identity).toBe(identity);
+  const out=composeCaption(brief(title),style);
+  expect(out.text).not.toBe('');
+  expect(out.relevance).toBeGreaterThanOrEqual(.3);
+  expect(out.grounding).toContain(`context:${identity}`);
+ });
+ it.each([
+  ['3-Betting Pocket Threes Out Of Position','three-betting pocket threes out of position!'],
+  ['4-Betting 9-7 Suited Into $141K','four-betting 7-9 suited'],
+  ['J-8 Offsuit In A 4-Way Nightmare','8-J offsuit in a four-way hand'],
+  ['Jacks vs. Threes For a 14K Pot','Threes versus Jacks for a 14000 pot'],
+  ['THREE WAY ALL IN FOR A $25K POT','3-way all-in for a $25,000 pot'],
+  ['$4k all-in','$4,000 all in'],
+  ['High stakes $50/100','High stakes $50/$100'],
+  ['Super High Roller Bowl $1.15 million top prize','Super High Roller Bowl $1,150,000 first-place prize'],
+  ['$250K GTD Trailblazer Signature Final Table','$250,000 guaranteed Trailblazer Signature Final Table'],
+ ])('coalesces equivalent typed facts instead of minting caption novelty: %s',(first,second)=>{
+  const a=pokerVideoContextFact(first),b=pokerVideoContextFact(second);
+  expect(a).not.toBeNull();expect(b?.identity).toBe(a?.identity);
+ });
+ it.each([
+  'Could he be all-in for $4,000?','He never went all-in for $4,000',
+  'He is all-in for -$4,000','He is all-in for $-4,000','-$4,000 ALL IN','$-4,000 ALL IN',
+  '$4.000.000 ALL IN','$5,00 ALL IN','$2,,000 ALL IN',
+  '$4,000 all-in and $5,000 all-in',
+  'Jacks vs Threes for a $14K pot and Aces vs Kings for a $15K pot',
+  'Super High Roller Bowl $1 million top prize and $2 million top prize',
+  'Super High Roller Bowl $1 million guaranteed and $2 million guaranteed',
+  'Super High Roller Bowl $1 million guaranteed and $100,000 top prize',
+  'Unknown Event $1 million guaranteed','High stakes $50/100/200',
+  'High stakes $100/50','3-betting pocket threes before four-betting kings',
+  'Four-betting ace ace suited','If four-betting nine seven suited',
+ ])('refuses unsafe quantity/holding claims: %s',title=>{
+  expect(pokerVideoContextFact(title)).toBeNull();
+ });
+ it.each([
   ['CRACKING ACES TO WIN THE TOURNAMENT!','holding:aa:cracked','aces_cracked_context'],
   ['DRAMATIC RIVER CARD FOR DANIEL NEGREANU!','river:player:daniel negreanu:card','river_context'],
  ] as const)('grounds additional literal source facts without inferred agency: %s',(title,identity,action)=>{

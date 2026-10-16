@@ -102,9 +102,14 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   gto: ['gto', 'solver', 'solvers', 'equilibrium'],
   exploit: ['exploit', 'exploitative', 'exploits'],
   range: ['range', 'ranges', 'range construction'],
-  three_bet: ['3bet', '3-bet', 'three bet', 'three-bet'],
+  three_bet: ['3bet', '3-bet', 'three bet', 'three-bet', '3-betting', 'three-betting'],
+  four_bet: ['4bet', '4-bet', 'four bet', 'four-bet', '4-betting', 'four-betting'],
+  pocket_pair: ['pocket'],
+  suited_holding: ['suited'],
+  offsuit_holding: ['offsuit'],
+  stakes: ['high stakes', 'stakes'],
   check_raise: ['check raise', 'check-raise', 'checkraise'],
-  fold: ['fold', 'folded', 'laydown', 'lay down'],
+  fold: ['fold', 'folds', 'folded', 'laydown', 'lay down'],
   pot: ['pot', 'the pot'],
   stack: ['stack', 'stacks', 'stacked off'],
   tilt: ['tilt', 'tilted', 'tilting'],
@@ -115,7 +120,8 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   high_stakes: ['high stakes', 'nosebleed', 'nosebleeds'],
   cash_game: ['cash game', 'cash games'],
   tournament: ['tournament', 'tournaments', 'mtt', 'tourney', 'wsop', 'world series'],
-  guarantee: ['guarantee', 'guaranteed'],
+  guarantee: ['guarantee', 'guaranteed', 'gtd'],
+  prize: ['top prize', '1st-place prize', 'first-place prize'],
   plo: ['plo', 'omaha', 'pot limit omaha'],
   short_deck: ['short deck', 'six plus', '6+'],
   study: ['study', 'studying', 'review', 'leak', 'leaks'],
@@ -664,7 +670,13 @@ export function briefForAsset(input: {
     else if (CHANNEL_SPORT.some(([re]) => re.test(haystack))) domain = 'sports';
   }
 
-  const pokerConcepts = matchConcepts(title, POKER_CONCEPTS);
+  const pokerConcepts = matchConcepts(title.replace(/(\d)(gtd)\b/gi,'$1 $2'), POKER_CONCEPTS);
+  // The new stakes role serves literal quantified cash-game facts. Do not
+  // open another canned take pool for a vague "high stakes" headline.
+  if (!/\$?\d[\d,]*\s*\/\s*\$?\d[\d,]*/.test(title)) {
+    const stakesIndex = pokerConcepts.indexOf('stakes');
+    if (stakesIndex >= 0) pokerConcepts.splice(stakesIndex, 1);
+  }
   const sportConcepts = matchConcepts(title, SPORT_CONCEPTS);
   // The title can overrule a weak domain hint: a poker source posting about
   // a dunk is still a dunk.

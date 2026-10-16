@@ -85,6 +85,7 @@ describe('turning the engine off stops a run in flight', () => {
 
   it('stops before the next horse when the switch flips off mid-run', async () => {
     m.switches = ['on', 'on', 'on', 'off'];
+    m.publishForHorse.mockResolvedValueOnce({success:true,created:false,type:'poker_video'});
     const r = await run();
     expect(r.status).toBe(200);
     expect(m.publishForHorse).toHaveBeenCalledTimes(2);
@@ -102,11 +103,12 @@ describe('turning the engine off stops a run in flight', () => {
     expect(r.body).toMatchObject({ stopped: 'engine_unreadable', attempted: 1, not_attempted: 3 });
   });
 
-  it('a run with the switch on throughout finishes and syncs style sheets', async () => {
+  it('paces a fully eligible run after two fresh creations and syncs style sheets', async () => {
     m.switches = ['on', 'on', 'on', 'on', 'on'];
     const r = await run();
-    expect(m.publishForHorse).toHaveBeenCalledTimes(4);
-    expect(r.body).toMatchObject({ stopped: null, attempted: 4, posted: 4, not_attempted: 0 });
+    expect(m.publishForHorse).toHaveBeenCalledTimes(2);
+    expect(r.body).toMatchObject({ stopped: null, attempted: 2, posted: 2, not_attempted: 2,
+      publication_budget:{limit:2,created:2,hit:true},cap_hit:false });
     expect(m.syncStyleSheets).toHaveBeenCalledTimes(1);
   });
 });
@@ -128,25 +130,23 @@ describe('each publish names its slot, and skips are counted by reason', () => {
     expect(r.body).toMatchObject({ video_supply_preflight: 'ok' });
   });
 
-  it('passes a shared-proof outage as unknown instead of falling back to per-horse YouTube fanout', async () => {
+  it('halts before any horse after a shared-proof outage rather than hiding it or fanning out', async () => {
     m.switches = ['on', 'on', 'on', 'on', 'on'];
     m.prepareSharedHorseVideoSupply.mockResolvedValue({ status: 'unknown', error: 'shared registry unavailable' });
     const r = await run();
-    expect(r.status).toBe(200);
-    for (const [, opts] of m.publishForHorse.mock.calls) {
-      expect(opts).toMatchObject({ sharedVideoSupplyError: 'shared registry unavailable' });
-      expect(opts.sharedVideoSupply).toBeUndefined();
-    }
-    expect(r.body).toMatchObject({ video_supply_preflight: 'unknown' });
+    expect(r.status).toBe(503);
+    expect(m.publishForHorse).not.toHaveBeenCalled();
+    expect(r.body).toMatchObject({ success:false,video_supply_preflight: 'unknown',unknown:1,
+      halted_on_unknown:true,not_attempted:4,publication_budget:{limit:2,created:0,hit:false} });
   });
 
   it('passes the scheduler slot and counts guard, duplicate and recent skips apart from failures', async () => {
     m.switches = ['on', 'on', 'on', 'on', 'on'];
     const answers = [
-      { success: false, skipped: 'guard_unreadable' },
       { success: false, skipped: 'duplicate_slot', publicationKey: 'fleet:pid-b:slot' },
       { success: false, skipped: 'posted_recently' },
       { success: true, type: 'poker_news' },
+      { success: false, skipped: 'guard_unreadable' },
     ];
     m.publishForHorse.mockImplementation(async (h: { name: string; profile_id: string }) => ({
       horse: h.name,
@@ -210,5 +210,34 @@ describe('each publish names its slot, and skips are counted by reason', () => {
       content_exhausted: 2,
       errors: { 'feed transport failed': 1 },
     });
+  });
+
+  it('continues past early exhaustion to fill two fresh slots, without counting replay',async()=>{
+    m.switches=['on','on','on','on','on'];
+    m.publishForHorse.mockResolvedValueOnce({success:false,skipped:'content_exhausted'})
+      .mockResolvedValueOnce({success:true,created:false,type:'poker_video'});
+    const r=await run();
+    expect(m.publishForHorse).toHaveBeenCalledTimes(4);
+    expect(r.body).toMatchObject({attempted:4,posted:3,publication_budget:{limit:2,created:2,hit:true},not_attempted:0});
+  });
+
+  it('admits no second horse behind an unknown publication acknowledgement',async()=>{
+    m.switches=['on','on','on','on','on'];
+    m.publishForHorse.mockResolvedValueOnce({success:false,outcome:'unknown',error:'acknowledgement lost'});
+    const r=await run();
+    expect(r.status).toBe(503);
+    expect(m.publishForHorse).toHaveBeenCalledTimes(1);
+    expect(r.body).toMatchObject({success:false,attempted:1,unknown:1,halted_on_unknown:true,not_attempted:3,
+      publication_budget:{limit:2,created:0,hit:false}});
+  });
+
+  it('treats an unexpected publisher exception as unknown and never admits the second horse',async()=>{
+    m.switches=['on','on','on','on','on'];
+    m.publishForHorse.mockRejectedValueOnce(new Error('publisher transport interrupted'));
+    const r=await run();
+    expect(r.status).toBe(503);
+    expect(m.publishForHorse).toHaveBeenCalledTimes(1);
+    expect(r.body).toMatchObject({success:false,unknown:1,halted_on_unknown:true,not_attempted:3,
+      publication_budget:{limit:2,created:0,hit:false},errors:{'publisher transport interrupted':1}});
   });
 });
