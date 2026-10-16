@@ -435,6 +435,41 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(db.rpcCalls.find(call=>call.name==='publish_horse_video_reel')?.args).toMatchObject({p_topic:'sports',p_video_url:sports[0]!.source_url});
   });
 
+  it('balances categories after real freshness, not a stale low-concentration raw poker row',async()=>{
+    modes.grounded=false;
+    const make=(id:string,title:string,source:string)=>({id,video_id:id,source_url:`https://www.youtube.com/watch?v=${id}`,
+      source,title,category:source==='NBA'?'highlight':'poker',sport_type:source==='NBA'?'nba':null,oembed_ok:true,duration_seconds:30});
+    const stale=make('AAAAAAAAAAA','Phil Ivey makes a river call','PokerGO');
+    const guarantee=make('BBBBBBBBBBB','Trailblazer Warm-Up $100K GTD','TCH Live');
+    const sports=make('CCCCCCCCCCC','Aaron Gordon’s Fancy Handle Finds Cam Johnson for the Open Three','NBA');
+    freshness.screen.mockImplementation(async(clips:SupplyClip[])=>({status:'ok',clips:clips.filter(c=>c.video_id!==stale.video_id),
+      scanned:clips.length,stale:clips.some(c=>c.video_id===stale.video_id)?1:0,keys:clips.length}));
+    const raw={poker:[stale,guarantee],sports:[sports],recent:[{title:'Lone Star Showdown $50K guarantee',source:'TCH Live',topic:'poker'}]};
+    const result=await publishForHorse(horse(horseId(0)),{skipGuard:true,slot:SLOT,sharedVideoSupply:raw});
+    expect(result).toMatchObject({success:true,type:'sports_video'});
+    expect(db.rpcCalls.find(call=>call.name==='publish_horse_video_reel')?.args).toMatchObject({p_topic:'sports',p_video_url:sports.source_url});
+    // Each short category is screened once; the winning projection reuses
+    // only this same horse's private preflight, never a second ledger scan.
+    expect(freshness.screen).toHaveBeenCalledTimes(2);
+    expect(raw.poker).toEqual([stale,guarantee]);
+    expect(raw.sports).toEqual([sports]);
+  });
+
+  it('does not publish an eligible category behind an unknown alternate freshness read',async()=>{
+    modes.grounded=false;
+    const make=(id:string,source:string,title:string)=>({id,video_id:id,source_url:`https://www.youtube.com/watch?v=${id}`,
+      source,title,category:'highlight',oembed_ok:true,duration_seconds:30});
+    const poker=[make('AAAAAAAAAAA','PokerGO','Phil Ivey makes a river call')];
+    const sports=[make('BBBBBBBBBBB','NBA','Aaron Gordon’s Fancy Handle Finds Cam Johnson for the Open Three')];
+    freshness.screen.mockImplementation(async(clips:SupplyClip[],topic:string)=>topic==='sports'?{status:'unknown',error:'shared ledger unknown'}:
+      {status:'ok',clips,scanned:clips.length,stale:0,keys:1});
+    expect(await publishForHorse(horse(horseId(0)),{skipGuard:true,slot:SLOT,sharedVideoSupply:{poker,sports}}))
+      .toMatchObject({success:false,outcome:'unknown',error:'shared ledger unknown'});
+    expect(db.rpcCalls).toHaveLength(0);
+    expect(voice.writeCaption).not.toHaveBeenCalled();
+    expect(feed.parseURL).not.toHaveBeenCalled();
+  });
+
   it.each([{poker:[],sports:[]},undefined])('does not bypass a failed shared preflight through empty tiers or grounded/news fallback (%j)',async sharedVideoSupply=>{
     const result=await publishForHorse(horse(horseWhereGroundedFirstIs(true)),{skipGuard:true,slot:SLOT,
       sharedVideoSupply,sharedVideoSupplyError:'shared registry unavailable'});

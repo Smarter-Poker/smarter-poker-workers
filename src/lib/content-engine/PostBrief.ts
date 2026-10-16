@@ -167,6 +167,7 @@ const TEAMS: Record<string, Sport> = {
   dolphins: 'nfl', jets: 'nfl', giants: 'nfl', steelers: 'nfl', broncos: 'nfl',
   yankees: 'mlb', dodgers: 'mlb', 'red sox': 'mlb', cubs: 'mlb', mets: 'mlb', braves: 'mlb',
   astros: 'mlb', phillies: 'mlb', padres: 'mlb', orioles: 'mlb', brewers: 'mlb',
+  'white sox': 'mlb', guardians: 'mlb',
 };
 
 /** Channels that tell us the sport without reading the title. */

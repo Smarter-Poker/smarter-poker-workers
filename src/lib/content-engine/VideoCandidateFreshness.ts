@@ -24,7 +24,7 @@ function transientLedgerReadFailure(value: unknown, depth = 0): boolean {
 
 /** The exact deterministic meanings the ordinary six-draft writer can use. */
 export function videoCandidateMeanings(clip: SupplyClip, topic: 'poker' | 'sports', profileId: string): string[] {
-  const brief = briefForAsset({ kind: 'video', title: clip.title, source: clip.source, domainHint: topic, sportHint: clip.category });
+  const brief = briefForAsset({ kind: 'video', title: clip.title, source: clip.source, domainHint: topic, sportHint: clip.sport_type ?? clip.category });
   const style = styleSheetFor(profileId);
   return [...new Set(Array.from({ length: DRAFTS }, (_, index) => composeCaption(brief, style, String(index)))
     .filter(draft => draft.text && draft.relevance >= RELEVANCE_FLOOR && draft.semanticKey)
@@ -32,7 +32,7 @@ export function videoCandidateMeanings(clip: SupplyClip, topic: 'poker' | 'sport
 }
 
 export type VideoFreshnessResult =
-  | { status: 'ok'; clips: SupplyClip[]; scanned: number; stale: number; keys: number }
+  | { status: 'ok'; clips: SupplyClip[]; scanned: number; stale: number; keys: number; ungroundable: number; reused: number }
   | { status: 'unknown'; error: string };
 
 /** Remove stale thoughts BEFORE the six-candidate cap, never weakening reuse. */
@@ -41,9 +41,10 @@ export async function freshVideoCaptionCandidates(
 ): Promise<VideoFreshnessResult> {
   if (clips.length > PLATFORM_CANDIDATE_LIMIT) return { status: 'unknown', error: 'Video freshness snapshot exceeds bounded platform supply' };
   const candidates = clips.map(clip => ({ clip, meanings: videoCandidateMeanings(clip, topic, profileId) }));
+  const ungroundable = candidates.filter(candidate=>candidate.meanings.length===0).length;
   const keys = [...new Set(candidates.flatMap(candidate => candidate.meanings))];
   if (keys.length > VIDEO_FRESHNESS_KEY_LIMIT) return { status: 'unknown', error: 'Video freshness meaning set exceeds bounded ledger scan' };
-  if (!keys.length) return { status: 'ok', clips: [], scanned: clips.length, stale: clips.length, keys: 0 };
+  if (!keys.length) return { status: 'ok', clips: [], scanned: clips.length, stale: clips.length, keys: 0, ungroundable, reused:0 };
   const used = new Set<string>();
   const globalSince = new Date(Date.now() - PHRASE_GLOBAL_HOURS * 3_600_000).toISOString();
   const horseSince = new Date(Date.now() - PHRASE_HORSE_DAYS * 86_400_000).toISOString();
@@ -89,7 +90,8 @@ export async function freshVideoCaptionCandidates(
     }
     await Promise.all(queries);
     const fresh = candidates.filter(candidate => candidate.meanings.some(key => !used.has(key))).map(candidate => candidate.clip);
-    return { status: 'ok', clips: fresh, scanned: clips.length, stale: clips.length - fresh.length, keys: keys.length };
+    return { status: 'ok', clips: fresh, scanned: clips.length, stale: clips.length - fresh.length, keys: keys.length,
+      ungroundable,reused:clips.length-fresh.length-ungroundable };
   } catch (error) {
     return { status: 'unknown', error: `Video freshness ledger unavailable: ${error instanceof Error ? error.message : String(error)}` };
   }

@@ -367,19 +367,61 @@ export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
 /** Bound live verifier work in the ordinary mixed publisher. */
 export const MAX_LIVE_VIDEO_CANDIDATES = 3;
 interface VideoCaptionAttemptBudget { remaining: number }
+// Only internally prepared immutable tier objects may reuse a preflight;
+// caller-supplied metadata cannot bypass it, and another horse cannot borrow it.
+const videoPreflightOwners = new WeakMap<SharedHorseVideoSupply,string>();
+
+async function freshSharedVideoRows(rows: readonly SupplyClip[], clipType: HorseVideoTopic, profileId: string): Promise<
+  {status:'ok';clips:SupplyClip[];emptyReason?:'asset'|'meaning'} | {status:'unknown';error:string}
+> {
+  const failuresBefore=ledgerReadFailureTotal();
+  const keys=rows.map(row=>assetKeyFor(row.source_url)).filter(Boolean) as string[];
+  const usable=await filterUnusedAssets(keys,profileId);
+  if(ledgerReadFailureTotal()>failuresBefore)return {status:'unknown',error:`Shared ${clipType} asset ledger unavailable`};
+  const assetFresh=rows.filter(row=>{
+    const key=assetKeyFor(row.source_url);
+    return !!key&&usable.has(key)&&isCaptionableSharedVideoClip(row,clipType);
+  });
+  bumpSupplyStat(`${clipType}_asset_fresh_candidates`,assetFresh.length);
+  bumpSupplyStat(`${clipType}_asset_reused_candidates`,rows.length-assetFresh.length);
+  if(!assetFresh.length)return {status:'ok',clips:[],emptyReason:'asset'};
+  const fresh=await freshVideoCaptionCandidates(assetFresh,clipType,profileId);
+  if(fresh.status==='unknown')return fresh;
+  bumpSupplyStat(`${clipType}_caption_preflight_scanned`,fresh.scanned);
+  bumpSupplyStat(`${clipType}_caption_preflight_stale`,fresh.stale);
+  bumpSupplyStat(`${clipType}_caption_preflight_ungroundable`,fresh.ungroundable??0);
+  bumpSupplyStat(`${clipType}_caption_preflight_reused_meaning`,fresh.reused??fresh.stale);
+  bumpSupplyStat(`${clipType}_usable_meaning_fresh_candidates`,fresh.clips.length);
+  if(fresh.clips.length<4)bumpSupplyStat(`${clipType}_low_usable_supply_heads_up`);
+  return {status:'ok',clips:fresh.clips,...(!fresh.clips.length?{emptyReason:'meaning' as const}:{})};
+}
 
 /** Keep both approved categories' shorts ahead of any unknown/long format. */
-function sharedVideoSupplyPasses(
-  kinds: readonly HorseVideoTopic[], supply?: SharedHorseVideoSupply,
-): Array<{kind: HorseVideoTopic; supply: SharedHorseVideoSupply | undefined}> {
-  if (!supply) return kinds.map(kind => ({kind, supply}));
+async function sharedVideoSupplyPasses(
+  kinds: readonly HorseVideoTopic[], supply: SharedHorseVideoSupply | undefined, profileId: string,
+): Promise<{status:'ok';passes:Array<{kind: HorseVideoTopic; supply: SharedHorseVideoSupply | undefined}>} | {status:'unknown';error:string}> {
+  if (!supply) return {status:'ok',passes:kinds.map(kind => ({kind, supply}))};
   const short: SharedHorseVideoSupply = {poker: [], sports: [], recent:supply.recent};
   const other: SharedHorseVideoSupply = {poker: [], sports: [], recent:supply.recent};
   for (const kind of kinds) for (const clip of supply[kind]) {
     (clipFormatPriority(clip) <= 1 ? short : other)[kind].push(clip);
   }
-  return [short, other].flatMap(tier => balancedVideoTypes(kinds, tier, supply.recent ?? [])
-    .map(kind => ({kind, supply: tier})));
+  const passes:Array<{kind:HorseVideoTopic;supply:SharedHorseVideoSupply}>=[];
+  // Preserve the original maximum four category/format scans and each120-key
+  // ceiling. Combining all formats can exceed that safe ledger budget.
+  for(const tier of [short,other]) {
+    for(const kind of kinds) {
+      if(!tier[kind].length||!await postModeEnabled(`${kind}_video`)){tier[kind]=[];continue;}
+      const fresh=await freshSharedVideoRows(tier[kind],kind,profileId);
+      if(fresh.status==='unknown')return fresh;
+      tier[kind]=fresh.clips;
+    }
+    videoPreflightOwners.set(tier,profileId);
+    // Raw stale low-concentration inventory must not beat an actual usable
+    // alternate category. Rank only the qualified fresh arrays above.
+    passes.push(...balancedVideoTypes(kinds,tier,supply.recent??[]).map(kind=>({kind,supply:tier})));
+  }
+  return {status:'ok',passes};
 }
 
 /** Randomised without replacement, so one bad/stale clip cannot monopolise an attempt. */
@@ -397,7 +439,7 @@ export function takeRandomCandidates<T extends { source_url: string; duration_se
 
 /** Within a format tier, literal facts get a chance before generic takes. */
 export function videoCaptionCandidatePriority(clip: SupplyClip, topic: HorseVideoTopic): number {
-  const fact = captionFact(briefForAsset({kind:'video',title:clip.title,source:clip.source,domainHint:topic,sportHint:clip.category}));
+  const fact = captionFact(briefForAsset({kind:'video',title:clip.title,source:clip.source,domainHint:topic,sportHint:clip.sport_type ?? clip.category}));
   return clipFormatPriority(clip) * 2 + (fact ? 0 : 1);
 }
 
@@ -509,7 +551,7 @@ export function isCaptionableSharedVideoClip(
     title: clip.title,
     source: clip.source,
     domainHint: topic,
-    sportHint: clip.category,
+    sportHint: clip.sport_type ?? clip.category,
   });
   // The real composer also accepts strict source-bound facts even when no
   // older generic take pool knows this holding/action. Verification alone is
@@ -759,53 +801,17 @@ export async function publishVideoClip(
       };
     }
 
-    const ledgerFailuresBefore = ledgerReadFailureTotal();
     const sourceNames = [...new Set(verifiedCaptionable.map((candidate) => candidate.source).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
     const mine = new Set(sliceForHorse(sourceNames, horse.profile_id));
-    const freshFrom = async (rows: SupplyClip[]) => {
-      const keys = rows.map((candidate) => assetKeyFor(candidate.source_url)).filter(Boolean) as string[];
-      const usable = await filterUnusedAssets(keys, horse.profile_id);
-      return rows.filter((candidate) => {
-        const key = assetKeyFor(candidate.source_url);
-        return !!key
-          && usable.has(key)
-          && isCaptionableSharedVideoClip(candidate, clipType);
-      });
-    };
-    // A fresh asset is not necessarily a fresh thought. Screen the complete
-    // bounded verified snapshot before taking six publication candidates.
-    let fresh = await freshFrom(verifiedCaptionable);
-    bumpSupplyStat(`${clipType}_asset_fresh_candidates`, fresh.length);
-    bumpSupplyStat(`${clipType}_asset_reused_candidates`, verifiedCaptionable.length-fresh.length);
+    const qualified=videoPreflightOwners.get(sharedSupply)===horse.profile_id
+      ? {status:'ok' as const,clips:verifiedCaptionable,emptyReason:undefined}
+      : await freshSharedVideoRows(verifiedCaptionable,clipType,horse.profile_id);
+    if(qualified.status==='unknown')return {...base,success:false,outcome:'unknown',publicationKey,error:qualified.error};
+    const fresh=qualified.clips;
     if (!fresh.length) {
-      if (ledgerReadFailureTotal() > ledgerFailuresBefore) {
-        return {
-          ...base,
-          success: false,
-          outcome: 'unknown',
-          error: `Shared ${clipType} asset ledger unavailable`,
-        };
-      }
-      return {
-        ...base,
-        success: false,
-        skipped: 'supply_exhausted', publicationKey,
-        error: `All ${clipType} verified clips already posted`,
-      };
-    }
-    const captionFresh = await freshVideoCaptionCandidates(fresh, clipType, horse.profile_id);
-    if (captionFresh.status === 'unknown') {
-      return { ...base, success: false, outcome: 'unknown', publicationKey, error: captionFresh.error };
-    }
-    fresh = captionFresh.clips;
-    bumpSupplyStat(`${clipType}_caption_preflight_scanned`, captionFresh.scanned);
-    bumpSupplyStat(`${clipType}_caption_preflight_stale`, captionFresh.stale);
-    bumpSupplyStat(`${clipType}_usable_meaning_fresh_candidates`, fresh.length);
-    if (fresh.length < 4) bumpSupplyStat(`${clipType}_low_usable_supply_heads_up`);
-    if (!fresh.length) {
-      return { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
-        error: `No fresh caption meaning in bounded ${clipType} supply (scanned=${captionFresh.scanned}, keys=${captionFresh.keys})` };
+      return { ...base, success: false, skipped:qualified.emptyReason==='asset'?'supply_exhausted':'caption_exhausted', publicationKey,
+        error:qualified.emptyReason==='asset'?`All ${clipType} verified clips already posted`:`No fresh caption meaning in bounded ${clipType} supply` };
     }
     // Randomize within each format/factual-context tier. A rotation across the entire
     // pool discards the short/excerpt preference and can lead with a full
@@ -1180,7 +1186,9 @@ export async function publishVideoForHorse(
   const modelAttempt: ModelAttemptContext = {};
   const budgets = {poker:{remaining:MAX_VIDEO_CAPTION_CANDIDATES},sports:{remaining:MAX_VIDEO_CAPTION_CANDIDATES}};
   const disabled = new Set<HorseVideoTopic>();
-  const passes = sharedVideoSupplyPasses(videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved), opts.sharedSupply);
+  const prepared = await sharedVideoSupplyPasses(videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved), opts.sharedSupply,horse.profile_id);
+  if(prepared.status==='unknown')return {...base,success:false,outcome:'unknown',publicationKey,error:prepared.error};
+  const passes=prepared.passes;
   if (!passes.length) return { ...base, success:false, skipped:'supply_exhausted', publicationKey,
     error:approved.map(kind => `${kind}_video: No fresh public verified caption-ready ${kind} clips in supply`).join(' | ') };
   for (const {kind, supply} of passes) {
@@ -1591,7 +1599,9 @@ export async function publishForHorse(
 
   const videoBudgets = {poker:{remaining:MAX_VIDEO_CAPTION_CANDIDATES},sports:{remaining:MAX_VIDEO_CAPTION_CANDIDATES}};
   const disabledVideoKinds = new Set<HorseVideoTopic>();
-  for (const {kind, supply} of sharedVideoSupplyPasses([preferred, other], opts.sharedVideoSupply)) {
+  const preparedVideoPasses=await sharedVideoSupplyPasses([preferred,other],opts.sharedVideoSupply,horse.profile_id);
+  if(preparedVideoPasses.status==='unknown')return {...base,success:false,outcome:'unknown',publicationKey,error:preparedVideoPasses.error};
+  for (const {kind, supply} of preparedVideoPasses.passes) {
     if (disabledVideoKinds.has(kind)) continue;
     const result = await publishVideoClip(
       horse,

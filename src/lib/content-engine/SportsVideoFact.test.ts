@@ -1,7 +1,80 @@
 import { describe, expect, it } from 'vitest';
 import { briefForAsset } from './PostBrief.js';
 import { sportsVideoFact } from './SportsVideoFact.js';
+import { captionFact } from './CaptionVoice.js';
+import { composeCaption, RELEVANCE_FLOOR } from './Composer.js';
+import { styleSheetFor } from './StyleSheet.js';
 const fact=(title:string)=>sportsVideoFact(briefForAsset({kind:'video',domainHint:'sports',source:'MLB',title}));
+
+// Actual verified/global30day-unused titles read October16 22:13UTC. IDs
+// retain fixture provenance only; no identity below is keyed by video ID.
+const REAL_CONTEXTS = [
+  ['BiRzubR8t1k','MLB','Dodgers vs. Brewers NLCS Game 2 Shorts Recap','baseball_matchup_context'],
+  ['3iWikIagV4c','MLB','Dodgers vs. Braves NLDS Game 4 Shorts Recap','baseball_matchup_context'],
+  ['RUE9f5tAKK0','MLB','Dodgers vs. Braves NLDS Game 3 Shorts Recap','baseball_matchup_context'],
+  ['aryR-pcFb9w','MLB','White Sox vs. Guardians ALDS Game 2 Shorts Recap','baseball_matchup_context'],
+  ['u8GhCndnMhk','MLB','Padres vs. Brewers NLDS Game 2 Shorts Recap','baseball_matchup_context'],
+  ['xMdOeW6IdQE','NBA','Aaron Gordon’s Fancy Handle Finds Cam Johnson for the Open Three','basketball_passing_context'],
+  ['FlyWwBI3dD0','NBA','Jamal Murray goes behind the back to set up the Jokić pass to Aaron Gordon for the corner three 🔥','basketball_passing_context'],
+  ['NxZuh01o-o0','House of Highlights','WHAT A MOMENT. 🤯 USWNT GOAL TO TIE SPAIN 🇺🇸🔥','soccer_equalizer_context'],
+] as const;
+
+describe('actual fresh video contexts without invented results',()=>{
+  it.each(REAL_CONTEXTS)('writes a genuinely bound subject for %s',(_id,source,title,action)=>{
+    const brief=briefForAsset({kind:'video',domainHint:'sports',source,title});
+    const bound=captionFact(brief);
+    expect(bound).toMatchObject({action});
+    expect(bound?.subject).not.toMatch(/\b(?:wins?|winner|scored|made|assist|final score)\b/i);
+    const composed=composeCaption(brief,styleSheetFor('1cdb67d7-27af-4709-817c-9270bd915249'));
+    expect(composed.text).not.toBe('');
+    expect(composed.relevance).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+    expect(composed.semanticKey).toContain(`:${action}:`);
+    expect(composed.semanticKey).not.toContain(_id);
+  });
+  it('canonicalizes equivalent matchup wording/order and aliases, not arbitrary title words',()=>{
+    const first=fact('Dodgers vs. Braves NLDS Game 3 Shorts Recap');
+    expect(first?.identity).toBe('baseball:matchup:braves:dodgers:series:nlds:game:3');
+    expect(fact('Atlanta Braves versus Los Angeles Dodgers NLDS Game 3 Recap')?.identity).toBe(first?.identity);
+    expect(fact('Dodgers vs. Braves NLDS Game 4 Shorts Recap')?.identity).not.toBe(first?.identity);
+    expect(first?.subject).toBe('the Braves versus Dodgers NLDS Game 3 matchup');
+  });
+  it('describes only passing and the open look, not a made shot or credited assist',()=>{
+    const first=sportsVideoFact(briefForAsset({kind:'video',domainHint:'sports',source:'NBA',title:REAL_CONTEXTS[5][2]}));
+    expect(first?.subject).toBe('Aaron Gordon finding Cam Johnson for an open three-point look');
+    const chain=sportsVideoFact(briefForAsset({kind:'video',domainHint:'sports',source:'NBA',title:REAL_CONTEXTS[6][2]}));
+    expect(chain?.identity).toBe('basketball:pass_chain:jamal murray:jokic:aaron gordon:look:corner three');
+    expect(chain?.subject).not.toMatch(/made|assist|win|scored/i);
+  });
+  it('retains the equalizer without inventing a final score or winner',()=>{
+    // This actual pool row carries nba/dunk metadata from a mixed channel.
+    // Retain that provenance hint without overriding the literal soccer fact.
+    const b=briefForAsset({kind:'video',domainHint:'sports',source:'House of Highlights',title:REAL_CONTEXTS[7][2],sportHint:'nba'});
+    expect(sportsVideoFact(b)).toEqual({person:'',action:'soccer_equalizer_context',identity:'soccer:team_goal:uswnt:opponent:spain:effect:equalizer',subject:'the USWNT equalizing goal against Spain'});
+    const composed=composeCaption(b,styleSheetFor('1cdb67d7-27af-4709-817c-9270bd915249'));
+    expect(composed.text).toMatch(/USWNT|Spain/i);
+    expect(composed.text).not.toMatch(/basket|dunk|three.pointer|rebound|assist|final score/i);
+    expect(composed.relevance).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+  });
+  it.each([
+    ['MLB','Dodgers vs. Unknown Team NLDS Game 3 Shorts Recap'],
+    ['MLB','Dodgers vs. Dodgers NLDS Game 3 Shorts Recap'],
+    ['MLB','Dodgers vs. Braves NLDS Game 6 Shorts Recap'],
+    ['MLB','Dodgers vs. Braves NLCS Game 8 Shorts Recap'],
+    ['MLB','Dodgers vs. Braves World Series Game 0 Shorts Recap'],
+    ['MLB','Dodgers might beat Braves NLDS Game 3 Shorts Recap'],
+    ['MLB','Dodgers vs. Braves NLDS Game 3 Shorts Recap and Dodgers win'],
+    ['MLB','Dodgers vs. Braves NLDS Game 3 Shorts Recap and Yankees vs. Mets NLCS Game 2 Recap'],
+    ['Unregistered source','Dodgers vs. Braves NLDS Game 3 Shorts Recap'],
+    ['NBA','Aaron Gordon did not find Cam Johnson for the Open Three'],
+    ['NBA','Aaron Gordon could find Cam Johnson for the Open Three'],
+    ['NBA','Aaron Gordon’s Fancy Handle Finds Unknown Person for the Open Three'],
+    ['NBA','Aaron Gordon’s Fancy Handle Finds Cam Johnson for the Open Three and he makes it'],
+    ['NBA','Aaron Gordon goes behind the back to set up the Jokić pass to Jamal Murray for the corner three'],
+    ['House of Highlights','USWNT GOAL TO TIE SPAIN AND WIN THE GAME'],
+    ['House of Highlights','USWNT GOAL TO TIE FRANCE'],
+    ['House of Highlights','USWNT might score a goal to tie Spain'],
+  ])('refuses unsupported extra context %s: %s',(source,title)=>expect(sportsVideoFact(briefForAsset({kind:'video',domainHint:'sports',source,title}))).toBeNull());
+});
 
 describe('source-bound typed sports quantities',()=>{
   it('preserves the actual solo homer, deficit and inning without inventing the final result',()=>{

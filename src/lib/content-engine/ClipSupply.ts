@@ -35,6 +35,8 @@ export interface SupplyClip {
   source: string;
   title: string;
   category: string;
+  /** Original sports ingestion field; category may only say "highlight". */
+  sport_type?: string | null;
   /** Cached oEmbed answer; null when never asked. */
   oembed_ok: boolean | null;
   /** Actual associated library duration, null when unavailable or invalid. */
@@ -228,7 +230,7 @@ export async function candidateClips(
   const select =
     domain === 'poker'
       ? 'id, video_id, source_url, source, title, category, oembed_ok'
-      : 'id, video_id, source_url, source, title, category';
+      : 'id, video_id, source_url, source, title, category, sport_type';
   // poker_clips knows when YouTube published the video; sports_clips only
   // knows when we scraped it. Ordering by a column a table does not have is
   // a 400, so each domain is ordered by the freshness it actually records.
@@ -283,7 +285,7 @@ export async function platformCandidateClips(
   const table = domain === 'poker' ? 'poker_clips' : 'sports_clips';
   const select = domain === 'poker'
     ? 'id, video_id, source_url, source, title, category, oembed_ok'
-    : 'id, video_id, source_url, source, title, category';
+    : 'id, video_id, source_url, source, title, category, sport_type';
   const freshness = domain === 'poker' ? 'published_at' : 'created_at';
 
   let query = getSupabase()
@@ -312,6 +314,7 @@ function normalise(rows: unknown, domain: 'poker' | 'sports'): SupplyClip[] {
     source: String(r.source ?? ''),
     title: String(r.title ?? ''),
     category: String(r.category ?? ''),
+    ...(domain==='sports'?{sport_type:typeof r.sport_type==='string'?r.sport_type:null}:{}),
     oembed_ok: domain === 'poker' ? ((r.oembed_ok as boolean | null) ?? null) : null,
   }));
 }

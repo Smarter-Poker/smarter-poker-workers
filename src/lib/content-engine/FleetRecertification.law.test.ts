@@ -218,7 +218,9 @@ describe('fleet duplicate protection lives in the database', () => {
     expect(isolatedBody).toMatch(/const publicationKey = fleetPublicationKey\(horse\.profile_id, slot\);/);
     // Tiered selection still derives every pass from the caller's verified
     // snapshot and carries the unchanged slot key into each atomic attempt.
-    expect(isolatedBody).toMatch(/sharedVideoSupplyPasses\(videoKindOrder\([\s\S]*?opts\.sharedSupply\)/);
+    expect(isolatedBody).toMatch(/await sharedVideoSupplyPasses\(videoKindOrder\([\s\S]*?opts\.sharedSupply,\s*horse\.profile_id\)/);
+    expect(isolatedBody).toMatch(/if\s*\(prepared\.status\s*===\s*'unknown'\)\s*return\s*\{[^}]*outcome:\s*'unknown',\s*publicationKey/);
+    expect(isolatedBody).toMatch(/const passes\s*=\s*prepared\.passes/);
     expect(isolatedBody).toMatch(/for \(const \{kind, supply\} of passes\)/);
     expect(isolatedBody).toMatch(/'horse-video-reels',\s+supply,\s+publicationKey,/);
   });

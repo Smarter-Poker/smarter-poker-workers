@@ -35,6 +35,10 @@ export function captionQuality(text: string, options: CaptionQualityOptions = {}
     // source phrase only once. Permit a necessary two-way distinction,
     // refuse the observed circular three-or-more rendering.
     if (/\bguarantee\b/.test(subject) && tokens.filter(token => token === 'guarantee').length >= 3) reasons.push('circular_event_focus');
+    // A published prize-pool minimum has terms, not an already realized
+    // outcome. Do not apply this restriction to actual hand/sports results.
+    // Remove the source itself first: an event name can contain "Result".
+    if (/\bguarantee\b/.test(subject) && /\b(?:outcome|result)\b/.test(normalized.split(subject).join(' '))) reasons.push('guarantee_realized_result');
   }
   const phrases = new Set<string>();
   for (let i = 0; i + 5 <= tokens.length; i++) {

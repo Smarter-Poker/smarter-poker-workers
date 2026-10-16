@@ -3,11 +3,26 @@ import { captionFact, captionHolding, captionVoiceProfile, subjectCaption } from
 import { briefForAsset } from './PostBrief.js';
 import { composeCaption, hasSpecificTake } from './Composer.js';
 import { styleId, styleSheetFor } from './StyleSheet.js';
+import {captionQuality} from './CaptionQuality.js';
 
 const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => briefForAsset({kind:'video', title, domainHint, source:domainHint==='poker'?'PokerGO':'NBA'});
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('never frames an announced guarantee as a realized result in any syntax or cadence', () => {
+    const b = briefForAsset({kind:'video', title:'Trailblazer Warm-Up $30K GTD', source:'PokerGO', domainHint:'poker'});
+    const profiles = [0,1,2].map(cadence => ids.map(styleSheetFor).find(style => captionVoiceProfile(style).cadence === cadence)!);
+    for (const profile of profiles) for (const length of ['medium','short','terse'] as const) {
+      const outputs = Array.from({length:12},(_,captionSyntax) => subjectCaption(b,{...profile,length,captionSyntax})!);
+      for (const out of outputs) {
+        expect(out.text).not.toMatch(/\b(?:outcome|result)\b/i);
+        expect(out.text.toLowerCase().split(out.subject.toLowerCase())).toHaveLength(2);
+        expect(captionQuality(out.text,{subject:out.subject}).pass).toBe(true);
+        expect(out.semanticKey).toBe('meaning:subject:event trailblazer warm up guarantee 30000 unit dollars:news_guarantee:guarantee_terms');
+      }
+      expect(new Set(outputs.map(out=>out.text)).size).toBe(12);
+    }
+  });
   it('does not circle back to the event noun in compound guarantee questions', () => {
     const b = briefForAsset({kind:'video', title:'Trailblazer Warm-Up $100K GTD', source:'PokerGO', domainHint:'poker'});
     for (const id of ['56315bf9-8a2b-4625-9e53-c7fe4bde9a8c','00000000-0000-4000-8000-000000000004']) {
