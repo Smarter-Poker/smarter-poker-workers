@@ -44,6 +44,7 @@ import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse, type ModelAttemptContext } from './VoiceWriter.js';
 import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
 import { hasSpecificTake } from './Composer.js';
+import { captionFact } from './CaptionVoice.js';
 import {
   candidateClips,
   clipFormatPriority,
@@ -353,16 +354,22 @@ export const MAX_VIDEO_CAPTION_CANDIDATES = 6;
 export const MAX_LIVE_VIDEO_CANDIDATES = 3;
 
 /** Randomised without replacement, so one bad/stale clip cannot monopolise an attempt. */
-export function takeRandomCandidates<T extends { source_url: string; duration_seconds?: number | null }>(rows: readonly T[], limit: number): T[] {
+export function takeRandomCandidates<T extends { source_url: string; duration_seconds?: number | null }>(rows: readonly T[], limit: number, priorityOf: (row: T) => number = clipFormatPriority): T[] {
   const remaining = [...rows];
   const selected: T[] = [];
   while (selected.length < limit && remaining.length > 0) {
-    const priority = Math.min(...remaining.map(clipFormatPriority));
-    const eligible = remaining.map((row,index)=>({row,index})).filter(({row})=>clipFormatPriority(row)===priority);
+    const priority = Math.min(...remaining.map(priorityOf));
+    const eligible = remaining.map((row,index)=>({row,index})).filter(({row})=>priorityOf(row)===priority);
     const index = eligible[Math.floor(Math.random() * eligible.length)]!.index;
     selected.push(remaining.splice(index, 1)[0]!);
   }
   return selected;
+}
+
+/** Within a format tier, literal facts get a chance before generic takes. */
+export function videoCaptionCandidatePriority(clip: SupplyClip, topic: HorseVideoTopic): number {
+  const fact = captionFact(briefForAsset({kind:'video',title:clip.title,source:clip.source,domainHint:topic,sportHint:clip.category}));
+  return clipFormatPriority(clip) * 2 + (fact ? 0 : 1);
 }
 
 /**
@@ -718,9 +725,11 @@ export async function publishVideoClip(
       });
     };
     let fresh = preferred.length ? await freshFrom(preferred) : [];
-    if (!fresh.some(clip=>clipFormatPriority(clip)<=1) && preferred.length !== verifiedCaptionable.length) {
+    const priorityOf = (clip: SupplyClip) => videoCaptionCandidatePriority(clip, clipType);
+    if ((!fresh.some(clip=>clipFormatPriority(clip)<=1) || !fresh.some(clip=>priorityOf(clip)===0)) && preferred.length !== verifiedCaptionable.length) {
       const wider = await freshFrom(verifiedCaptionable);
-      if (!fresh.length || wider.some(clip=>clipFormatPriority(clip)<=1)) {
+      if (!fresh.length || wider.some(clip=>clipFormatPriority(clip)<=1) && !fresh.some(clip=>clipFormatPriority(clip)<=1)
+        || wider.some(clip=>priorityOf(clip)===0) && !fresh.some(clip=>priorityOf(clip)===0)) {
         fresh = wider;
         bumpSupplyStat(`${clipType}_widened_to_verified_platform`);
       }
@@ -741,10 +750,10 @@ export async function publishVideoClip(
         error: `All ${clipType} verified clips already posted`,
       };
     }
-    // Randomize only within each format tier. A rotation across the entire
+    // Randomize within each format/factual-context tier. A rotation across the entire
     // pool discards the short/excerpt preference and can lead with a full
     // tournament broadcast while a qualified short is still available.
-    captionCandidates = takeRandomCandidates(fresh,MAX_VIDEO_CAPTION_CANDIDATES);
+    captionCandidates = takeRandomCandidates(fresh,MAX_VIDEO_CAPTION_CANDIDATES,priorityOf);
     bumpSupplyStat(`${clipType}_shared_verified_selected`);
   } else if (clipType === 'poker') {
     // Phase 4: poker draws from `poker_clips` - the horse's own slice of the
