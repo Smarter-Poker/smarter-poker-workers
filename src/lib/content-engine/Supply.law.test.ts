@@ -34,6 +34,13 @@ import { styleSheetFor } from './StyleSheet.js';
 import { fleetHash } from './FleetScheduler.js';
 
 describe('known short excerpts precede full streams without invented duration', () => {
+  it('retains authoritative sport_type independently from a generic highlight category',async()=>{
+    clipDb.libraryError=false;clipDb.durations=[];
+    clipDb.clips=[{id:'sports1',video_id:'AAAAAAAAAAA',source_url:'https://youtube.com/shorts/AAAAAAAAAAA',
+      source:'NBA',title:'A real source title',category:'highlight',sport_type:'nba'}];
+    const result=await platformCandidateClips('sports');
+    expect(result).toMatchObject({status:'ok',clips:[{category:'highlight',sport_type:'nba'}]});
+  });
   const clip = (id: string, url = `https://www.youtube.com/watch?v=${id}`) => ({
     id, video_id: id, source_url: url, source: 'Qualified source', title: 'Phil Ivey makes a river call', category: 'poker', oembed_ok: true,
   });

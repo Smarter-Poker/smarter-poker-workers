@@ -56,7 +56,7 @@ export function videoFeedConcentration(clip: SupplyClip, topic: 'poker' | 'sport
 
 /** Format tier stays authoritative; diverse grounded choices beat repeated facts within it. */
 export function balancedVideoPriority(clip: SupplyClip, topic: 'poker' | 'sports', recent: readonly RecentVideoContext[], preferredSource: boolean, profileId?: string): number {
-  const brief = briefForAsset({kind:'video', title:clip.title, source:clip.source, domainHint:topic, sportHint:clip.category});
+  const brief = briefForAsset({kind:'video', title:clip.title, source:clip.source, domainHint:topic, sportHint:clip.sport_type ?? clip.category});
   const draft = profileId ? composeCaption(brief, styleSheetFor(profileId), '0').text : '';
   const fact = captionFact(brief);
   const shapePenalty = draft ? captionConvergencePenalty(draft, recent.map(item=>item.caption ?? ''), {subject:fact?.subject}) : 0;

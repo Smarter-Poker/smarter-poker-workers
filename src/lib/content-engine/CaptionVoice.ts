@@ -16,7 +16,7 @@ import {sportsVideoFact} from './SportsVideoFact.js';
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context';
+  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context';
   subject: string;
 }
 
@@ -93,6 +93,15 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  baseball_matchup_context: [
+    {key:'game_sequence',variants:s=>[`Which innings are worth examining in ${s}?`,`I'd follow the inning-by-inning sequence in ${s}.`,`What changes across the innings in ${s}?`]},
+  ],
+  basketball_passing_context: [
+    {key:'passing_movement',variants:s=>[`Which movement creates the opening in ${s}?`,`I'd follow the ball movement in ${s}.`,`How does the passing sequence develop in ${s}?`]},
+  ],
+  soccer_equalizer_context: [
+    {key:'equalizer_buildup',variants:s=>[`What creates the opening for ${s}?`,`I'd follow the buildup to ${s}.`,`Which movement leads to ${s}?`]},
+  ],
   baseball_home_run_context: [
     {key:'at_bat_context',variants:s=>[`What is the at-bat context for ${s}?`,`I'd examine the pitch sequence around ${s}.`,`What leads up to ${s}?`]},
   ],
@@ -164,6 +173,9 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'baseball_matchup_context:game_sequence': ['the inning-by-inning sequence','the decisions across the innings','the course of the game','the inning context'],
+  'basketball_passing_context:passing_movement': ['the ball movement','the passing sequence','the off-ball movement','the opening for the pass'],
+  'soccer_equalizer_context:equalizer_buildup': ['the buildup to the goal','the movement before the finish','the opening for the shot','the play before the finish'],
   'baseball_home_run_context:at_bat_context': ['the pitch sequence','the count before the swing','the at-bat context','the pitches leading to the swing'],
   'baseball_close_context:closing_context': ['the final-inning sequence','the closing situation','the final-inning context','the sequence leading to the final out'],
   'soccer_goal_total_context:season_context': ['the chances behind the goal total','the scoring opportunities across the season','the context of the goal total','the chances rather than just the total'],
@@ -205,7 +217,7 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 6,
+    version: 7,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
@@ -306,7 +318,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `Hard to judge ${fact.subject} without ${focus}`,
     `${intent} ${focus} when considering ${fact.subject}`,
     `For ${aJudgement} ${relation} ${fact.subject}, put ${focus} first`,
-    `I'd separate the outcome of ${fact.subject} from ${focus}`,
+    fact.action === 'news_guarantee' ? `For ${fact.subject}, I'd want to understand ${focus}` : `I'd separate the outcome of ${fact.subject} from ${focus}`,
     `What would ${focus} add to ${aJudgement} ${relation} ${fact.subject}?`,
     `${preface}, ${continuingIntent} ${focus}`,
     `${aJudgement.charAt(0).toUpperCase() + aJudgement.slice(1)} ${relation} ${fact.subject} needs context: ${focus}`,
@@ -320,7 +332,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `My read on ${fact.subject} would depend on ${focus}`,
     `${fact.subject} is a question about ${focus} for me`,
     `For me, ${focus} comes before a verdict on ${fact.subject}`,
-    `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
+    fact.action === 'news_guarantee' ? `My question about ${fact.subject} concerns ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
     `Anyone looking at ${focus} when assessing ${fact.subject}?`,
     `${fact.subject}: ${continuingIntent} ${focus}`,
     `A little context for ${fact.subject} first: ${focus}`,
@@ -334,7 +346,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `${fact.subject} needs to be considered alongside ${focus}`,
     `With ${fact.subject}, my focus would be ${focus}`,
     `Context before conclusions on ${fact.subject}: ${focus}`,
-    `Separate the outcome from the analysis of ${fact.subject}: consider ${focus}`,
+    fact.action === 'news_guarantee' ? `An assessment of ${fact.subject} should account for ${focus}` : `Separate the outcome from the analysis of ${fact.subject}: consider ${focus}`,
     `What would a closer look at ${focus} change about a read on ${fact.subject}?`,
     `Put ${focus} at the centre of the discussion of ${fact.subject}`,
     `The context I'd ask for on ${fact.subject} is ${focus}`,
@@ -382,7 +394,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `For ${fact.subject}, the context is ${focus}`,
     `${focus}: the question behind ${fact.subject}`,
     `A closer look at ${fact.subject}: ${focus}`,
-    `${fact.subject}, beyond the result: ${focus}`,
+    fact.action === 'news_guarantee' ? `${fact.subject}, with attention to ${focus}` : `${fact.subject}, beyond the result: ${focus}`,
   ];
   if (style.length === 'terse' || style.length === 'short') {
     text = [compact, compactConversational, compactAnalytical][plan.cadence]![style.captionSyntax % compact.length]!;
@@ -397,7 +409,8 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
             : fact.action === 'all_in_context' ? 'that all-in' : fact.action === 'river_context' ? 'that river' : fact.action === 'aces_cracked_context' ? 'that hand'
               : fact.action === 'news_guarantee' ? 'that guarantee' : fact.action === 'news_bubble' ? 'that bubble run' : fact.action === 'news_sweep' ? 'that series'
                 : fact.action === 'stakes_context' ? 'those stakes' : fact.action === 'prize_context' ? 'that listed prize' : fact.action === 'holding_context' ? 'that holding'
-                  : fact.action === 'baseball_home_run_context' ? 'that home run' : fact.action === 'baseball_close_context' ? 'that close' : fact.action === 'soccer_goal_total_context' ? 'that goal total' : 'that decision';
+                  : fact.action === 'baseball_home_run_context' ? 'that home run' : fact.action === 'baseball_close_context' ? 'that close' : fact.action === 'soccer_goal_total_context' ? 'that goal total'
+                    : fact.action === 'baseball_matchup_context' ? 'that matchup' : fact.action === 'basketball_passing_context' ? 'that passing sequence' : fact.action === 'soccer_equalizer_context' ? 'that equalizer' : 'that decision';
   // Compound frames already establish the full source fact in their preface.
   // Refer back to it in the question instead of repeating the whole headline.
   // Keep the source fact once, and never change its canonical meaning key.

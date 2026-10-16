@@ -10,7 +10,7 @@ describe('free maintained caption quality', () => {
     const subject = 'the $8.1 million guarantee';
     const bad = `The result alone does not settle ${subject}. What are the terms of ${subject}?`;
     expect(captionQuality(bad, {subject}).reasons).toContain('repeated_source_subject');
-    expect(captionQuality(`The result alone does not settle ${subject}. What are the terms of that guarantee?`, {subject}).pass).toBe(true);
+    expect(captionQuality(`For ${subject}, what are the published terms?`, {subject}).pass).toBe(true);
   });
   it('rejects repeated phrases and nearly identical ideas in separate clauses', () => {
     expect(captionQuality('I want the ranges reaching the river. Check the ranges reaching the river.').reasons).toContain('repeated_phrase');
@@ -19,6 +19,8 @@ describe('free maintained caption quality', () => {
     expect(captionQuality('What are the pot odds for that call? I would examine the equity required by the price.').reasons).toContain('repeated_focus');
     expect(captionQuality('').pass).toBe(false);
     expect(captionQuality('Looking beyond the result of the $100,000 guarantee for Trailblazer Warm-Up: Which details of the terms of the guarantee matter when assessing that guarantee?', {subject:'the $100,000 guarantee for Trailblazer Warm-Up'}).reasons).toContain('circular_event_focus');
+    expect(captionQuality('I would separate the outcome of the $30,000 guarantee for Trailblazer Warm-Up from the details attached to the stated minimum', {subject:'the $30,000 guarantee for Trailblazer Warm-Up'}).reasons).toContain('guarantee_realized_result');
+    expect(captionQuality('The result alone does not settle that call', {subject:"Phil Ivey's river call"}).pass).toBe(true);
   });
   it('does not equate two genuine grounded considerations or repeated rank/suit words', () => {
     expect(captionQuality('The price is my starting point for that call. I would work back through the ranges.').pass).toBe(true);
