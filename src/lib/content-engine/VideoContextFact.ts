@@ -107,9 +107,32 @@ function quantifiedContext(title:string):CaptionFact|null {
 }
 
 /** Literal context only: no actor, winner, bet size or cards are inferred. */
-export function pokerVideoContextFact(rawTitle: string): CaptionFact | null {
+export function pokerVideoContextFact(rawTitle: string, source?: string): CaptionFact | null {
   const title = rawTitle.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').trim();
   if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(title)) return null;
+  const literalContext=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')
+    .replace(/(?:\s+#[a-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').trim().replace(/[.!]+$/,'').trim();
+  const sourceName=source?.toLowerCase();
+  // Whole source-bound made-hand contexts, not guessed holdings, results or
+  // monetary roles. Reversing a matchup never creates a new meaning.
+  if(sourceName==='pokergo'||sourceName==='doug polk poker'){
+    const matchup=literalContext.match(/^(straight flush|nut flush|straight|set) (?:vs\.?|versus) (straight flush|nut flush|straight|set)(?: in (?:\$[0-9][0-9,]* )?super high roller bowl| on hustler)?$/);
+    if(matchup&&matchup[1]!==matchup[2]){
+      const event=/super high roller bowl/.test(literalContext)?'super high roller bowl':null;
+      const hands=[matchup[1]!,matchup[2]!].sort();
+      return {person:'',action:'made_hand_context',identity:`made_hand:matchup:${hands.join(':')}${event?`:event:${event}`:''}`,subject:`the ${hands[0]} versus ${hands[1]} matchup${event?' at Super High Roller Bowl':''}`};
+    }
+  }
+  if(sourceName==='bart hanson'&&/^middle set gets check(?:ed)?[- ]raised$/.test(literalContext))return {
+    person:'',action:'made_hand_context',identity:'made_hand:middle_set:facing:check_raise',subject:'the check-raise faced by middle set',
+  };
+  if(sourceName==='mariano'){
+    const pot=literalContext.match(/^(?:king[- ](?:10|ten)|k[- ]?t) in (?:a |the )?\$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)?\s*pot$/);
+    if(pot){
+      const amount=quantity(pot[1]!,pot[2]);
+      if(amount)return {person:'',action:'pot_context',identity:`pot:holding:kt:amount:${amount}:unit:dollars`,subject:`the $${pot[1]}${pot[2]??''} pot with king-ten`};
+    }
+  }
   // A literal pair-v-pair matchup is not ambiguous actor agency. Other use of
   // versus/against still fails closed in the pre-existing context grammar.
   if(/\b(?:versus|vs|against)\b/.test(title)) {

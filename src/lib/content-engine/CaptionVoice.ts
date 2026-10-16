@@ -16,7 +16,7 @@ import {sportsVideoFact} from './SportsVideoFact.js';
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context';
+  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context' | 'baseball_series_context' | 'sports_technical_context' | 'made_hand_context';
   subject: string;
 }
 
@@ -52,7 +52,7 @@ export function captionFact(b: PostBrief): CaptionFact | null {
         person:'',identity:`contribution:${amount}:pot:${pot}`,action:'pot_contribution',subject:`the $${amount} contribution to a $${pot} pot`,
       };
     }
-    const context = pokerVideoContextFact(b.title);
+    const context = pokerVideoContextFact(b.title,b.source);
     if (context) return context;
   }
   const people = b.people.filter(person=>publicFigureDomain(person)===b.domain);
@@ -93,6 +93,15 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  baseball_series_context: [
+    {key:'series_game_context',variants:s=>[`What game context accompanies ${s}?`,`I'd examine the games around ${s}.`,`Which game details matter when discussing ${s}?`]},
+  ],
+  sports_technical_context: [
+    {key:'literal_sequence',variants:s=>[`What stands out in the sequence around ${s}?`,`I'd follow the sequence around ${s}.`,`Which details are worth examining in ${s}?`]},
+  ],
+  made_hand_context: [
+    {key:'board_context',variants:s=>[`What board context accompanies ${s}?`,`I'd examine the board around ${s}.`,`Which board details matter when discussing ${s}?`]},
+  ],
   baseball_matchup_context: [
     {key:'game_sequence',variants:s=>[`Which innings are worth examining in ${s}?`,`I'd follow the inning-by-inning sequence in ${s}.`,`What changes across the innings in ${s}?`]},
   ],
@@ -173,6 +182,9 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'baseball_series_context:series_game_context': ['the game context','the individual games','the games around the series state','the game details'],
+  'sports_technical_context:literal_sequence': ['the sequence of the play','the movement in the sequence','the details of the play','the sequence rather than an assumed result'],
+  'made_hand_context:board_context': ['the board context','the board around the hands','the relevant board details','the cards on the board'],
   'baseball_matchup_context:game_sequence': ['the inning-by-inning sequence','the decisions across the innings','the course of the game','the inning context'],
   'basketball_passing_context:passing_movement': ['the ball movement','the passing sequence','the off-ball movement','the opening for the pass'],
   'soccer_equalizer_context:equalizer_buildup': ['the buildup to the goal','the movement before the finish','the opening for the shot','the play before the finish'],
@@ -410,7 +422,8 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
               : fact.action === 'news_guarantee' ? 'that guarantee' : fact.action === 'news_bubble' ? 'that bubble run' : fact.action === 'news_sweep' ? 'that series'
                 : fact.action === 'stakes_context' ? 'those stakes' : fact.action === 'prize_context' ? 'that listed prize' : fact.action === 'holding_context' ? 'that holding'
                   : fact.action === 'baseball_home_run_context' ? 'that home run' : fact.action === 'baseball_close_context' ? 'that close' : fact.action === 'soccer_goal_total_context' ? 'that goal total'
-                    : fact.action === 'baseball_matchup_context' ? 'that matchup' : fact.action === 'basketball_passing_context' ? 'that passing sequence' : fact.action === 'soccer_equalizer_context' ? 'that equalizer' : 'that decision';
+                    : fact.action === 'baseball_matchup_context' ? 'that matchup' : fact.action === 'basketball_passing_context' ? 'that passing sequence' : fact.action === 'soccer_equalizer_context' ? 'that equalizer'
+                      : fact.action === 'baseball_series_context' ? 'that series context' : fact.action === 'sports_technical_context' ? 'that play' : fact.action === 'made_hand_context' ? 'that hand context' : 'that decision';
   // Compound frames already establish the full source fact in their preface.
   // Refer back to it in the question instead of repeating the whole headline.
   // Keep the source fact once, and never change its canonical meaning key.
