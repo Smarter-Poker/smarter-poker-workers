@@ -37,6 +37,8 @@ export interface SupplyClip {
   category: string;
   /** Cached oEmbed answer; null when never asked. */
   oembed_ok: boolean | null;
+  /** Actual associated library duration, null when unavailable or invalid. */
+  duration_seconds?: number | null;
 }
 
 export interface SourceRow {
@@ -54,6 +56,68 @@ export type PlatformCandidateClipsResult =
   | { status: 'unknown'; error: string };
 
 export const PLATFORM_CANDIDATE_LIMIT = 1_000;
+const DURATION_LOOKUP_CHUNK = 100;
+
+/** Stored duration only. Unknown/live text is never treated as a short clip. */
+export function clipDurationSeconds(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  let seconds: number;
+  const iso = text.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i);
+  if (iso && (iso[1] || iso[2] || iso[3])) {
+    seconds = Number(iso[1] ?? 0) * 3600 + Number(iso[2] ?? 0) * 60 + Number(iso[3] ?? 0);
+  } else if (/^\d+(?::\d{2}){1,2}$/.test(text)) {
+    const parts = text.split(':').map(Number);
+    if (parts.slice(1).some(part => part >= 60)) return null;
+    seconds = parts.reduce((sum, part) => sum * 60 + part, 0);
+  } else if (/^\d+(?:\.\d+)?$/.test(text)) seconds = Number(text);
+  else return null;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+/** Preference is not proof that we created a native excerpt. */
+export function clipFormatPriority(clip: Pick<SupplyClip, 'source_url' | 'duration_seconds'>): number {
+  if (typeof clip.duration_seconds === 'number' && Number.isFinite(clip.duration_seconds) && clip.duration_seconds > 0) {
+    return clip.duration_seconds <= 180 ? 0 : 3;
+  }
+  try {
+    const url = new URL(clip.source_url);
+    if (/^(?:www\.)?youtube\.com$/i.test(url.hostname) && /^\/shorts\/[A-Za-z0-9_-]{11}\/?$/.test(url.pathname)) return 1;
+  } catch { /* Unknown format stays unknown. */ }
+  return 2;
+}
+
+/** Stable within each preference tier; callers may vary choices inside a tier. */
+export function preferShortClips<T extends Pick<SupplyClip, 'source_url' | 'duration_seconds'>>(clips: readonly T[]): T[] {
+  return [...clips].sort((a, b) => clipFormatPriority(a) - clipFormatPriority(b));
+}
+
+async function withClipDurations(clips: SupplyClip[]): Promise<SupplyClip[]> {
+  const ids = [...new Set(clips.map(clip => clip.video_id).filter(id => /^[A-Za-z0-9_-]{11}$/.test(id)))];
+  const durations = new Map<string, number>();
+  for (let index = 0; index < ids.length; index += DURATION_LOOKUP_CHUNK) {
+    const chunk = ids.slice(index, index + DURATION_LOOKUP_CHUNK);
+    try {
+      const { data, error } = await getSupabase().from('video_library_videos')
+        .select('youtube_video_id, duration').in('youtube_video_id', chunk);
+      if (error) {
+        console.warn('[clip-supply] duration metadata unreadable; keeping duration unknown:', error.message);
+        continue;
+      }
+      for (const row of (data ?? []) as Array<{ youtube_video_id: string; duration: unknown }>) {
+        const seconds = clipDurationSeconds(row.duration);
+        if (seconds !== null && chunk.includes(row.youtube_video_id)) {
+          // Conflicting duplicate rows must not turn a known full stream into
+          // a short clip. Only the duration, never a new asset, is imported.
+          durations.set(row.youtube_video_id, Math.max(durations.get(row.youtube_video_id) ?? 0, seconds));
+        }
+      }
+    } catch (error) {
+      console.warn('[clip-supply] duration lookup failed; keeping duration unknown:', error instanceof Error ? error.message : String(error));
+    }
+  }
+  return preferShortClips(clips.map(clip => ({ ...clip, duration_seconds: durations.get(clip.video_id) ?? null })));
+}
 
 /**
  * How many sources one horse draws from.
@@ -184,7 +248,7 @@ export async function candidateClips(
     if (domain === 'poker') q = q.eq('is_active', true).not('oembed_ok', 'is', false);
     const { data, error } = await q;
     if (!error && (data ?? []).length >= 5) {
-      return { clips: normalise(data, domain), widened: false };
+      return { clips: await withClipDurations(normalise(data, domain)), widened: false };
     }
   }
 
@@ -199,7 +263,7 @@ export async function candidateClips(
     console.warn(`[clip-supply] ${table} read failed:`, error.message);
     return { clips: [], widened: true };
   }
-  return { clips: normalise(data, domain), widened: true };
+  return { clips: await withClipDurations(normalise(data, domain)), widened: true };
 }
 
 /**
@@ -237,7 +301,7 @@ export async function platformCandidateClips(
       error: `${table} platform pool unreadable: ${error.message}`,
     };
   }
-  return { status: 'ok', clips: normalise(data, domain) };
+  return { status: 'ok', clips: await withClipDurations(normalise(data, domain)) };
 }
 
 function normalise(rows: unknown, domain: 'poker' | 'sports'): SupplyClip[] {

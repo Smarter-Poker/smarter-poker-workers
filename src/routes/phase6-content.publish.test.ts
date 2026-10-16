@@ -112,6 +112,7 @@ function event(nativeId: string, overrides: Partial<Row> = {}): Row {
     source: 'daily',
     native_id: nativeId,
     venue_name: 'Bell Room',
+    venue_id: 'venue-1',
     event_name: "No Limit Hold'em 7:00PM $160 Buy In",
     specific_date: '2026-09-23',
     start_time: '7:00PM',
@@ -143,6 +144,7 @@ function world(options: { owner?: string; statDays?: string[]; events?: Row[]; m
     { club_id: CLUB, table_id: 't1', user_id: 'horse-a', stat_date: '2026-09-21', profit: -300, biggest_pot_won: 1000 },
   ]);
   db.seed('unified_events_calendar', options.events ?? [event('e1')]);
+  db.seed('poker_venues', [{ id: 'venue-1', cover_photo_url: 'https://cdn.example/venues/bell-room-photograph.webp' }]);
   h.db = db;
   return db;
 }
@@ -418,6 +420,28 @@ describe('P6C-05: a failed rollback is reported and caught next run', () => {
 });
 
 describe('P6C-06/03: the whole event window, without junk', () => {
+  it('persists only associated event metadata and the exact venue destination', async () => {
+    const db=world();enableOnly('local_event');
+    expect((await live()).results.local_event!.posted).toBe(1);
+    expect(db.inserts('social_posts')[0]).toMatchObject({
+      link_url:'/hub/venues/venue-1?tab=tournaments',
+      link_title:"No Limit Hold'em",
+      link_image:'https://cdn.example/venues/bell-room-photograph.webp',
+      link_site_name:'Smarter.Poker',
+    });
+    expect(db.inserts('social_posts')[0]!.link_description).toContain('Bell Room');
+  });
+
+  it.each([null,'https://cdn.example/publisher-logo.png'])('holds event cards with missing/generic associated artwork: %s', async photo => {
+    const db=world();enableOnly('local_event');
+    db.tables.set('poker_venues',[{id:'venue-1',cover_photo_url:photo}]);
+    const result=(await live()).results.local_event!;
+    expect(result.posted).toBe(0);
+    expect(result.skipped.media_unavailable).toBeGreaterThan(0);
+    expect(result.held[0]?.reason).toBe('media_unavailable');
+    expect(db.writes()).toHaveLength(0);
+  });
+
   it('finds a horse-city listing beyond the first 1,000 rows of the window', async () => {
     const filler = Array.from({ length: 2500 }, (_, i) => event(`f${String(i).padStart(4, '0')}`, {
       city: 'Elsewhere', state: 'ZZ', specific_date: i < 1250 ? '2026-09-22' : '2026-09-24',
@@ -531,7 +555,7 @@ describe('P6C-11/12 and telemetry', () => {
     const body = await live();
     for (const mode of ['club_data_digest', 'local_event', 'seasonal_local']) {
       expect(Object.keys(body.results[mode]!.skipped).sort()).toEqual([
-        'author_not_horse', 'duplicate', 'failed', 'junk', 'mirror_skipped_author_not_horse', 'recent', 'rollback_failed', 'stale_day',
+        'author_not_horse', 'duplicate', 'failed', 'junk', 'media_unavailable', 'mirror_skipped_author_not_horse', 'recent', 'rollback_failed', 'stale_day',
       ]);
     }
     expect(body.results.local_event!.skipped.author_not_horse).toBe(1);

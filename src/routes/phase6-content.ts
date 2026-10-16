@@ -31,6 +31,7 @@ import { postedRecently } from '../lib/content-engine/HorsePublisher.js';
 import { normalizePhrase, recordPhrase } from '../lib/content-engine/ContentLedger.js';
 import { fleetHash } from '../lib/content-engine/FleetScheduler.js';
 import { topicsFor } from '../lib/content-engine/SocialTopics.js';
+import { safeArticleImageUrl } from '../lib/content-engine/NewsImage.js';
 import {
   buildClubDigestDraft,
   buildLocalEventDraft,
@@ -73,6 +74,7 @@ export type SkipReason =
   | 'author_not_horse'
   | 'mirror_skipped_author_not_horse'
   | 'stale_day'
+  | 'media_unavailable'
   | 'failed'
   | 'rollback_failed';
 
@@ -86,6 +88,7 @@ export function emptySkips(): SkipCounts {
     author_not_horse: 0,
     mirror_skipped_author_not_horse: 0,
     stale_day: 0,
+    media_unavailable: 0,
     failed: 0,
     rollback_failed: 0,
   };
@@ -377,7 +380,7 @@ export async function readLocalComposition(now: Date, horses: RosterHorse[]): Pr
     'local events',
     () => supa
       .from('unified_events_calendar')
-      .select('source, native_id, venue_name, event_name, specific_date, start_time, city, state, is_active, is_suppressed')
+      .select('source, native_id, venue_id, series_id, venue_name, event_name, specific_date, start_time, city, state, is_active, is_suppressed')
       .eq('is_active', true)
       .eq('is_suppressed', false)
       .gte('specific_date', today)
@@ -388,6 +391,18 @@ export async function readLocalComposition(now: Date, horses: RosterHorse[]): Pr
     EVENT_WINDOW_MAX_ROWS,
     out.notes,
   );
+  const venueIds = [...new Set(events.map(event => event.venue_id).filter((id): id is string => Boolean(id)))];
+  const photos = new Map<string, string>();
+  for (let i = 0; i < venueIds.length; i += PROFILE_CHUNK) {
+    const { data, error } = await supa.from('poker_venues')
+      .select('id, cover_photo_url').in('id', venueIds.slice(i, i + PROFILE_CHUNK));
+    if (error) throw new Error(`associated venue photographs unreadable: ${error.message}`);
+    for (const venue of (data ?? []) as Array<{ id: string; cover_photo_url?: string | null }>) {
+      const photo = safeArticleImageUrl(venue.cover_photo_url);
+      if (photo) photos.set(String(venue.id), photo);
+    }
+  }
+  for (const event of events) event.cover_photo_url = photos.get(String(event.venue_id)) ?? null;
   const homes = new Set(horses.map((horse) => placeKey(horse.city, horse.state)).filter(Boolean));
   out.skipped.junk = events.filter((event) => homes.has(placeKey(event.city, event.state))
     && (isJunkSourceText(event.event_name) || isJunkSourceText(event.venue_name))).length;
@@ -533,6 +548,10 @@ async function publishHorseDraft(draft: Phase6Draft): Promise<PublishOutcome> {
       media_urls: [],
       visibility: 'public',
       link_url: draft.linkUrl ?? null,
+      link_title: draft.linkTitle ?? null,
+      link_description: draft.linkDescription ?? null,
+      link_image: draft.linkImage ?? null,
+      link_site_name: draft.mode === 'local_event' ? 'Smarter.Poker' : null,
       ...topicsFor(draft.mode),
       metadata: metadataFor(draft),
     })
@@ -580,6 +599,11 @@ async function publishMode(mode: Phase6Mode, composition: ModeComposition): Prom
   for (const draft of composition.drafts) {
     if (result.posted >= PUBLISH_SUCCESS_LIMIT_PER_MODE) break;
     if (existing.has(draft.publicationKey)) continue;
+    if (draft.mode === 'local_event' && (!draft.linkUrl || !safeArticleImageUrl(draft.linkImage))) {
+      result.skipped.media_unavailable += 1;
+      result.held.push({ reason: 'media_unavailable', detail: `${draft.sourceId}: associated destination and genuine venue photograph required` });
+      continue;
+    }
     if (freshAttempts >= PUBLISH_ATTEMPT_LIMIT_PER_MODE) break;
     freshAttempts += 1;
     result.attempted += 1;

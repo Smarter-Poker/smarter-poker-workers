@@ -24,10 +24,11 @@
  * qualified ModelWriter candidate through the same gates first; this path is
  * the bounded fallback for every disabled, exhausted or unavailable outcome.
  */
-import { briefForComment, isUninformativeTitle, publicFigureDomain, type PostBrief } from './PostBrief.js';
+import { briefForComment, publicFigureDomain, type PostBrief } from './PostBrief.js';
 import { fleetHash } from './FleetScheduler.js';
 import { render, targetWords, type StyleSheet } from './StyleSheet.js';
 import { isDisagreement, isQuestion } from './ReplyEngine.js';
+import { subjectCaption } from './CaptionVoice.js';
 
 // ─── takes, by concept ───────────────────────────────────────────────────
 // {anchor} is the subject named in the post. {amount} is a real number from
@@ -689,6 +690,31 @@ export function composeCaption(
   // Silence is recoverable; publishing something we did not understand is not.
   if (!hasSpecificTake(b)) return { text: '', relevance: 0, grounding: [] };
 
+  // A source-established actor/action gives the opinion a genuine subject.
+  // Unlike a video-id suffix, this changes what the sentence actually asks
+  // about while equivalent wordings retain one canonical semantic key.
+  const subject = subjectCaption(b, style, variantSeed);
+  if (subject) {
+    const longer = targetWords(style).sentences >= 2;
+    const retry = /^\d+$/.test(variantSeed) ? Number(variantSeed) : 0;
+    const extra = longer ? subjectCaption(b, style, String(retry + 1)) : null;
+    let question = subject.text.endsWith('?') ? subject.text : undefined;
+    const lines = question ? [] : [subject.text];
+    // Longer voices develop a second grounded angle, never a stock verdict.
+    // A questioning voice puts its question last after that consideration.
+    if (extra && extra.semanticKey !== subject.semanticKey) {
+      if (question) {
+        lines.push(extra.statement.replace(extra.reference, extra.subject));
+        question = question.replace(subject.subject, subject.reference);
+      } else lines.push(extra.statement);
+    }
+    let text = render(lines, style, `${style.profileId}:${b.title}`, {
+      question, noOpener: true, noCloser: true,
+    });
+    if (!style.contractions) text = text.replace(/\bI'd\b/gi, 'I would').replace(/\bI'm\b/gi, 'I am').replace(/\bwe'd\b/gi, 'we would');
+    return { ...subject, text, relevance: relevanceOf(text, b) };
+  }
+
   const seed = `${style.profileId}:${b.postId ?? b.title}:${variantSeed}`;
   // Only a public figure of this post's own world can be the subject of a
   // sentence. anchorOf() also returns teams and title fragments, and through
@@ -723,54 +749,6 @@ export function composeCaption(
   // read. i keep coming back to that?" and "...what is your read...?" (P2C-10).
   const text = render(lines, style, seed, { question, varyCloser: true });
   return { text, relevance: relevanceOf(text, b), grounding, semanticKey: meaningKey(lines[0]!) };
-}
-
-/**
- * A renewable, factual news fallback for an article the opinion composer does
- * not understand well enough to discuss. It reports the publisher's own full
- * headline with explicit attribution and adds no horse-authored claim. Video
- * titles never use this path: a video still needs a supported domain take.
- */
-const SOURCE_REPORT_FRAMES = [
-  (source: string, title: string) => `${source} reports: ${title}`,
-  (source: string, title: string) => `From ${source}: ${title}`,
-  (source: string, title: string) => `${title}, according to ${source}`,
-  (source: string, title: string) => `Reading from ${source}: ${title}`,
-];
-const CLIPPED_HEADLINE_END = /\b(?:a|an|and|are|at|but|by|do|does|for|from|in|is|of|on|or|the|to|was|were|with)\s*[.!?]*$/i;
-
-export function composeSourceReportedNews(
-  b: PostBrief,
-  style: StyleSheet,
-  variantSeed = '0',
-): ComposeResult {
-  if (b.kind !== 'link' || (b.domain !== 'poker' && b.domain !== 'sports')) {
-    return { text: '', relevance: 0, grounding: [] };
-  }
-  const title = b.title.trim();
-  const source = String(b.source ?? '').replace(/[\u2013\u2014]/g, '-').replace(/\s+/g, ' ').trim();
-  if (
-    !source || source.length > 80 || !/^[A-Za-z0-9][A-Za-z0-9 .&'/-]*$/.test(source)
-    || title.length < 12 || title.length > 180
-    || isUninformativeTitle(title, source)
-    || /(?:\.\.\.|\u2026)/.test(title)
-    || CLIPPED_HEADLINE_END.test(title)
-  ) {
-    return { text: '', relevance: 0, grounding: [] };
-  }
-
-  const seed = `${style.profileId}:source-report:${source}:${title}:${variantSeed}`;
-  const frame = SOURCE_REPORT_FRAMES[fleetHash(seed, 'frame') % SOURCE_REPORT_FRAMES.length]!;
-  // This path reports somebody else's headline verbatim. Voice styling may
-  // choose the attribution frame, but must not lowercase, punctuate, clip or
-  // otherwise rewrite the source's words.
-  const text = frame(source, title);
-  return {
-    text,
-    relevance: relevanceOf(text, b),
-    grounding: [`source:${source}`, `headline:${title}`],
-    semanticKey: meaningKey(`source report ${source} ${title}`),
-  };
 }
 
 /**

@@ -1,4 +1,6 @@
 import { fleetHash } from './FleetScheduler.js';
+import { styleSheetFor, render } from './StyleSheet.js';
+import { safeArticleImageUrl } from './NewsImage.js';
 
 export type Phase6Mode = 'club_data_digest' | 'local_event' | 'seasonal_local';
 
@@ -57,6 +59,10 @@ export interface LocalEventRow {
   state: string | null;
   is_active: boolean | null;
   is_suppressed: boolean | null;
+  venue_id?: string | null;
+  series_id?: string | null;
+  /** Associated venue photograph only, never logo_url. */
+  cover_photo_url?: string | null;
 }
 
 export interface LocalHorse {
@@ -83,6 +89,9 @@ export interface Phase6Draft {
   sourceId: string;
   pageId?: string;
   linkUrl?: string;
+  linkTitle?: string;
+  linkDescription?: string;
+  linkImage?: string | null;
   grounding: string[];
   /** club_data_digest only: the publish decision the route made for the page owner. */
   publish?: ClubDigestPublish;
@@ -401,21 +410,22 @@ export function localEventFacts(event: LocalEventRow, now: Date): LocalEventFact
   return { game: parsed.game, venue: tidyVenueName(venueName), city, buyIn: parsed.buyIn, startMinutes, when };
 }
 
-function localEventCopy(seed: string, facts: LocalEventFacts): string {
+export function localEventCopy(profileId: string, facts: LocalEventFacts): string {
   const { game, venue, city, when } = facts;
   const buyIn = facts.buyIn ? `$${formatCount(facts.buyIn)}` : null;
   const tail = buyIn ? `, ${buyIn} buy-in` : '';
+  const style = styleSheetFor(profileId);
+  // Complete facts in a stable personal syntax. No invented attendance,
+  // recommendation, "I'd play", or seven shared enthusiasm wrappers.
   const frames = [
-    `${venue} has ${game} ${when}${tail}. Anybody from ${city} going?`,
-    `Heads up ${city}: ${game} at ${venue} ${when}${tail}.`,
-    `If you're around ${city}, ${venue} has ${game} ${when}${tail}. Could be a fun one.`,
-    `Looks like ${venue} is running ${game} ${when}${tail}. Worth a look if you're in ${city}.`,
-    `${game} at ${venue} ${when}${tail}. Any ${city} regulars playing it?`,
-    `Anyone else eyeing ${game} at ${venue} ${when}?${buyIn ? ` It's a ${buyIn} buy-in.` : ''}`,
-    `${city} players, ${venue} has ${game} ${when}${tail}. I'd play that.`,
+    [`${game} is listed at ${venue} ${when}${tail}`, `The listing is in ${city}`],
+    [`${venue}, ${city}: ${game} ${when}${tail}`],
+    [`${when}, ${venue} lists ${game}${tail}`, `${city} is the location`],
+    [`The ${city} listing is ${game} at ${venue}`, `It is scheduled ${when}${tail}`],
+    [`${venue} lists ${game} ${when}`, `${city}${buyIn ? `, with a ${buyIn} buy-in` : ''}`],
+    [`${game}${buyIn ? ` (${buyIn} buy-in)` : ''}`, `${venue} in ${city}, ${when}`],
   ];
-  const text = frames[fleetHash(seed, 'phase6-local-copy') % frames.length]!;
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  return render(frames[style.captionSyntax % frames.length]!, style, `${profileId}:local-event`, { noOpener: true, noCloser: true });
 }
 
 export function validLocalEvent(event: LocalEventRow, todayIso: string, horizonIso: string): boolean {
@@ -468,12 +478,19 @@ export function buildLocalEventDraft(
   return {
     mode: 'local_event',
     authorId: horse.profile_id,
-    content: localEventCopy(`${horse.profile_id}:${event.source}:${event.native_id}`, facts),
+    content: localEventCopy(horse.profile_id, facts),
     // One platform post per real-world event. A horse is the local voice, not
     // a reason to repeat the same listing across hundreds of profiles.
     publicationKey: `phase6:local:${event.source}:${event.native_id}`,
     sourceId: `${event.source}:${event.native_id}`,
-    linkUrl: '/hub/poker-near-me',
+    // A calendar's active flag does not prove a series page is published.
+    // Link the associated venue row whose photograph was read, never guess
+    // a potentially unpublished series route or the generic directory.
+    linkUrl: event.venue_id && /^[A-Za-z0-9_-]+$/.test(event.venue_id)
+      ? `/hub/venues/${event.venue_id}?tab=tournaments` : undefined,
+    linkTitle: facts.game,
+    linkDescription: `${facts.venue}, ${facts.city}, ${facts.when}${facts.buyIn ? `, $${formatCount(facts.buyIn)} buy-in` : ''}`,
+    linkImage: safeArticleImageUrl(event.cover_photo_url),
     grounding: [`unified_events_calendar:${event.source}:${event.native_id}`],
     place: home,
     venue,

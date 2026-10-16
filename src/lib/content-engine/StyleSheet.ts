@@ -46,6 +46,9 @@ export type Layout = 'single' | 'double_break' | 'list';
 
 export interface StyleSheet {
   profileId: string;
+  /** Stable authored rhetorical alternative, not a per-post random frame. */
+  captionSyntax: number;
+  contractions: boolean;
   length: Length;
   casing: Casing;
   punctuation: Punctuation;
@@ -134,6 +137,8 @@ function slice(pool: string[], id: string, salt: string, n: number): string[] {
 export function styleSheetFor(profileId: string): StyleSheet {
   return {
     profileId,
+    captionSyntax: fleetHash(profileId, 'voice-syntax:v1') % 12,
+    contractions: fleetHash(profileId, 'voice-register:v1') % 2 !== 0,
     length: pick(LENGTHS, profileId, 'st:length'),
     casing: pick(CASINGS, profileId, 'st:casing'),
     punctuation: pick(PUNCTUATIONS, profileId, 'st:punct'),
@@ -163,6 +168,10 @@ export function styleId(s: StyleSheet): string {
     s.length, s.casing, s.punctuation, s.opener, s.closer, s.voice,
     s.certainty, s.slang, s.numerals, s.layout,
     String(s.questionRate), String(s.tagRate),
+    String(s.captionSyntax), String(s.contractions),
+    // Lexical habits are real parts of a voice, not an id-only uniqueness
+    // token. Omitting them reported two genuinely different sheets as equal.
+    ...Object.values(s.lexicon).map((words) => words.join('|')),
   ].join('/');
 }
 
