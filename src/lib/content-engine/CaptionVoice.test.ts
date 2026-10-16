@@ -8,6 +8,23 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('does not stitch the same selected angle into a question and a repeated statement', () => {
+    const b=brief('Navigating A Chaos 5-Way All-In');
+    const kane=styleSheetFor('2de39d61-a269-451a-9e7c-37fc1aa25ad7');
+    const out=composeCaption(b,kane);
+    expect(out.text).not.toContain('?');
+    expect(out.text.toLowerCase().match(/all[- ]in/g)).toHaveLength(1);
+    expect(out.text).toContain('hands still available');
+    expect(out.semanticKey).toBe('meaning:subject:all in players 5:all_in_context:ranges');
+    for(const captionSyntax of [6,10]){
+      const row=subjectCaption(b,{...kane,length:'medium',captionSyntax})!;
+      expect(row.text).not.toContain('?');
+      expect(row.text.toLowerCase().match(/all[- ]in/g)).toHaveLength(1);
+      expect(row.grounding).toEqual(out.grounding);
+      expect(row.semanticKey).toBe(out.semanticKey);
+    }
+  });
+
   it('covers every one of 1000 identities with a stable full specification, not an id-only fingerprint', () => {
     const styles = ids.map(styleSheetFor);
     expect(new Set(styles.map(styleId)).size).toBe(1000);
