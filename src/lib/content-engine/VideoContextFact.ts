@@ -19,7 +19,7 @@ export function pokerVideoContextFact(rawTitle: string): CaptionFact | null {
   const potCount = title.match(new RegExp(`\\b${countPattern}[- ]ways? (?:side[- ])?pot\\b`))?.[1];
   const countToken = /\ball[- ]in\b/.test(title) ? allInCount : potCount;
   const count = countToken ? (COUNTS[countToken] ?? Number(countToken)) : null;
-  const multiway = count !== null || /\bmulti[- ]?way\b/.test(title);
+  const multiway = count !== null || /\bmulti[- ]?way (?:side[- ])?pot\b/.test(title);
   const allIn = /\ball[- ]in\b/.test(title);
   const sidePot = /\bside[- ]pot\b/.test(title);
   if (allIn && /\bpot\b/.test(title)) return null;

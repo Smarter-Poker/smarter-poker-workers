@@ -44,6 +44,9 @@ describe('literal video context facts',()=>{
   expect(pokerVideoContextFact('Five-way all-in and an all-in with aces')).toBeNull();
   expect(pokerVideoContextFact('a three-way pot and a pot with jacks')).toBeNull();
  });
+ it('does not borrow multi-way from an earlier street for a different pot context',()=>{
+  expect(pokerVideoContextFact('Multi-way flop but heads-up pot with jacks')).toMatchObject({identity:'pot:holding:jj',subject:'the pot with pocket jacks'});
+ });
  it('preserves genuinely distinct holding, player-count and amount propositions',()=>{
   const titles=['all-in with aces three ways','all-in with kings three ways','all-in with aces four ways','$5 million river','$4 million river'];
   expect(new Set(titles.map(title=>pokerVideoContextFact(title)?.identity)).size).toBe(titles.length);
