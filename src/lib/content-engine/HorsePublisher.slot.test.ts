@@ -125,10 +125,13 @@ import {
   fleetSlotId,
   postedRecently,
   publishForHorse,
+  publishVideoClip,
   takeRandomCandidates,
+  videoCaptionCandidatePriority,
   type FleetHorse,
 } from './HorsePublisher.js';
 import { fleetHash, isDueForPost } from './FleetScheduler.js';
+import { sliceForHorse, type SupplyClip } from './ClipSupply.js';
 
 const NOW = new Date('2026-09-21T14:30:00Z');
 const SLOT = '2026-09-21T14';
@@ -419,6 +422,34 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     vi.spyOn(Math,'random').mockReturnValue(.9999);
     const rows=[{source_url:'https://www.youtube.com/watch?v=AbCdEfGhIjK',duration_seconds:12000}, {source_url:'https://www.youtube.com/watch?v=ShortClip01',duration_seconds:43}, {source_url:'https://www.youtube.com/shorts/ShortClip02',duration_seconds:null}];
     expect(takeRandomCandidates(rows,3).map(row=>row.duration_seconds)).toEqual([43,null,12000]);
+  });
+
+  it('prefers literal factual shorts over stale generic shorts without promoting a full stream', () => {
+    vi.spyOn(Math,'random').mockReturnValue(.9999);
+    const rows = [
+      {source_url:'https://www.youtube.com/watch?v=Generic0001',title:'CRAZY FINAL TABLE',source:'PokerGO',duration_seconds:43},
+      {source_url:'https://www.youtube.com/watch?v=Factual0001',title:'Navigating a five-way all-in',source:'PokerGO',duration_seconds:73},
+      {source_url:'https://www.youtube.com/watch?v=Stream00001',title:'Navigating a five-way all-in',source:'PokerGO',duration_seconds:12000},
+    ] as SupplyClip[];
+    expect(takeRandomCandidates(rows,3,clip=>videoCaptionCandidatePriority(clip,'poker')).map(x=>x.duration_seconds)).toEqual([73,43,12000]);
+  });
+
+  it('widens a generic-only preferred short slice to an unused literal fact within the same six-candidate cap', async () => {
+    const profileId=horseId(0);
+    const sources=Array.from({length:9},(_,i)=>`Source${i}`);
+    const preferred=new Set(sliceForHorse(sources,profileId));
+    const factualSource=sources.find(source=>!preferred.has(source))!;
+    const clips=sources.map((source,i)=>({
+      id:`clip-${i}`,video_id:`Factual000${i}`,source_url:`https://www.youtube.com/watch?v=Factual000${i}`,
+      source,title:source===factualSource?'Navigating a five-way all-in':'CRAZY FINAL TABLE',duration_seconds:60,
+    })) as SupplyClip[];
+    const good=await voice.writeCaption.getMockImplementation()!(horse(profileId),{});
+    voice.writeCaption.mockImplementation(async (_horse,asset)=>asset.title.includes('five-way')?good:{...good,text:'',stale:true});
+    const result=await publishVideoClip(horse(profileId),'poker',[],'fleet',{poker:clips,sports:[]},`fleet:${profileId}:${SLOT}`);
+    expect(result).toMatchObject({success:true,postId:'post-1',reelId:'reel-1'});
+    expect(voice.writeCaption).toHaveBeenCalledTimes(1);
+    expect(voice.writeCaption.mock.calls[0]?.[1]).toMatchObject({title:'Navigating a five-way all-in'});
+    expect(db.rpcCalls.filter(x=>x.name==='publish_horse_video_reel')).toHaveLength(1);
   });
 
   it('does not publish an article card with missing or generic artwork', async () => {

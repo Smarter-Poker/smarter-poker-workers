@@ -9,11 +9,12 @@ import { publicFigureDomain, type PostBrief } from './PostBrief.js';
 import type { StyleSheet } from './StyleSheet.js';
 import { RANKS, rankWord } from './PokerEvaluator.js';
 import { sayHolding } from './HandVoice.js';
+import { pokerVideoContextFact } from './VideoContextFact.js';
 
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'fold' | 'bracelet';
+  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context';
   subject: string;
 }
 
@@ -62,6 +63,8 @@ export function captionFact(b: PostBrief): CaptionFact | null {
         person:'',identity:`contribution:${amount}:pot:${pot}`,action:'pot_contribution',subject:`the $${amount} contribution to a $${pot} pot`,
       };
     }
+    const context = pokerVideoContextFact(b.title);
+    if (context) return context;
   }
   const people = b.people.filter(person=>publicFigureDomain(person)===b.domain);
   if (people.length !== 1) return null;
@@ -90,6 +93,15 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  all_in_context: [
+    { key: 'ranges', variants: s => [`Which ranges meet in ${s}?`, `I'd start with the ranges involved in ${s}.`, `What hands reach ${s}?`] },
+  ],
+  pot_context: [
+    { key: 'structure', variants: s => [`How is ${s} structured?`, `I'd examine the pot structure before judging ${s}.`, `What do the contributions establish in ${s}?`] },
+  ],
+  river_context: [
+    { key: 'earlier_action', variants: s => [`What earlier action leads to ${s}?`, `I'd trace the earlier action before assessing ${s}.`, `How do the ranges get to ${s}?`] },
+  ],
   bluff: [
     { key: 'range', variants: s => [`What value range does ${s} represent?`, `The value range behind ${s} is my starting point.`, `Before the result, what value hands belong in ${s}?`, `I'd start with the value hands represented by ${s}.`, `For ${s}, I'm interested in value combinations first.`, `Which value combinations make sense alongside ${s}?`] },
     { key: 'sizing', variants: s => [`How does the sizing affect ${s}?`, `The sizing is the detail I want to examine in ${s}.`, `With ${s}, I'd separate the sizing decision from the result.`, `Sizing first, outcome second when I think about ${s}.`, `Would another size change the argument for ${s}?`, `I want to compare the sizing options for ${s}.`] },
@@ -118,6 +130,9 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'all_in_context:ranges': ['the ranges involved', 'the hands reaching the all-in', 'the possible opposing holdings', 'the ranges rather than the result'],
+  'pot_context:structure': ['the pot structure', 'the contributions to the pot', 'the structure before the outcome', 'the amounts each player contributes'],
+  'river_context:earlier_action': ['the earlier action', 'the ranges reaching the river', 'the decisions leading to the river', 'the route to the river'],
   'bluff:range': ['the represented value range', 'the value combinations', 'the value side of the range', 'the hands being represented'],
   'bluff:sizing': ['the sizing choice', 'the bet size', 'the available sizing options', 'the size relative to the pot'],
   'bluff:opponent': ['the opponent\'s folding range', 'the hands being targeted', 'the possible folds', 'the opponent\'s continuing range'],
@@ -242,7 +257,8 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     : fact.action === 'river_fold' || fact.action === 'fold' ? 'that fold'
       : fact.action === 'bluff' ? 'that bluff' : fact.action === 'three' ? 'that shot'
         : fact.action === 'dunk' ? 'that finish' : fact.action === 'bracelet' ? 'that win'
-          : fact.action === 'pot_contribution' ? 'that contribution' : 'that decision';
+          : fact.action === 'pot_contribution' ? 'that contribution' : fact.action === 'pot_context' ? 'that pot'
+            : fact.action === 'all_in_context' ? 'that all-in' : fact.action === 'river_context' ? 'that river' : 'that decision';
   return {
     text,
     subject: fact.subject,
