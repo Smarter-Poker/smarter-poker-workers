@@ -27,9 +27,9 @@
  * module is the source of truth: the sheet is a pure function of the id, so
  * it can never drift from what the writer actually did.
  *
- * HOUSE RULES BAKED IN: no emoji (Club Arena CLAUDE.md 10.6 and the fleet
- * programme invariant 9) and no em dashes (10.7, the punctuation rule).
- * `render()` strips both unconditionally, whatever a caller passes in.
+ * User direction October16 permits occasional topic-bound caption emoji.
+ * Untrusted input emoji are still removed; only the maintained optional
+ * caption ornament below can add one, after facts have been rendered.
  */
 import { fleetHash } from './FleetScheduler.js';
 
@@ -283,7 +283,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string, opts: R
     // which is not a hand any player could read.
     parts = parts.map((p) =>
       p.replace(
-        /(^|[^\dA-Za-z/$.-])(\d{1,2})(?![\dA-Za-z/.-])/g,
+        /(^|[^\dA-Za-z/$.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
         (_m, pre: string, n: string) => `${pre}${NUMBER_WORDS[n] ?? n}`,
       ),
     );
@@ -328,8 +328,31 @@ export function render(sentences: string[], s: StyleSheet, seed: string, opts: R
 
   // House rules, unconditional.
   joined = stripBannedGlyphs(joined);
+  // Remove presentational labels/list dashes, not meaningful 3-0 scores,
+  // king-ten holdings, event names, times or 4:1 odds.
+  joined = joined.replace(/(^|\n)\s*[-*]\s+/g, '$1')
+    .replace(/(^|\s)[-–—]+(?=\s|$)/g, '$1')
+    .replace(/([^\d]):(?=[^\d]|$)/g, '$1,')
+    .replace(/([^\d]):(?=\d)/g, '$1,')
+    .replace(/(\d):(?=[^\d])/g, '$1,');
 
   return joined.replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+export type CaptionEmojiTopic = 'poker' | 'basketball' | 'baseball' | 'soccer';
+const CAPTION_EMOJI: Record<CaptionEmojiTopic,string> = {
+  poker: '\u2660\uFE0F', basketball: '\u{1F3C0}', baseball: '\u26BE', soccer: '\u26BD',
+};
+/** Stable preference and content-bound occurrence; retries cannot fish for emoji. */
+export function captionEmojiPreference(style: StyleSheet): number {
+  return [0,0,0,15,30,50][fleetHash(style.profileId,'caption-emoji-habit:v1') % 6]!;
+}
+export function withCaptionEmoji(text: string, style: StyleSheet, contentIdentity: string, topic?: CaptionEmojiTopic): string {
+  if (!text || !topic || !contentIdentity) return text;
+  const rate = captionEmojiPreference(style);
+  const decorated = text.endsWith('?') ? `${text.slice(0, -1)} ${CAPTION_EMOJI[topic]}?` : `${text} ${CAPTION_EMOJI[topic]}`;
+  return fleetHash(style.profileId, `caption-emoji-content:v1:${contentIdentity}`) % 100 < rate
+    ? decorated : text;
 }
 
 /**

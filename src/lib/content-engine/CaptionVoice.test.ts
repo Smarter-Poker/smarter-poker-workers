@@ -255,7 +255,7 @@ describe('source-bound individual caption voices', () => {
     const b=brief('Phil Ivey makes a huge river call');
     for(const id of ids.slice(0,100)) {
       const out=subjectCaption(b,{...styleSheetFor(id),length:'medium',captionSyntax:3})!;
-      expect(out.text).toMatch(/the discussion starts with|is where I(?: would|'d) ask about|is the starting point I(?: would|'d) use/);
+      expect(out.text).toMatch(/I(?: would|'d) start with|is where I(?: would|'d) ask about|I(?: would|'d) start by looking at/);
       expect(out.text).not.toContain('pot odds belongs');
     }
     expect(subjectCaption(brief('Stephen Curry hits a three pointer','sports'),styleSheetFor(ids[0]!))?.reference).toBe('that shot');
@@ -297,7 +297,8 @@ describe('source-bound individual caption voices', () => {
       expect(row.outputs).toEqual(compose(row.id));
       for(const out of row.outputs){
         expect(out.text).not.toMatch(/I (?:played|watched|won|lost)|when I was|last night|reading from|reports:/i);
-        expect(out.text).not.toMatch(/—|[\u{1F300}-\u{1FAFF}]/u);
+        expect(out.text).not.toMatch(/—/u);
+        expect([...out.text.matchAll(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu)].length).toBeLessThanOrEqual(1);
       }
     }
     // Rephrasing never produces a fresh factual proposition.

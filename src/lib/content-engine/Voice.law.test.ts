@@ -290,12 +290,17 @@ describe('the words are about the actual thing', () => {
 describe('house rules hold in everything a horse publishes', () => {
   const ids = fleetIds(120);
 
-  it('no emoji and no em dashes survive rendering', () => {
+  it('only an optional approved caption emoji and no em dashes survive rendering', () => {
+    // October16 owner direction permits occasional emoji in captions only.
+    // The input sanitizer below still refuses arbitrary supplied glyphs.
+    const approved = new Set(['\u2660\uFE0F', '\u{1F3C0}', '\u26BE', '\u26BD', '\u{1F914}', '\u{1F440}']);
     for (const asset of REAL_ASSETS) {
       const brief = briefForAsset(asset);
       for (const id of ids.slice(0, 40)) {
         const t = composeCaption(brief, styleSheetFor(id)).text;
-        expect(t).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+        const emoji = t.match(/\p{Extended_Pictographic}(?:\uFE0F)?/gu) ?? [];
+        expect(emoji.length).toBeLessThanOrEqual(1);
+        for (const glyph of emoji) expect(approved.has(glyph)).toBe(true);
         expect(t).not.toContain('—');
       }
     }
