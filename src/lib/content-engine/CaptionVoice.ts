@@ -130,7 +130,7 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
-  'all_in_context:ranges': ['the ranges involved', 'the hands reaching the all-in', 'the possible opposing holdings', 'the ranges rather than the result'],
+  'all_in_context:ranges': ['the ranges involved', 'the hands still available', 'the possible opposing holdings', 'the ranges rather than the result'],
   'pot_context:structure': ['the pot structure', 'the contributions to the pot', 'the structure before the outcome', 'the amounts each player contributes'],
   'river_context:earlier_action': ['the earlier action', 'the ranges reaching the river', 'the decisions leading to the river', 'the route to the river'],
   'bluff:range': ['the represented value range', 'the value combinations', 'the value side of the range', 'the hands being represented'],
@@ -217,6 +217,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `There's more than the outcome to consider with ${fact.subject}`,
   ][plan.contrast]!;
   const wanting = style.voice === 'plural' ? `we'd want` : style.voice === 'impersonal' ? 'the missing context is' : style.voice === 'second' ? 'consider' : "I'd want";
+  const continuingIntent = /^I(?:\b|')/.test(intent) ? intent : intent.charAt(0).toLowerCase() + intent.slice(1);
   // Typed clauses, not arbitrary word reordering: a question has a question
   // slot, a noun phrase has a noun slot, and an imperative stays complete.
   const structures = [
@@ -226,11 +227,11 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `For ${fact.subject}, the discussion starts with ${focus}`,
     `${contrast}. ${question}`,
     `Hard to judge ${fact.subject} without ${focus}`,
-    `${question} ${starting}`,
+    `${intent} ${focus} when considering ${fact.subject}`,
     `For ${aJudgement} ${relation} ${fact.subject}, put ${focus} first`,
     `I'd separate the outcome of ${fact.subject} from ${focus}`,
     `What would ${focus} add to ${aJudgement} ${relation} ${fact.subject}?`,
-    `${starting}. ${question}`,
+    `${preface}, ${continuingIntent} ${focus}`,
     `${aJudgement.charAt(0).toUpperCase() + aJudgement.slice(1)} ${relation} ${fact.subject} needs context: ${focus}`,
   ];
   let text = structures[style.captionSyntax % structures.length]!;
