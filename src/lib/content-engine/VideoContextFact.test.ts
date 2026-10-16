@@ -7,6 +7,40 @@ import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
 const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
 
+describe('literal made hands and explicitly bound holding pot',()=>{
+ const rows=[
+  ['xzEo_fyDjOI','PokerGO','STRAIGHT FLUSH VS NUT FLUSH IN $100,000 SUPER HIGH ROLLER BOWL!','made_hand:matchup:nut flush:straight flush:event:super high roller bowl'],
+  ['uvGjZfmcxg8','Doug Polk Poker','Straight vs Set on Hustler #poker #shorts','made_hand:matchup:set:straight'],
+  ['PwEnLbkjxJg','Bart Hanson','Middle Set Gets Checked Raised! 😱','made_hand:middle_set:facing:check_raise'],
+  ['d3BTrUNEcXY','Mariano','King 10 In A $98KPot! 💸','pot:holding:kt:amount:98000:unit:dollars'],
+ ] as const;
+ it.each(rows)('preserves actual source context %s',(_id,source,title,identity)=>{
+  expect(pokerVideoContextFact(title,source)?.identity).toBe(identity);
+  const b=briefForAsset({kind:'video',domainHint:'poker',title,source});
+  expect(captionFact(b)?.identity).toBe(identity);
+  for(const author of ['1cdb67d7-27af-4709-817c-9270bd915249','48ada431-72b1-4cdb-8abe-541b9f6b179c']){
+   const out=composeCaption(b,styleSheetFor(author));expect(out.text).not.toBe('');expect(out.relevance).toBeGreaterThanOrEqual(.3);
+   expect(out.semanticKey).not.toContain(_id);expect(out.text).not.toMatch(/won|lost|wins|loses|suited|offsuit|100,000/i);
+  }
+ });
+ it('canonicalizes reversal, punctuation and money spelling without source salting',()=>{
+  expect(pokerVideoContextFact('Set versus Straight on Hustler','PokerGO')?.identity).toBe(pokerVideoContextFact(rows[1][2],rows[1][1])?.identity);
+  expect(pokerVideoContextFact('KT in the $98,000 pot','Mariano')?.identity).toBe(pokerVideoContextFact(rows[3][2],rows[3][1])?.identity);
+  expect(pokerVideoContextFact('Middle set gets check-raised','Bart Hanson')?.identity).toBe(pokerVideoContextFact(rows[2][2],rows[2][1])?.identity);
+ });
+ it.each([
+  ['PokerGO','Straight flush vs nut flush and wins Super High Roller Bowl'],
+  ['PokerGO','Straight flush vs straight flush'],
+  ['PokerGO','Could straight flush beat nut flush?'],
+  ['Unknown source',rows[0][2]],
+  ['Bart Hanson','Middle set gets checked raised and folds'],
+  ['Mariano','King 10 in a $98K prize'],
+  ['Mariano','King 10 in a $98KPot and $99KPot'],
+  ['Mariano','King 10 in a $9,8KPot'],
+  ['Mariano','King 10 suited in a $98KPot'],
+ ])('rejects unsupported or compounded context %s %s',(source,title)=>expect(pokerVideoContextFact(title,source)).toBeNull());
+});
+
 describe('literal video context facts',()=>{
  it.each([
   ['3-Betting Pocket Threes Out Of Position','holding:33:bet_level:3:position:oop'],

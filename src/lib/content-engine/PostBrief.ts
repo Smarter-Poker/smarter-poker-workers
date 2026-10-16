@@ -108,7 +108,10 @@ const POKER_CONCEPTS: Record<string, string[]> = {
   suited_holding: ['suited'],
   offsuit_holding: ['offsuit'],
   stakes: ['high stakes', 'stakes'],
-  check_raise: ['check raise', 'check-raise', 'checkraise'],
+  check_raise: ['check raise', 'check-raise', 'checkraise', 'checked raised'],
+  straight: ['straight'],
+  flush: ['flush'],
+  set: ['set'],
   fold: ['fold', 'folds', 'folded', 'laydown', 'lay down'],
   pot: ['pot', 'the pot'],
   stack: ['stack', 'stacks', 'stacked off'],
@@ -167,7 +170,7 @@ const TEAMS: Record<string, Sport> = {
   dolphins: 'nfl', jets: 'nfl', giants: 'nfl', steelers: 'nfl', broncos: 'nfl',
   yankees: 'mlb', dodgers: 'mlb', 'red sox': 'mlb', cubs: 'mlb', mets: 'mlb', braves: 'mlb',
   astros: 'mlb', phillies: 'mlb', padres: 'mlb', orioles: 'mlb', brewers: 'mlb',
-  'white sox': 'mlb', guardians: 'mlb',
+  'white sox': 'mlb', guardians: 'mlb', cleveland: 'mlb',
 };
 
 /** Channels that tell us the sport without reading the title. */
@@ -219,6 +222,7 @@ const KNOWN_SPORT_PEOPLE = [
   'paolo banchero', 'tom brady',
   // Literal named clips in the verified sports library (2026-10-16).
   'jeremy doku', 'og anunoby', 'tyler kolek',
+  'keaton wagler', 'arda güler', 'arda guler', 'sean durzi',
 ];
 
 const KNOWN_PEOPLE = [...KNOWN_POKER_PEOPLE, ...KNOWN_SPORT_PEOPLE];
