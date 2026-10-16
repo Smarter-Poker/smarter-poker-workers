@@ -8,6 +8,21 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('states the source subject once and uses a reference in compound questions', () => {
+    for (const title of ['APT Championship Returns to Taiwan in November With $8.1 Million Guaranteed', 'Phil Ivey makes a huge river call']) {
+      const b = title.startsWith('APT')
+        ? briefForAsset({kind: 'link', title, source: 'PokerNews', domainHint: 'poker'})
+        : brief(title);
+      for (const id of ids) {
+        for (const captionSyntax of [4]) {
+          const out = subjectCaption(b, {...styleSheetFor(id), length: 'medium', captionSyntax})!;
+          expect(out).not.toBeNull();
+          expect(out.text.toLowerCase().split(out.subject.toLowerCase())).toHaveLength(2);
+          expect(out.semanticKey).toBe(subjectCaption(b, styleSheetFor(id))!.semanticKey);
+        }
+      }
+    }
+  });
   it('does not expand canned stakes takes for vague headlines while retaining quantified stake grounding',()=>{
     const vague=brief('The SICKEST HAND in High Stakes Poker HISTORY!!!');
     expect(vague.concepts).toContain('high_stakes');
