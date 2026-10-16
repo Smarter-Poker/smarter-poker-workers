@@ -289,7 +289,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // event noun in a source, a typed reference and a focus phrase.
   const followupQuestion = [
     `What would you want to know about ${focus}?`,
-    `Where does ${focus} fit here?`,
+    `Where would ${focus} fit here?`,
     `Which details of ${focus} matter?`,
     `What else do we need to know about ${focus}?`,
   ][plan.questionHabit]!;
@@ -317,7 +317,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `I'd separate the outcome from the reasoning behind ${fact.subject}`,
     `There's more than the outcome to consider with ${fact.subject}`,
   ][plan.contrast]!;
-  const wanting = style.voice === 'plural' ? `we'd want` : style.voice === 'impersonal' ? 'the missing context is' : style.voice === 'second' ? 'consider' : "I'd want";
+  const wanting = style.voice === 'plural' ? `we'd want` : style.voice === 'impersonal' ? 'it helps to look at' : style.voice === 'second' ? 'consider' : "I'd want";
   const continuingIntent = /^I(?:\b|')/.test(intent) ? intent : intent.charAt(0).toLowerCase() + intent.slice(1);
   // Typed clauses, not arbitrary word reordering: a question has a question
   // slot, a noun phrase has a noun slot, and an imperative stays complete.
@@ -343,7 +343,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     fact.action === 'news_guarantee' ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
-    `For me, ${focus} comes before a verdict on ${fact.subject}`,
+    `For me, I'd check ${focus} before giving a verdict on ${fact.subject}`,
     fact.action === 'news_guarantee' ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
     `Anyone looking at ${focus} for ${fact.subject}?`,
     `For ${fact.subject}, ${continuingIntent} ${focus}`,
@@ -384,7 +384,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `What about ${focus} for ${fact.subject}?`,
     `${fact.subject}: I'd check ${focus}`,
     `${focus} first for ${fact.subject}`,
-    `${fact.subject}: where does ${focus} fit?`,
+    `${fact.subject}: where would ${focus} fit?`,
     `I'd want ${focus} for ${fact.subject}`,
     `For ${fact.subject}, start with ${focus}`,
     `I'd want ${focus} before judging ${fact.subject}`,
@@ -395,7 +395,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `I'm interested in ${focus} for ${fact.subject}`,
   ];
   const compactAnalytical = [
-    `${fact.subject}: how does ${focus} fit?`,
+    `${fact.subject}: how would ${focus} fit?`,
     `Start with ${fact.subject}, then look at ${focus}`,
     `${fact.subject}, viewed through ${focus}`,
     `How would ${focus} help explain ${fact.subject}?`,
@@ -403,7 +403,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `With ${fact.subject}, I'd ask about ${focus}`,
     `Put ${focus} first when considering ${fact.subject}`,
     `What could ${focus} clarify about ${fact.subject}?`,
-    `For ${fact.subject}, the context is ${focus}`,
+    `For ${fact.subject}, I'd want to know about ${focus}`,
     `${focus}: the question behind ${fact.subject}`,
     `A closer look at ${fact.subject}: ${focus}`,
     fact.action === 'news_guarantee' ? `${fact.subject}, with attention to ${focus}` : `${fact.subject}, beyond the result: ${focus}`,
