@@ -36,6 +36,7 @@ describe('conversational caption rendering',()=>{
       expect(out.text).not.toMatch(/:|—|\bassessment\b|\bexamine\b|^\s*[-*]/i);
       expect(out.text).not.toMatch(/I (?:watched|played|won|lost)|last night|when I was/i);
       expect([...out.text.matchAll(emoji)].length).toBeLessThanOrEqual(1);
+      if(out.text.includes('?'))expect(out.text).toMatch(/\?$/);
       expect(composeCaption(b,profile,'0')).toEqual(out);
       if(title.includes('GTD'))expect(out.text).not.toMatch(/\bresult\b|\boutcome\b/i);
     }

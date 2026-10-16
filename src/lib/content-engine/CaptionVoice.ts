@@ -386,7 +386,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `${focus} first for ${fact.subject}`,
     `${fact.subject}: where does ${focus} fit?`,
     `I'd want ${focus} for ${fact.subject}`,
-    `${fact.subject}? Start with ${focus}`,
+    `For ${fact.subject}, start with ${focus}`,
     `I'd want ${focus} before judging ${fact.subject}`,
     `Anyone else asking about ${focus} for ${fact.subject}?`,
     `My focus for ${fact.subject}: ${focus}`,
