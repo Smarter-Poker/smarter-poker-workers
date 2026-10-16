@@ -1,4 +1,5 @@
 import type { CaptionFact } from './CaptionVoice.js';
+import { publicFigureDomain } from './PostBrief.js';
 
 const PAIRS: Record<string, string> = {
   aces: 'aa', kings: 'kk', queens: 'qq', jacks: 'jj', tens: 'tt',
@@ -53,5 +54,16 @@ export function pokerVideoContextFact(rawTitle: string): CaptionFact | null {
       subject: `the $${amount.toLocaleString('en-US')} river`,
     };
   }
+  // Whole literal claims only. "Cracked" establishes that aces are beaten,
+  // not who held them, a winning holding, or how the chips went in.
+  const literal=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,'').replace(/[.!]+$/,'').trim();
+  if(/^(?:cracking (?:pocket )?aces|(?:pocket )?aces (?:are |were |get )?cracked)(?: to win (?:the |a )?tournament)?$/.test(literal)) return {
+    person:'',action:'aces_cracked_context',identity:'holding:aa:cracked',subject:`the ${/\btournament\b/.test(literal)?'tournament ':''}hand where pocket aces are cracked`,
+  };
+  const riverPerson=literal.match(/^(?:dramatic |the |a )?river card for ([a-z]+ [a-z]+)$/)?.[1];
+  if(riverPerson && publicFigureDomain(riverPerson)==='poker') return {
+    person:'',action:'river_context',identity:`river:player:${riverPerson}:card`,
+    subject:`the river card for ${riverPerson.replace(/\b[a-z]/g,letter=>letter.toUpperCase())}`,
+  };
   return null;
 }

@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Validity proof and meaning reuse are independent gates. This suite owns
+// the former; VideoCandidateFreshness.test.ts exercises the latter.
+vi.mock('./VideoCandidateFreshness.js', () => ({ freshVideoCaptionCandidates: async (clips: unknown[]) =>
+  ({status:'ok', clips, scanned:clips.length, stale:0, keys:clips.length}) }));
 
 const mocks = vi.hoisted(() => ({
   candidateClips: vi.fn(),
@@ -418,7 +422,7 @@ describe('horse video oEmbed proof', () => {
     expect(mocks.verifyYouTubeMetadata).not.toHaveBeenCalled();
   });
 
-  it('widens once from the horse slice to the full verified platform pool', async () => {
+  it('screens the full verified platform pool once instead of starving beyond a stale source slice', async () => {
     const supply = {
       poker: Array.from({ length: 10 }, (_, index) => {
         const videoId = `${String(index).padStart(11, 'A')}`.slice(-11);
@@ -431,9 +435,7 @@ describe('horse video oEmbed proof', () => {
       sports: [],
     };
     const allKeys = new Set(supply.poker.map((clip) => `yt:${clip.video_id}`));
-    mocks.filterUnusedAssets
-      .mockResolvedValueOnce(new Set())
-      .mockResolvedValueOnce(allKeys);
+    mocks.filterUnusedAssets.mockResolvedValue(allKeys);
     mocks.publishHorseVideoAtomically.mockResolvedValue({
       success: true, postId: 'post-1', reelId: 'reel-1', created: true,
     });
@@ -442,7 +444,8 @@ describe('horse video oEmbed proof', () => {
       { id: 1, name: 'Alpha', profile_id: 'horse-a' },
       { skipGuard: true, slot: SLOT, allowedTypes: ['poker'], sharedSupply: supply },
     )).resolves.toMatchObject({ success: true });
-    expect(mocks.filterUnusedAssets).toHaveBeenCalledTimes(2);
+    expect(mocks.filterUnusedAssets).toHaveBeenCalledTimes(1);
+    expect(mocks.filterUnusedAssets).toHaveBeenCalledWith([...allKeys], 'horse-a');
   });
 
   it('tries the next caption-ready shared clip when the first exhausts the freshness gate', async () => {

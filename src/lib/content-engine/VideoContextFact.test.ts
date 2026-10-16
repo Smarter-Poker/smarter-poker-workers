@@ -3,10 +3,37 @@ import {pokerVideoContextFact} from './VideoContextFact.js';
 import {captionFact,subjectCaption} from './CaptionVoice.js';
 import {briefForAsset} from './PostBrief.js';
 import {styleSheetFor} from './StyleSheet.js';
+import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
 const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
 
 describe('literal video context facts',()=>{
+ it.each([
+  ['CRACKING ACES TO WIN THE TOURNAMENT!','holding:aa:cracked','aces_cracked_context'],
+  ['DRAMATIC RIVER CARD FOR DANIEL NEGREANU!','river:player:daniel negreanu:card','river_context'],
+ ] as const)('grounds additional literal source facts without inferred agency: %s',(title,identity,action)=>{
+  expect(captionFact(brief(title))).toMatchObject({identity,action,person:''});
+  const out=subjectCaption(brief(title),style)!;
+  expect(out.grounding).toContain(`context:${identity}`);
+  expect(out.text).not.toMatch(/won|lost|wins|loses|called|folded/i);
+  expect(composeCaption(brief(title),style).relevance).toBeGreaterThanOrEqual(.3);
+ });
+ it.each([
+  ['CRACKING ACES TO WIN THE TOURNAMENT!','Pocket aces are cracked'],
+  ['Dramatic river card for Daniel Negreanu!','The river card for DANIEL NEGREANU'],
+ ] as const)('canonicalizes the same new literal fact without title novelty: %s',(first,second)=>{
+  expect(pokerVideoContextFact(first)?.identity).toBe(pokerVideoContextFact(second)?.identity);
+  expect(subjectCaption(brief(first),style)?.semanticKey).toBe(subjectCaption(brief(second),style)?.semanticKey);
+ });
+ it.each([
+  'Could cracking aces win the tournament?','Never cracking aces to win the tournament',
+  'Pocket aces were not cracked','If pocket aces are cracked','Cracking aces before kings are cracked',
+  'Dramatic river card for Daniel Negreanu?','No river card for Daniel Negreanu',
+  'River card for Mystery Player','Phil Ivey watches a river card for Daniel Negreanu',
+  'Daniel Negreanu might get a dramatic river card','River card for Daniel Negreanu and Phil Ivey',
+ ])('refuses unsupported additional context: %s',title=>{
+  expect(pokerVideoContextFact(title)).toBeNull();
+ });
  it.each([
   ['Rampage is ALL IN with ACES 3 ways','all_in:holding:aa:players:3','all_in_context'],
   ['Navigating A Chaos 5-Way All-In','all_in:players:5','all_in_context'],

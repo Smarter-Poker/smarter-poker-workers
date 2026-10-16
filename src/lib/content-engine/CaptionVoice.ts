@@ -10,11 +10,12 @@ import type { StyleSheet } from './StyleSheet.js';
 import { RANKS, rankWord } from './PokerEvaluator.js';
 import { sayHolding } from './HandVoice.js';
 import { pokerVideoContextFact } from './VideoContextFact.js';
+import { newsTitleFact } from './NewsTitleFact.js';
 
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context';
+  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep';
   subject: string;
 }
 
@@ -47,6 +48,10 @@ export function captionFact(b: PostBrief): CaptionFact | null {
   if ((b.kind !== 'video' && b.kind !== 'link') || b.isQuestion) return null;
   const titleForGuards = b.title.replace(/[\u2018\u2019]/g,"'");
   if (/\b(?:not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|might)\b/i.test(titleForGuards)) return null;
+  if (b.kind === 'link') {
+    const report = newsTitleFact(b);
+    if (report) return report;
+  }
   // Typed context facts do not assign an unnamed action to a person. These
   // are literal variant/holding/amount bindings, not a title or video-id salt.
   if (b.domain === 'poker' && !/\b(?:not|never|could|would|should|might|can|reacts|watches)\b/i.test(b.title)) {
@@ -71,10 +76,21 @@ export function captionFact(b: PostBrief): CaptionFact | null {
   const person = people[0]!;
   // The extractor can retain a surname alongside its canonical full name.
   // A genuinely different additional person still makes actor binding unsafe.
-  if (b.people.some(p=>!person.toLowerCase().includes(p.toLowerCase()))) return null;
+  if (b.people.some(p=>!person.toLowerCase().includes(p.toLowerCase().replace(/['’]s$/,'')))) return null;
   if (publicFigureDomain(person) !== b.domain || !b.title.toLowerCase().includes(person.toLowerCase())) return null;
   if (/\b(?:not|never|didn't|doesn't|could|would|should|might|can|watches|reacts|against|versus|vs)\b/i.test(b.title)) return null;
   const actor = escape(person);
+  // Additional literal sports bindings are whole titles, not entity presence
+  // mistaken for agency. The canonical known-person registry owns identity.
+  const literalTitle=titleForGuards.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,'').trim();
+  if(b.domain==='sports') {
+    const literalActions: Array<[CaptionFact['action'],RegExp,string]> = [
+      ['goal',new RegExp(`^${actor}'s (?:trademark )?goal[.!]*$`,'i'),`${possessive(person)} goal`],
+      ['dunk',new RegExp(`^${actor} (?:turns the corner and )?throws down (?:a |the )?(?:powerful |huge |big )?slam[.!]*$`,'i'),`${possessive(person)} dunk`],
+      ['three',new RegExp(`^${actor} gets (?:the |a )?friendly bounce on (?:a |the )?(?:clutch )?(?:go-ahead )?three[.!]*$`,'i'),`${possessive(person)} three-pointer`],
+    ];
+    for(const [action,pattern,subject] of literalActions) if(pattern.test(literalTitle)) return {person,action,subject};
+  }
   const bluffObject = '(?:(?:a|an|the) )?(?:(?:river|huge|big|bold|massive|crazy|insane|audacious|triple-barrel) ){0,3}bluff(?![a-z]|[- ]catch)';
   const patterns: Array<[CaptionFact['action'], RegExp, string]> = b.domain === 'poker' ? [
     ['bluff', new RegExp(`${actor}\\s+(?:runs|fires|attempts|pulls off) ${bluffObject}`, 'i'), `${possessive(person)} bluff`],
@@ -93,6 +109,22 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  news_guarantee: [
+    {key:'guarantee_terms',variants:s=>[`What are the terms behind ${s}?`,`I'd distinguish the guarantee from the eventual payouts when reading about ${s}.`,`Which details define ${s}?`]},
+  ],
+  news_bubble: [
+    {key:'bubble_decisions',variants:s=>[`What decision context belongs alongside ${s}?`,`I'd examine the decisions around the bubbles in ${s}.`,`What context is available for ${s}?`]},
+  ],
+  news_sweep: [
+    {key:'series_context',variants:s=>[`Which parts of the series help explain ${s}?`,`I'd look at the individual games when discussing ${s}.`,`What is the series context for ${s}?`]},
+  ],
+  aces_cracked_context: [
+    {key:'runout',variants:s=>[`Which part of the runout explains ${s}?`,`I'd examine the runout when discussing ${s}.`,`What changes for pocket aces during ${s}?`]},
+  ],
+  goal: [
+    {key:'setup',variants:s=>[`What creates the opening for ${s}?`,`I'd look at the buildup before judging ${s}.`,`Which movement sets up ${s}?`]},
+    {key:'space',variants:s=>[`Where does the space for ${s} come from?`,`I'd examine the space available before ${s}.`,`What room is available for the finish on ${s}?`]},
+  ],
   all_in_context: [
     { key: 'ranges', variants: s => [`Which ranges meet in ${s}?`, `I'd start with the ranges involved in ${s}.`, `What hands reach ${s}?`] },
   ],
@@ -130,6 +162,12 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'news_guarantee:guarantee_terms': ['the terms of the guarantee','the guaranteed prize pool','the guarantee rather than an assumed payout','the details attached to the guarantee'],
+  'news_bubble:bubble_decisions': ['the decisions around the bubbles','the context of the bubble finishes','the reported bubble decisions','the circumstances of those bubble finishes'],
+  'news_sweep:series_context': ['the individual games of the series','the matchups across the series','the course of the series','the games behind the series result'],
+  'aces_cracked_context:runout': ['the runout of the hand','the board runout','the cards that change the hand','the progression of the board'],
+  'goal:setup': ['the buildup to the goal','the movement before the finish','the opening for the shot','the play before the finish'],
+  'goal:space': ['the space for the finish','the room available for the shot','the space before the shot','the distance to the defenders'],
   'all_in_context:ranges': ['the ranges involved', 'the hands still available', 'the possible opposing holdings', 'the ranges rather than the result'],
   'pot_context:structure': ['the pot structure', 'the contributions to the pot', 'the structure before the outcome', 'the amounts each player contributes'],
   'river_context:earlier_action': ['the earlier action', 'the ranges reaching the river', 'the decisions leading to the river', 'the route to the river'],
@@ -147,13 +185,26 @@ const FOCUS: Record<string, string[]> = {
 };
 
 /** Only grammar choices actually consumed below, never id-only decoration. */
+function voiceChoice(profileId: string, habit: string, count: number): number {
+  // FNV's low bits correlate across salts, especially in sequential profile
+  // cohorts. Avalanche before taking a small modulus so cadence and diction
+  // are independent habits rather than different labels for the same split.
+  let value = fleetHash(profileId, habit);
+  value = Math.imul(value ^ (value >>> 16), 0x85ebca6b);
+  value = Math.imul(value ^ (value >>> 13), 0xc2b2ae35);
+  return ((value ^ (value >>> 16)) >>> 0) % count;
+}
+
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 1,
+    version: 2,
     speech: style.captionSyntax,
-    intent: fleetHash(style.profileId,'voice-intent:v1') % 6,
-    preface: fleetHash(style.profileId,'voice-preface:v1') % 8,
-    contrast: fleetHash(style.profileId,'voice-contrast:v1') % 4,
+    // These select complete authored clauses below, not an invisible identity
+    // token. A horse keeps its cadence across subjects and bounded retries.
+    cadence: voiceChoice(style.profileId,'voice-cadence:v2',3),
+    intent: voiceChoice(style.profileId,'voice-intent:v1',6),
+    preface: voiceChoice(style.profileId,'voice-preface:v1',8),
+    contrast: voiceChoice(style.profileId,'voice-contrast:v1',4),
     density: style.length === 'terse' ? 'terse' : style.length === 'short' ? 'short' : style.length === 'two_sentence' || style.length === 'three_sentence' ? 'developed' : 'single',
     viewpoint: style.voice,
     register: style.slang,
@@ -165,7 +216,7 @@ export function captionVoiceProfile(style: StyleSheet) {
       family, fleetHash(style.profileId, `voice-angle:${family}`) % angles.length,
     ])),
     focus: Object.fromEntries(Object.entries(FOCUS).map(([key, values])=>[
-      key, fleetHash(style.profileId, `voice-focus:${key}`) % values.length,
+      key, voiceChoice(style.profileId, `voice-focus:${key}`, values.length),
     ])),
     questions: Object.fromEntries(Object.entries(ANGLES).map(([family, angles])=>[
       family, angles.map(a=>fleetHash(style.profileId, `voice-question:${family}`) % a.variants('subject').filter(t=>t.endsWith('?')).length),
@@ -234,7 +285,35 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `${preface}, ${continuingIntent} ${focus}`,
     `${aJudgement.charAt(0).toUpperCase() + aJudgement.slice(1)} ${relation} ${fact.subject} needs context: ${focus}`,
   ];
-  let text = structures[style.captionSyntax % structures.length]!;
+  const conversational = [
+    `On ${fact.subject}, what about ${focus}?`,
+    `${fact.subject} has me asking about ${focus}`,
+    `I need ${focus} to form ${aJudgement} ${relation} ${fact.subject}`,
+    `${fact.subject} is where I'd ask about ${focus}`,
+    `The outcome of ${fact.subject} is one thing. ${question}`,
+    `My read on ${fact.subject} would depend on ${focus}`,
+    `${fact.subject} is a question about ${focus} for me`,
+    `For me, ${focus} comes before a verdict on ${fact.subject}`,
+    `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
+    `Anyone looking at ${focus} when assessing ${fact.subject}?`,
+    `${fact.subject}: ${continuingIntent} ${focus}`,
+    `A little context for ${fact.subject} first: ${focus}`,
+  ];
+  const analytical = [
+    `How should ${focus} inform a read on ${fact.subject}?`,
+    `The question behind ${fact.subject} is ${focus}`,
+    `Assessing ${fact.subject} starts with a look at ${focus}`,
+    `${focus} is the starting point I'd use for ${fact.subject}`,
+    `Looking beyond the result of ${fact.subject}: ${question}`,
+    `${fact.subject} needs to be considered alongside ${focus}`,
+    `With ${fact.subject}, my focus would be ${focus}`,
+    `Context before conclusions on ${fact.subject}: ${focus}`,
+    `Separate the outcome from the analysis of ${fact.subject}: consider ${focus}`,
+    `What would a closer look at ${focus} change about a read on ${fact.subject}?`,
+    `Put ${focus} at the centre of the discussion of ${fact.subject}`,
+    `The context I'd ask for on ${fact.subject} is ${focus}`,
+  ];
+  let text = [structures, conversational, analytical][plan.cadence]![style.captionSyntax % structures.length]!;
   // Terse and short voices choose a whole short clause. Never truncate a
   // fact or add a generic sentence just to match a word-count target.
   const compact = [
@@ -251,15 +330,46 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `My question on ${fact.subject}: ${focus}`,
     `${fact.subject}: I want ${focus}`,
   ];
-  if (style.length === 'terse' || style.length === 'short') text = compact[style.captionSyntax % compact.length]!;
+  const compactConversational = [
+    `What about ${focus} for ${fact.subject}?`,
+    `${fact.subject}: I'd check ${focus}`,
+    `${focus} first for ${fact.subject}`,
+    `${fact.subject}: where does ${focus} fit?`,
+    `For me, ${fact.subject} needs ${focus}`,
+    `${fact.subject}? Start with ${focus}`,
+    `I'd want ${focus} before judging ${fact.subject}`,
+    `Anyone else asking about ${focus} for ${fact.subject}?`,
+    `My focus for ${fact.subject}: ${focus}`,
+    `Before judging ${fact.subject}: ${focus}`,
+    `${fact.subject} has me asking about ${focus}`,
+    `I'm interested in ${focus} for ${fact.subject}`,
+  ];
+  const compactAnalytical = [
+    `${fact.subject}: how does ${focus} fit?`,
+    `Start with ${fact.subject}, then examine ${focus}`,
+    `${fact.subject}, viewed through ${focus}`,
+    `How does ${focus} inform ${fact.subject}?`,
+    `Assess ${fact.subject} in light of ${focus}`,
+    `${fact.subject} needs context: ${focus}`,
+    `Put ${focus} first when considering ${fact.subject}`,
+    `What does ${focus} clarify about ${fact.subject}?`,
+    `For ${fact.subject}, the context is ${focus}`,
+    `${focus}: the question behind ${fact.subject}`,
+    `A closer look at ${fact.subject}: ${focus}`,
+    `${fact.subject}, beyond the result: ${focus}`,
+  ];
+  if (style.length === 'terse' || style.length === 'short') {
+    text = [compact, compactConversational, compactAnalytical][plan.cadence]![style.captionSyntax % compact.length]!;
+  }
   // A stable contraction register is grammatical variation, not random noise.
   if (!style.contractions) text = text.replace(/I'd\b/g, 'I would').replace(/I'm\b/g, 'I am');
   const reference = fact.action === 'river_call' ? 'that call'
     : fact.action === 'river_fold' || fact.action === 'fold' ? 'that fold'
-      : fact.action === 'bluff' ? 'that bluff' : fact.action === 'three' ? 'that shot'
+      : fact.action === 'bluff' ? 'that bluff' : fact.action === 'three' ? 'that shot' : fact.action === 'goal' ? 'that goal'
         : fact.action === 'dunk' ? 'that finish' : fact.action === 'bracelet' ? 'that win'
           : fact.action === 'pot_contribution' ? 'that contribution' : fact.action === 'pot_context' ? 'that pot'
-            : fact.action === 'all_in_context' ? 'that all-in' : fact.action === 'river_context' ? 'that river' : 'that decision';
+            : fact.action === 'all_in_context' ? 'that all-in' : fact.action === 'river_context' ? 'that river' : fact.action === 'aces_cracked_context' ? 'that hand'
+              : fact.action === 'news_guarantee' ? 'that guarantee' : fact.action === 'news_bubble' ? 'that bubble run' : fact.action === 'news_sweep' ? 'that series' : 'that decision';
   return {
     text,
     subject: fact.subject,

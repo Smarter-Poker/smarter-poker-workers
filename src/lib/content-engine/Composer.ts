@@ -688,12 +688,12 @@ export function composeCaption(
   // scraped text in "worth a look" and scored the repeated title as relevant,
   // allowing poker posts about aliens and sports clips with clipped captions.
   // Silence is recoverable; publishing something we did not understand is not.
-  if (!hasSpecificTake(b)) return { text: '', relevance: 0, grounding: [] };
+  const subject = subjectCaption(b, style, variantSeed);
+  if (!subject && !hasSpecificTake(b)) return { text: '', relevance: 0, grounding: [] };
 
   // A source-established actor/action gives the opinion a genuine subject.
   // Unlike a video-id suffix, this changes what the sentence actually asks
   // about while equivalent wordings retain one canonical semantic key.
-  const subject = subjectCaption(b, style, variantSeed);
   if (subject) {
     const longer = targetWords(style).sentences >= 2;
     const retry = /^\d+$/.test(variantSeed) ? Number(variantSeed) : 0;

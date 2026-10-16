@@ -44,19 +44,58 @@ export async function resolveArticleImageUrl(item: Record<string, unknown>): Pro
   const link = safeArticleUrl(item.link);
   if (!link) return null;
   const url = new URL(link);
-  if (!['espn.com', 'www.espn.com'].includes(url.hostname.toLowerCase())) return null;
-  const id = url.pathname.match(/\/story\/_\/id\/(\d+)(?:\/|$)/)?.[1];
-  if (!id) return null;
-  const cached = storyImageCache.get(id);
+  const espn = ['espn.com', 'www.espn.com'].includes(url.hostname.toLowerCase());
+  const id = espn ? url.pathname.match(/\/story\/_\/id\/(\d+)(?:\/|$)/)?.[1] : undefined;
+  const cardPlayer = url.protocol === 'https:' && !url.port
+    && url.hostname === 'www.cardplayer.com'
+    && /^\/poker-news\/\d+-[a-z0-9-]+\/?$/i.test(url.pathname);
+  if (!id && !cardPlayer) return null;
+  const cacheKey = id ? `espn:${id}` : `cardplayer:${url.pathname}`;
+  const cached = storyImageCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.pending;
-  const entry = { expires: Date.now() + 6000, pending: fetchStoryImage(id) };
-  storyImageCache.set(id, entry);
+  const entry = { expires: Date.now() + 6000, pending: id ? fetchStoryImage(id) : fetchCardPlayerImage(url) };
+  storyImageCache.set(cacheKey, entry);
   if (storyImageCache.size > 256) storyImageCache.delete(storyImageCache.keys().next().value!);
   const result = await entry.pending;
   // Success and failure are bounded metadata optimizations, never a publish
   // authority. An outage is retried on a later original request, not a timer.
   entry.expires = Date.now() + (result ? 5 * 60_000 : 30_000);
   return result;
+}
+
+function htmlAttribute(tag: string, name: string): string | null {
+  const value = tag.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])(.*?)\\1`, 'i'))?.[2];
+  return value?.replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;/g, "'") ?? null;
+}
+
+/** Only CardPlayer's public story route, exact canonical identity, no redirects. */
+async function fetchCardPlayerImage(url: URL): Promise<string | null> {
+  try {
+    const target = new URL(url.pathname, 'https://www.cardplayer.com');
+    const response = await fetch(target.href, {
+      headers: { Accept: 'text/html' }, redirect: 'error', signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok || !/text\/html/i.test(response.headers.get('content-type') ?? '')) return null;
+    if (!response.body) return null;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > 524_288) { await reader.cancel(); return null; }
+      chunks.push(part.value);
+    }
+    const body = Buffer.concat(chunks, bytes).toString('utf8');
+    const tags = [...body.matchAll(/<meta\b[^>]*>/gi)].map(match => match[0]);
+    const metadata = (property: string) => tags.find(tag => htmlAttribute(tag, 'property')?.toLowerCase() === property);
+    const canonical = safeArticleUrl(htmlAttribute(metadata('og:url') ?? '', 'content'));
+    if (!canonical) return null;
+    const identity = new URL(canonical);
+    if (identity.origin !== target.origin || identity.pathname.replace(/\/$/, '') !== target.pathname.replace(/\/$/, '')) return null;
+    return safeArticleImageUrl(htmlAttribute(metadata('og:image') ?? '', 'content'));
+  } catch { return null; }
 }
 
 async function fetchStoryImage(id: string): Promise<string | null> {
@@ -100,11 +139,20 @@ function imageFromHtml(value: unknown): string | null {
 
 export function extractArticleImageUrl(item: Record<string, unknown>): string | null {
   const enclosure = item.enclosure as { url?: unknown } | undefined;
-  const media = item['media:content'] as { $?: { url?: unknown } } | undefined;
-  const thumbnail = item['media:thumbnail'] as { $?: { url?: unknown } } | undefined;
+  const mediaImage = (value: unknown): string | null => {
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      if (!entry || typeof entry !== 'object') continue;
+      const safe = safeArticleImageUrl((entry as { $?: { url?: unknown } }).$?.url);
+      if (safe) return safe;
+    }
+    return null;
+  };
   return safeArticleImageUrl(enclosure?.url)
-    ?? safeArticleImageUrl(media?.$?.url)
-    ?? safeArticleImageUrl(thumbnail?.$?.url)
+    ?? mediaImage(item['media:content'])
+    ?? mediaImage(item['media:thumbnail'])
     ?? imageFromHtml(item['content:encoded'])
+    // rss-parser normalizes RSS description into content. PokerNews carries
+    // genuine story art here, not in the raw description key.
+    ?? imageFromHtml(item.content)
     ?? imageFromHtml(item.description);
 }

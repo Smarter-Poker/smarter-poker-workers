@@ -34,6 +34,8 @@ const ledger = vi.hoisted(() => ({ recordPhrase: vi.fn(), recordAssetUse: vi.fn(
 const modes = vi.hoisted(() => ({ grounded: true, video: true }));
 const feed = vi.hoisted(() => ({ parseURL: vi.fn() }));
 const voice = vi.hoisted(() => ({ writeCaption: vi.fn(), writeGrounded: vi.fn() }));
+const freshness = vi.hoisted(() => ({ screen: vi.fn() }));
+vi.mock('./VideoCandidateFreshness.js', () => ({ freshVideoCaptionCandidates: freshness.screen }));
 
 vi.mock('../supabase.js', () => ({
   getSupabase: () => ({
@@ -131,7 +133,7 @@ import {
   type FleetHorse,
 } from './HorsePublisher.js';
 import { fleetHash, isDueForPost } from './FleetScheduler.js';
-import { sliceForHorse, type SupplyClip } from './ClipSupply.js';
+import { newsSources, sliceForHorse, type SupplyClip } from './ClipSupply.js';
 
 const NOW = new Date('2026-09-21T14:30:00Z');
 const SLOT = '2026-09-21T14';
@@ -185,6 +187,8 @@ beforeEach(() => {
   feed.parseURL.mockReset();
   feed.parseURL.mockResolvedValue({ items: [{ title: 'Deep run at the Main Event', link: 'https://news.example/a', enclosure: { url: 'https://cdn.news.example/photos/main-event.webp' } }] });
   voice.writeCaption.mockReset();
+  freshness.screen.mockReset();
+  freshness.screen.mockImplementation(async (clips: SupplyClip[]) => ({ status: 'ok', clips, scanned: clips.length, stale: 0, keys: clips.length }));
   voice.writeCaption.mockResolvedValue({
     text: 'Called the river with second pair and it held',
     stale: false,
@@ -452,6 +456,28 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(db.rpcCalls.filter(x=>x.name==='publish_horse_video_reel')).toHaveLength(1);
   });
 
+  it('screens past six asset-fresh but meaning-stale factual shorts before choosing the bounded writer candidates', async () => {
+    const clips = Array.from({length: 7}, (_,index)=>({id:`clip-${index}`,video_id:`Factual000${index}`,
+      source_url:`https://www.youtube.com/watch?v=Factual000${index}`, source:'PokerGO',
+      title:index===6?'Pocket aces in a four-way pot':'Navigating a five-way all-in',duration_seconds:60,
+    })) as SupplyClip[];
+    freshness.screen.mockResolvedValue({status:'ok', clips:[clips[6]], scanned:7, stale:6, keys:2});
+    const result=await publishVideoClip(horse(horseId(0)),'poker',[],'fleet',{poker:clips,sports:[]},'fleet:slot');
+    expect(result.success).toBe(true);
+    expect(freshness.screen.mock.calls[0]?.[0]).toHaveLength(7);
+    expect(voice.writeCaption).toHaveBeenCalledTimes(1);
+    expect(voice.writeCaption.mock.calls[0]?.[1].title).toBe(clips[6]!.title);
+  });
+
+  it('does not publish or fall through on unreadable meaning preflight', async () => {
+    freshness.screen.mockResolvedValue({status:'unknown',error:'semantic ledger unavailable'});
+    const clip={id:'x',video_id:'Factual0001',source_url:'https://www.youtube.com/watch?v=Factual0001',source:'PokerGO',title:'Navigating a five-way all-in',duration_seconds:60} as SupplyClip;
+    const result=await publishVideoClip(horse(horseId(0)),'poker',[],'fleet',{poker:[clip],sports:[]},'fleet:slot');
+    expect(result).toMatchObject({success:false,outcome:'unknown'});
+    expect(voice.writeCaption).not.toHaveBeenCalled();
+    expect(db.rpcCalls.filter(x=>x.name==='publish_horse_video_reel')).toHaveLength(0);
+  });
+
   it('does not publish an article card with missing or generic artwork', async () => {
     modes.grounded=false;modes.video=false;
     feed.parseURL.mockResolvedValue({items:[{title:'Deep run at the Main Event',link:'https://news.example/a',enclosure:{url:'https://cdn.example/publisher-logo.png'}}]});
@@ -482,6 +508,42 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(ledger.recordPhrase).not.toHaveBeenCalled();
     expect(ledger.recordAssetUse).not.toHaveBeenCalled();
     expect(ledger.recordBrief).not.toHaveBeenCalled();
+  });
+
+  it('falls through a configured 429 feed to another registered publisher without a producer retry', async () => {
+    modes.grounded=false;modes.video=false;
+    vi.mocked(newsSources).mockResolvedValueOnce([
+      {id:'a',name:'Throttled',feed_url:'https://blocked.example/rss',fallback_urls:null},
+      {id:'b',name:'Healthy',feed_url:'https://healthy.example/rss',fallback_urls:null},
+    ]);
+    feed.parseURL.mockRejectedValueOnce(new Error('Status code 429')).mockResolvedValueOnce({items:[
+      {title:'Deep run at the Main Event',link:'https://healthy.example/a',content:'<img src="https://cdn.healthy.example/photos/story.jpg">'},
+    ]});
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
+    expect(result.success).toBe(true);
+    expect(feed.parseURL).toHaveBeenCalledTimes(2);
+    expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
+  });
+
+  it('finds genuine inline story art beyond three blank leading articles', async () => {
+    modes.grounded=false;modes.video=false;
+    feed.parseURL.mockResolvedValue({items:[...Array.from({length:3},(_,index)=>({title:'Deep run at the Main Event',link:`https://news.example/blank${index}`})),
+      {title:'Deep run at the Main Event',link:'https://news.example/illustrated',content:'<img src="https://cdn.news.example/photos/actual-story.jpg">'},
+    ]});
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
+    expect(result.success).toBe(true);
+    expect(db.rpcCalls.find(call=>call.name==='publish_horse_news_post')?.args).toMatchObject({
+      p_link_url:'https://news.example/illustrated',p_link_image:'https://cdn.news.example/photos/actual-story.jpg',
+    });
+  });
+
+  it('does not try another feed after an unknown atomic-news acknowledgement', async () => {
+    modes.grounded=false;modes.video=false;
+    db.newsRpcResult={data:null,error:{message:'Connection lost after request'}};
+    const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
+    expect(result).toMatchObject({success:false,outcome:'unknown'});
+    expect(feed.parseURL).toHaveBeenCalledTimes(1);
+    expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
   });
 
   it('a news insert carries the actual safe article image in link_image', async () => {
