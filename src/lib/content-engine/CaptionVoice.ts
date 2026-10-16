@@ -170,7 +170,7 @@ const FOCUS: Record<string, string[]> = {
   'holding_context:opposing_ranges': ['the opposing ranges','the hands in the opposing ranges','the ranges around the holding','the relevant opposing combinations'],
   'stakes_context:effective_stacks': ['the effective stacks','the stack depth in big blinds','the available stack depth','the effective stacks rather than just the stake label'],
   'prize_context:payout_structure': ['the payout schedule','the distribution around the top prize','the wider payout structure','the distinction between the top prize and the total pool'],
-  'news_guarantee:guarantee_terms': ['the terms of the guarantee','the guaranteed prize pool','the guarantee rather than an assumed payout','the details attached to the guarantee'],
+  'news_guarantee:guarantee_terms': ['the published terms', 'the stated minimum prize pool', 'the distinction between a stated minimum and an eventual payout', 'the details attached to the stated minimum'],
   'news_bubble:bubble_decisions': ['the decisions around the bubbles','the context of the bubble finishes','the decisions around those bubbles','the circumstances of those bubble finishes'],
   'news_sweep:series_context': ['the individual games of the series','the matchups across the series','the course of the series','the games behind the series result'],
   'aces_cracked_context:runout': ['the runout of the hand','the board runout','the cards that change the hand','the progression of the board'],
@@ -205,7 +205,7 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 5,
+    version: 6,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
@@ -260,6 +260,15 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const question = plan.questionHabit < 2 ? sourceQuestion : plan.questionHabit === 2
     ? `For ${fact.subject}, what should we examine about ${focus}?`
     : `Which details of ${focus} matter when assessing ${fact.subject}?`;
+  // In a compound frame the opening already establishes the source fact.
+  // A context-only question develops it without circling through the same
+  // event noun in a source, a typed reference and a focus phrase.
+  const followupQuestion = [
+    `What should we examine about ${focus}?`,
+    `How should ${focus} inform the assessment?`,
+    `Which details of ${focus} matter?`,
+    `What context is missing about ${focus}?`,
+  ][plan.questionHabit]!;
   const judgement = style.slang === 'none' ? 'assessment' : style.slang === 'heavy' ? 'read' : 'take';
   const aJudgement = `${judgement === 'assessment' ? 'an' : 'a'} ${judgement}`;
   const relation = judgement === 'assessment' ? 'of' : 'on';
@@ -293,7 +302,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     starting,
     `${preface}, ${wanting} ${focus}`,
     `For ${fact.subject}, the discussion starts with ${focus}`,
-    `${contrast}. ${question}`,
+    fact.action === 'news_guarantee' ? `${fact.subject}: ${followupQuestion}` : `${contrast}. ${followupQuestion}`,
     `Hard to judge ${fact.subject} without ${focus}`,
     `${intent} ${focus} when considering ${fact.subject}`,
     `For ${aJudgement} ${relation} ${fact.subject}, put ${focus} first`,
@@ -307,7 +316,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `${fact.subject} has me asking about ${focus}`,
     `I need ${focus} to form ${aJudgement} ${relation} ${fact.subject}`,
     `${fact.subject} is where I'd ask about ${focus}`,
-    `The outcome of ${fact.subject} is one thing. ${question}`,
+    fact.action === 'news_guarantee' ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `${fact.subject} is a question about ${focus} for me`,
     `For me, ${focus} comes before a verdict on ${fact.subject}`,
@@ -321,7 +330,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `The question behind ${fact.subject} is ${focus}`,
     `Assessing ${fact.subject} starts with a look at ${focus}`,
     `${focus} is the starting point I'd use for ${fact.subject}`,
-    `Looking beyond the result of ${fact.subject}: ${question}`,
+    fact.action === 'news_guarantee' ? `Looking more closely at ${fact.subject}: ${followupQuestion}` : `Looking beyond the result of ${fact.subject}: ${followupQuestion}`,
     `${fact.subject} needs to be considered alongside ${focus}`,
     `With ${fact.subject}, my focus would be ${focus}`,
     `Context before conclusions on ${fact.subject}: ${focus}`,

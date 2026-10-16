@@ -18,6 +18,7 @@ describe('free maintained caption quality', () => {
     expect(captionQuality('Reading from ESPN News: a headline').reasons).toContain('headline_wrapper');
     expect(captionQuality('What are the pot odds for that call? I would examine the equity required by the price.').reasons).toContain('repeated_focus');
     expect(captionQuality('').pass).toBe(false);
+    expect(captionQuality('Looking beyond the result of the $100,000 guarantee for Trailblazer Warm-Up: Which details of the terms of the guarantee matter when assessing that guarantee?', {subject:'the $100,000 guarantee for Trailblazer Warm-Up'}).reasons).toContain('circular_event_focus');
   });
   it('does not equate two genuine grounded considerations or repeated rank/suit words', () => {
     expect(captionQuality('The price is my starting point for that call. I would work back through the ranges.').pass).toBe(true);

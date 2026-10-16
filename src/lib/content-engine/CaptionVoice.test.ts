@@ -8,6 +8,15 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('does not circle back to the event noun in compound guarantee questions', () => {
+    const b = briefForAsset({kind:'video', title:'Trailblazer Warm-Up $100K GTD', source:'PokerGO', domainHint:'poker'});
+    for (const id of ['56315bf9-8a2b-4625-9e53-c7fe4bde9a8c','00000000-0000-4000-8000-000000000004']) {
+      const out = subjectCaption(b, {...styleSheetFor(id),length:'medium',captionSyntax:4})!;
+      expect(out.text.match(/\bguarantee\b/gi)).toHaveLength(1);
+      expect(out.text).not.toMatch(/result|outcome|that guarantee/i);
+      expect(out.semanticKey).toBe('meaning:subject:event trailblazer warm up guarantee 100000 unit dollars:news_guarantee:guarantee_terms');
+    }
+  });
   it('states the source subject once and uses a reference in compound questions', () => {
     for (const title of ['APT Championship Returns to Taiwan in November With $8.1 Million Guaranteed', 'Phil Ivey makes a huge river call']) {
       const b = title.startsWith('APT')
