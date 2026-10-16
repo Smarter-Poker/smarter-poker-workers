@@ -163,7 +163,7 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 
 const FOCUS: Record<string, string[]> = {
   'news_guarantee:guarantee_terms': ['the terms of the guarantee','the guaranteed prize pool','the guarantee rather than an assumed payout','the details attached to the guarantee'],
-  'news_bubble:bubble_decisions': ['the decisions around the bubbles','the context of the bubble finishes','the reported bubble decisions','the circumstances of those bubble finishes'],
+  'news_bubble:bubble_decisions': ['the decisions around the bubbles','the context of the bubble finishes','the decisions around those bubbles','the circumstances of those bubble finishes'],
   'news_sweep:series_context': ['the individual games of the series','the matchups across the series','the course of the series','the games behind the series result'],
   'aces_cracked_context:runout': ['the runout of the hand','the board runout','the cards that change the hand','the progression of the board'],
   'goal:setup': ['the buildup to the goal','the movement before the finish','the opening for the shot','the play before the finish'],

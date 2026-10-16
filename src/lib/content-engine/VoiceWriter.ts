@@ -672,20 +672,28 @@ export async function syncStyleSheets(
     checked++;
     const sheet = styleSheetFor(horse.profile_id);
     const want = styleId(sheet);
-    const current = (horse.personality ?? null) as { style?: { style_id?: string } } | null;
-    if (current?.style?.style_id === want) continue;
+    // Caption grammar evolves independently of the formatting fingerprint.
+    const caption = captionVoiceProfile(sheet);
+    type StoredStyle = { style_id?: string; caption?: { version?: unknown } };
+    const current = (horse.personality ?? null) as { style?: StoredStyle } | null;
+    if (current?.style?.style_id === want && current.style.caption?.version === caption.version) continue;
 
     try {
-      const { data: row } = await supa
+      const { data: row, error: readError } = await supa
         .from('content_authors')
         .select('personality')
         .eq('profile_id', horse.profile_id)
         .maybeSingle();
+      if (readError || !row) {
+        console.warn('[voice] style sync read failed:', readError?.message ?? 'content author not found');
+        continue;
+      }
       const existing = ((row?.personality ?? {}) as Record<string, unknown>) || {};
-      if ((existing.style as { style_id?: string } | undefined)?.style_id === want) continue;
+      const stored = existing.style as StoredStyle | undefined;
+      if (stored?.style_id === want && stored.caption?.version === caption.version) continue;
       const { error } = await supa
         .from('content_authors')
-        .update({ personality: { ...existing, style: { ...describeStyle(sheet), caption: captionVoiceProfile(sheet) } } })
+        .update({ personality: { ...existing, style: { ...describeStyle(sheet), caption } } })
         .eq('profile_id', horse.profile_id);
       if (error) {
         console.warn('[voice] style sync failed:', error.message);
