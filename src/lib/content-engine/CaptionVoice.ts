@@ -386,8 +386,8 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `You'd have to look at ${focus} for ${fact.subject}`,
     `With ${fact.subject}, my focus would be ${focus}`,
     `Before calling ${fact.subject} either way, I'd check ${focus}`,
-    fact.action === 'news_guarantee' ? `For ${fact.subject}, the bit I'd check is ${focus}` : `With ${fact.subject}, I'd separate the result from ${focus}`,
-    `What would a closer look at ${focus} change about a read on ${fact.subject}?`,
+    `I'd focus on ${focus} when looking at ${fact.subject}`,
+    `What do you notice about ${focus} in ${fact.subject}?`,
     `Let's talk about ${focus} for ${fact.subject}`,
     `For ${fact.subject}, I still want to know about ${focus}`,
   ];

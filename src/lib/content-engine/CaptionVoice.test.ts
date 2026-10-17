@@ -337,6 +337,22 @@ describe('source-bound individual caption voices', () => {
     expect(new Set(rows.map(({out})=>out.semanticKey)).size).toBe(3);
   });
 
+  it('uses plain focus language for the actual matchup author instead of abstract result separation', () => {
+    const b=briefForAsset({kind:'video',title:'Padres vs. Brewers NLDS Game 2 Shorts Recap',source:'MLB',domainHint:'sports',sportHint:'mlb'});
+    const out=composeCaption(b,styleSheetFor('92cd4964-6206-4989-9730-b7959bae6dc5'));
+    expect(out.text).not.toMatch(/separate the result from/i);
+    expect(out.text).toMatch(/focus on the course of the game/i);
+    expect(out.semanticKey).toBe('meaning:subject:baseball matchup brewers padres series nlds game 2:baseball_matchup_context:game_sequence');
+  });
+
+  it('asks a direct question for the actual passing-sequence author without a read-about-a-look frame', () => {
+    const b=brief('Jamal Murray goes behind the back to set up the Jokić pass to Aaron Gordon for the corner three 🔥','sports');
+    const out=composeCaption(b,styleSheetFor('3d872c4e-7a37-487e-ad39-9db7d22ee59d'));
+    expect(out.text).not.toMatch(/change about a read|closer look.*three-point look/i);
+    expect(out.text).toMatch(/^What do you notice about the off-ball movement in /);
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+  });
+
   it('realizes stable cadence in six-context output, not only unused profile fingerprints', () => {
     const titles = [
       'Phil Ivey makes a huge river call', 'Phil Ivey fires a river bluff',
