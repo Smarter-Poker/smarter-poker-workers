@@ -41,6 +41,18 @@ describe('source-bound individual caption voices', () => {
     expect(rows.every(row=>!/details of the play/i.test(row.text))).toBe(true);
     expect(rows[0]!.text.replace(rows[0]!.subject,'subject')).not.toBe(rows[1]!.text.replace(rows[1]!.subject,'subject'));
   });
+  it('keeps the closer-look frame grammatical when context becomes plural details', () => {
+    for(const [id,title] of [
+      ['0a8005e8-5d79-4d8f-809e-e9951ef74651','Jackson Chourio ties the game with a 2-run blast'],
+      ['1b049140-90bf-4b45-82db-a6dc259ce0c3',"Bryan Baker closes out the Rays' ALCS Game 2 win!"],
+      ['a45c237c-495f-4696-8fc1-b73f8a39fe62','Guardians vs White Sox ALDS Game 2 Shorts Recap'],
+    ]) {
+      const b=briefForAsset({kind:'video',title:title!,source:'MLB',domainHint:'sports'});
+      const out=composeCaption(b,styleSheetFor(id!));
+      expect(out.text).not.toBe('');
+      expect(out.text).not.toMatch(/details is|innings is|pitches is|options is/i);
+    }
+  });
   it('keeps internal result-guard wording out of natural technical-play captions', () => {
     const b = briefForAsset({kind:'video', title:'William Contreras gets the Brewers on the board in Game 3!', source:'MLB', domainHint:'sports', sportHint:'mlb'});
     for (const id of ['6a48eec0-2efe-447a-b902-13a4de739e53', ...ids]) {

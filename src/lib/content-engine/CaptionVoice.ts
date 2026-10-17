@@ -371,7 +371,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     fact.action === 'news_guarantee' ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
-    `For me, ${focus} is worth a closer look in ${fact.subject}`,
+    `For me, I'd take a closer look at ${focus} in ${fact.subject}`,
     fact.action === 'news_guarantee' ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
     `Anyone looking at ${focus} for ${fact.subject}?`,
     `For ${fact.subject}, ${continuingIntent} ${focus}`,
