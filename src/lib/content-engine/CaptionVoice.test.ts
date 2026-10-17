@@ -9,6 +9,17 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('keeps internal result-guard wording out of natural technical-play captions', () => {
+    const b = briefForAsset({kind:'video', title:'William Contreras gets the Brewers on the board in Game 3!', source:'MLB', domainHint:'sports', sportHint:'mlb'});
+    for (const id of ['6a48eec0-2efe-447a-b902-13a4de739e53', ...ids]) {
+      const out = composeCaption(b, styleSheetFor(id));
+      expect(out.text).not.toBe('');
+      expect(out.text).not.toMatch(/assumed result|rather than an assumed|unsupported outcome/i);
+      expect(out.semanticKey).toBe('meaning:subject:baseball first scoring actor william contreras team brewers game 3:sports_technical_context:literal_sequence');
+      expect(out.relevance).toBeGreaterThanOrEqual(0.3);
+      expect(out.text).not.toMatch(/won|wins|winner|final score|home run/i);
+    }
+  });
   it('never frames an announced guarantee as a realized result in any syntax or cadence', () => {
     const b = briefForAsset({kind:'video', title:'Trailblazer Warm-Up $30K GTD', source:'PokerGO', domainHint:'poker'});
     const profiles = [0,1,2].map(cadence => ids.map(styleSheetFor).find(style => captionVoiceProfile(style).cadence === cadence)!);

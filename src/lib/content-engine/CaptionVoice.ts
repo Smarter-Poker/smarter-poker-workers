@@ -183,7 +183,7 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 
 const FOCUS: Record<string, string[]> = {
   'baseball_series_context:series_game_context': ['the game context','the individual games','the games around the series state','the game details'],
-  'sports_technical_context:literal_sequence': ['the sequence of the play','the movement in the sequence','the details of the play','the sequence rather than an assumed result'],
+  'sports_technical_context:literal_sequence': ['the sequence of the play','the movement in the sequence','the details of the play','the buildup to the play'],
   'made_hand_context:board_context': ['the board context','the board around the hands','the relevant board details','the cards on the board'],
   'baseball_matchup_context:game_sequence': ['the inning-by-inning sequence','the decisions across the innings','the course of the game','the inning context'],
   'basketball_passing_context:passing_movement': ['the ball movement','the passing sequence','the off-ball movement','the opening for the pass'],
