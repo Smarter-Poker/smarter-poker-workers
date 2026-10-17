@@ -9,6 +9,38 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  const liveContexts = [
+    {id:'10d08b4f-f6da-41ea-a66c-e97a0d4930e0',title:'Connor McDavid with a casual 1-on-3 dangle',source:'NHL'},
+    {id:'316bb405-cc94-4563-9e3b-5026ab1fccdb',title:'Brewers take Game 1 of the NLCS over Dodgers',source:'FOX Sports'},
+    {id:'70324f24-1728-4bb5-89ef-3343ab570beb',title:'Sean Durzi scores! His first as a Ranger',source:'Rangers'},
+    {id:'127bff9a-8483-4018-80ac-21d7f76ce5c7',title:'Jake Bauers battles through an 11-pitch at-bat to put the Brewers ahead',source:'MLB'},
+    {id:'fc9fa68f-394c-440e-a311-1cb93e2ab5f3',title:'Guardians vs White Sox ALDS Game 2 Shorts Recap',source:'MLB'},
+  ];
+  it('keeps focus specific to the literal sport action without circular subject wording for every voice', () => {
+    for (const row of liveContexts) {
+      const b=briefForAsset({kind:'video',domainHint:'sports',title:row.title,source:row.source});
+      expect(captionFact(b)).not.toBeNull();
+      const semantic=subjectCaption(b,styleSheetFor(row.id))!.semanticKey;
+      for (const id of [row.id,...ids]) {
+        const out=subjectCaption(b,styleSheetFor(id))!;
+        const framing=out.text.replace(out.subject,'');
+        expect(out.text).not.toMatch(/the details of the play|the question behind|giving a verdict|change a read/i);
+        if(row.source==='NHL')expect(framing).not.toMatch(/\bsequence\b/i);
+        if(row.source==='FOX Sports')expect(out.text).not.toMatch(/individual games|games around the series/i);
+        expect(out.semanticKey).toBe(semantic);
+        const composed=composeCaption(b,styleSheetFor(id));
+        expect(composed.text).not.toBe('');
+        expect(composed.relevance).toBeGreaterThanOrEqual(.3);
+        expect(composed.text).not.toMatch(/I (?:played|watched)|last night|final score|series winner/i);
+      }
+    }
+  });
+  it('does not give unrelated hockey and baseball plays the same generic focus', () => {
+    const rows=[liveContexts[2]!,liveContexts[3]!].map(row=>subjectCaption(
+      briefForAsset({kind:'video',domainHint:'sports',title:row.title,source:row.source}),styleSheetFor(row.id))!);
+    expect(rows.every(row=>!/details of the play/i.test(row.text))).toBe(true);
+    expect(rows[0]!.text.replace(rows[0]!.subject,'subject')).not.toBe(rows[1]!.text.replace(rows[1]!.subject,'subject'));
+  });
   it('keeps internal result-guard wording out of natural technical-play captions', () => {
     const b = briefForAsset({kind:'video', title:'William Contreras gets the Brewers on the board in Game 3!', source:'MLB', domainHint:'sports', sportHint:'mlb'});
     for (const id of ['6a48eec0-2efe-447a-b902-13a4de739e53', ...ids]) {

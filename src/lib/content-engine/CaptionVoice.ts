@@ -216,6 +216,23 @@ const FOCUS: Record<string, string[]> = {
   'dunk:setup': ['the opening before takeoff', 'the route to the rim', 'the setup before the finish', 'the movement that opens the lane'],
 };
 
+// A technical clip is not one generic subject. These are considerations,
+// never claims that an unseen action/result happened. Keys are existing
+// typed facts, not video IDs or new factual freshness identities.
+const CONTEXT_FOCUS: Record<string, string[]> = {
+  'hockey:puck_handling:': ['the available space','the puck control','the change of direction','the defenders around the puck','the timing of the move','the skating angle','the room to turn','the handling under pressure'],
+  'hockey:goal:': ['the buildup to the finish','the shooting angle','the space before the shot','the timing of the release','the route toward the net','the positioning before the finish','the lead-in to the shot','the room around the crease'],
+  'baseball:go_ahead_at_bat:': ['the pitches leading up to it','the count along the way','the approach at the plate','the changes from pitch to pitch','the timing of the swing','the earlier pitches','the choices at the plate','the battle through the count'],
+  'baseball:first_scoring:': ['the approach at the plate','the count at the plate','the pitches leading up to it','the situation before the scoring','the plate appearance','the lead-in to the scoring','the earlier pitches','the offensive approach'],
+  'baseball:go_ahead:': ['the approach at the plate','the count at the plate','the situation before the scoring','the pitches leading up to it','the plate appearance','the earlier pitches','the offensive approach','the lead-in to the scoring'],
+  'baseball:double_play:': ['the timing of the throws','the transfer between fielders','the footwork at the bag','the first throw','the turn at second','the return throw','the catch and release','the positioning of the fielders'],
+  'basketball:made_three:': ['the space before the release','the balance on the shot','the footwork before the release','the distance to the defender','the setup before the shot','the shooting angle','the separation before the release','the timing of the shot'],
+  'soccer:free_kick:': ['the angle toward the goal','the setup for the kick','the positioning before the kick','the distance from goal','the approach to the ball','the available shooting angle','the placement of the ball','the lead-in to the kick'],
+  'baseball:game_win:': ['the turning points in that game','the key innings','the pitching decisions','the chances on offense','the scoring opportunities','the decisions during the game','the late-inning situation','the plays that shaped that game'],
+  'baseball:series_tied:': ['the next matchup','the pitching options','the adjustments for the next game','the remaining schedule','the choices for the next lineup','the games still ahead','the next batting order','the next pitching decision'],
+  'baseball:series_lead:': ['the next matchup','the remaining schedule','the pitching options','the adjustments from game to game','the games still ahead','the next lineup decision','the choices for the next game','the pitching matchups ahead'],
+};
+
 /** Only grammar choices actually consumed below, never id-only decoration. */
 function voiceChoice(profileId: string, habit: string, count: number): number {
   // FNV's low bits correlate across salts, especially in sequential profile
@@ -229,7 +246,7 @@ function voiceChoice(profileId: string, habit: string, count: number): number {
 
 export function captionVoiceProfile(style: StyleSheet) {
   return {
-    version: 8,
+    version: 9,
     speech: style.captionSyntax,
     // These select complete authored clauses below, not an invisible identity
     // token. A horse keeps its cadence across subjects and bounded retries.
@@ -250,6 +267,9 @@ export function captionVoiceProfile(style: StyleSheet) {
     ])),
     focus: Object.fromEntries(Object.entries(FOCUS).map(([key, values])=>[
       key, voiceChoice(style.profileId, `voice-focus:${key}`, values.length),
+    ])),
+    contextFocus: Object.fromEntries(Object.entries(CONTEXT_FOCUS).map(([key, values])=>[
+      key, voiceChoice(style.profileId, `voice-context-focus:${key}`, values.length),
     ])),
     questions: Object.fromEntries(Object.entries(ANGLES).map(([family, angles])=>[
       family, angles.map(a=>voiceChoice(style.profileId, `voice-question:${family}:${a.key}`, a.variants('subject').filter(t=>t.endsWith('?')).length)),
@@ -275,13 +295,21 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const angle = angles[((plan.preferredAngles[family] ?? 0) + retry) % angles.length]!;
   const alternatives = angle.variants(fact.subject);
   const focusOptions = FOCUS[`${family}:${angle.key}`]!;
-  const focus = focusOptions[plan.focus[`${family}:${angle.key}`]!]!;
+  const contextKey = Object.keys(CONTEXT_FOCUS).find(key=>fact.identity?.startsWith(key));
+  const focus = contextKey
+    ? CONTEXT_FOCUS[contextKey]![plan.contextFocus[contextKey]!]!
+    : focusOptions[plan.focus[`${family}:${angle.key}`]!]!;
   const questions = alternatives.filter(x=>x.endsWith('?'));
   const sourceQuestion = questions[plan.questions[family]?.[ANGLES[family].findIndex(a=>a.key===angle.key)] ?? 0]!;
   // A stable question habit is actually spoken across topics, not an unused
   // profile fingerprint. Every alternative asks about an established fact;
   // none asserts an unseen play, experience, motive or result.
-  const question = plan.questionHabit < 2 ? sourceQuestion : plan.questionHabit === 2
+  const question = contextKey ? [
+    `What stands out about ${focus} in ${fact.subject}?`,
+    `For ${fact.subject}, what do you notice about ${focus}?`,
+    `Anyone else curious about ${focus} in ${fact.subject}?`,
+    `What do you make of ${focus} in ${fact.subject}?`,
+  ][plan.questionHabit]! : plan.questionHabit < 2 ? sourceQuestion : plan.questionHabit === 2
     ? `For ${fact.subject}, what would you want to know about ${focus}?`
     : `What do you make of ${focus} in ${fact.subject}?`;
   // In a compound frame the opening already establishes the source fact.
@@ -312,10 +340,10 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `To make sense of ${fact.subject}`, `When looking more closely at ${fact.subject}`,
   ][plan.preface]!;
   const contrast = [
-    `The result alone doesn't settle ${fact.subject}`,
-    `A result isn't the whole story with ${fact.subject}`,
-    `I'd separate the outcome from the reasoning behind ${fact.subject}`,
-    `There's more than the outcome to consider with ${fact.subject}`,
+    `There's more to discuss about ${fact.subject}`,
+    `I'd take a closer look at ${fact.subject}`,
+    `I'm curious about ${fact.subject}`,
+    `One thing to talk about is ${fact.subject}`,
   ][plan.contrast]!;
   const wanting = style.voice === 'plural' ? `we'd want` : style.voice === 'impersonal' ? 'it helps to look at' : style.voice === 'second' ? 'consider' : "I'd want";
   const continuingIntent = /^I(?:\b|')/.test(intent) ? intent : intent.charAt(0).toLowerCase() + intent.slice(1);
@@ -343,7 +371,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     fact.action === 'news_guarantee' ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
-    `For me, I'd check ${focus} before giving a verdict on ${fact.subject}`,
+    `For me, ${focus} is worth a closer look in ${fact.subject}`,
     fact.action === 'news_guarantee' ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
     `Anyone looking at ${focus} for ${fact.subject}?`,
     `For ${fact.subject}, ${continuingIntent} ${focus}`,
@@ -351,7 +379,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   ];
   const analytical = [
     `What can ${focus} tell us about ${fact.subject}?`,
-    `The question behind ${fact.subject} is ${focus}`,
+    `I'm curious about ${focus} in ${fact.subject}`,
     `I'd look at ${focus} before judging ${fact.subject}`,
     `I'd start by looking at ${focus} for ${fact.subject}`,
     fact.action === 'news_guarantee' ? `Looking more closely at ${fact.subject}: ${followupQuestion}` : `Looking beyond the result of ${fact.subject}: ${followupQuestion}`,
@@ -374,9 +402,9 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `${preface}, ${wanting} ${focus}`,
     `I'd check ${focus} for ${fact.subject}`,
     `For ${fact.subject}, start with ${focus}`,
-    `How would ${focus} change a read on ${fact.subject}?`,
+    `What stands out about ${focus} in ${fact.subject}?`,
     `${fact.subject}, with ${focus} in mind`,
-    `${focus} before a verdict on ${fact.subject}`,
+    `I'd take a closer look at ${focus} in ${fact.subject}`,
     `My question on ${fact.subject}: ${focus}`,
     `${fact.subject}: I want ${focus}`,
   ];
@@ -404,7 +432,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `Put ${focus} first when considering ${fact.subject}`,
     `What could ${focus} clarify about ${fact.subject}?`,
     `For ${fact.subject}, I'd want to know about ${focus}`,
-    `${focus}: the question behind ${fact.subject}`,
+    `I'm curious about ${focus} in ${fact.subject}`,
     `A closer look at ${fact.subject}: ${focus}`,
     fact.action === 'news_guarantee' ? `${fact.subject}, with attention to ${focus}` : `${fact.subject}, beyond the result: ${focus}`,
   ];
