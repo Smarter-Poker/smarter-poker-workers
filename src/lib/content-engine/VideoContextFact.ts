@@ -12,6 +12,27 @@ const pairPattern = Object.keys(PAIRS).join('|');
 const HOLDING=`(?:pocket (?:${pairPattern})|[akqjt2-9][- ]?[akqjt2-9](?: (?:suited|offsuit))?)`;
 const MONEY = '(?<![a-z0-9.$,-])(\\$?)([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(million|thousand|m|k)?(?:(?![a-z0-9.,])|(?=gtd\\b))';
 
+/** Literal questions remain questions: no fold, call or result is asserted. */
+export function pokerVideoQuestionFact(rawTitle:string,source?:string):CaptionFact|null{
+ if(source?.toLowerCase()!=='bart hanson')return null;
+ const clean=rawTitle.toLowerCase().replace(/[\u2018\u2019]/g,"'")
+  .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ').replace(/\s+/g,' ').trim();
+ if(!clean.endsWith('?'))return null;
+ const title=clean.slice(0,-1).trim();
+ const rules:Array<[RegExp,string,string]>=[
+  [/^folding the (?:3rd|third) nuts$/,'decision:fold:hand_rank:third_nuts','the decision about folding the third nuts'],
+  [/^no pair call all[- ]in$/,'decision:call:wager:all_in:holding:no_pair','the all-in calling question with no pair'],
+  [/^representing top pair as (?:a )?bluff$/,'decision:bluff:represented_holding:top_pair','the question of representing top pair as a bluff'],
+  [/^what does this river bet mean$/,'decision:interpret_bet:street:river','the question about interpreting a river bet'],
+  [/^monster flush draw: flat or shove$/,'decision:flat_or_shove:holding:flush_draw','the flat-or-shove question with a flush draw'],
+  [/^can we fold top set here$/,'decision:fold:holding:top_set','the question of folding top set'],
+  [/^should hero call this flop jam$/,'decision:call:street:flop:wager:jam','the calling decision facing a flop jam'],
+  [/^did the river overbet save this hand$/,'decision:overbet:street:river','the question about the river overbet'],
+ ];
+ const rule=rules.find(([pattern])=>pattern.test(title));
+ return rule?{person:'',action:'poker_question_context',identity:`poker_question:${rule[1]}`,subject:rule[2]}:null;
+}
+
 function quantity(raw:string, scale:string|undefined):number|null {
   if(!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(raw)) return null;
   const multiplier=/^(?:million|m)$/.test(scale??'')?1_000_000:/^(?:thousand|k)$/.test(scale??'')?1_000:1;
@@ -138,6 +159,9 @@ export function pokerVideoContextFact(rawTitle: string, source?: string): Captio
   const literalContext=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')
     .replace(/(?:\s+#[a-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').trim().replace(/[.!]+$/,'').trim();
   const sourceName=source?.toLowerCase();
+  if(sourceName==='pokergo'&&/^daniel negreanu all[- ]in[.!]*$/.test(literalContext))return {
+    person:'',action:'all_in_context',identity:'all_in:actor:daniel negreanu',subject:"Daniel Negreanu's all-in",
+  };
   // Whole source-bound made-hand contexts, not guessed holdings, results or
   // monetary roles. Reversing a matchup never creates a new meaning.
   if(sourceName==='pokergo'||sourceName==='doug polk poker'){

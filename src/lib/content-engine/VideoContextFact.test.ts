@@ -1,11 +1,37 @@
 import {describe,it,expect} from 'vitest';
-import {pokerVideoContextFact} from './VideoContextFact.js';
+import {pokerVideoContextFact,pokerVideoQuestionFact} from './VideoContextFact.js';
 import {captionFact,subjectCaption} from './CaptionVoice.js';
 import {briefForAsset,cleanTitle} from './PostBrief.js';
 import {styleSheetFor} from './StyleSheet.js';
 import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
 const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
+
+describe('literal question topics, never asserted decisions',()=>{
+ it.each([
+  ['Folding the 3rd Nuts? 🤔','decision:fold:hand_rank:third_nuts'],
+  ['No Pair Call All-in? 😱','decision:call:wager:all_in:holding:no_pair'],
+  ['Representing Top Pair as Bluff? 🤔','decision:bluff:represented_holding:top_pair'],
+  ['What Does This River Bet Mean? 🤔','decision:interpret_bet:street:river'],
+  ['Monster Flush Draw: Flat Or Shove ? 🤔','decision:flat_or_shove:holding:flush_draw'],
+  ['Can We Fold Top Set Here? 😱','decision:fold:holding:top_set'],
+  ['Should Hero Call This Flop Jam? 😬','decision:call:street:flop:wager:jam'],
+  ['Did The River Overbet Save This Hand? 💸','decision:overbet:street:river'],
+ ])('binds only the actual question topic %s',(title,identity)=>{
+  const f=pokerVideoQuestionFact(title,'Bart Hanson');expect(f?.identity).toBe(`poker_question:${identity}`);
+  expect(f?.subject).not.toMatch(/won|winning|saved|folded|called/i);
+ });
+ it.each(['Can We Fold Top Set Here','Can We Fold Bottom Set Here?','He folded top set?','Can We Fold Top Set Here and win?'])('refuses changed assertion, cards and extra outcome %s',title=>expect(pokerVideoQuestionFact(title,'Bart Hanson')).toBeNull());
+ it('does not borrow a wrong source or promote arbitrary headline questions',()=>{
+  expect(pokerVideoQuestionFact('Can We Fold Top Set Here?','Unknown')).toBeNull();
+  expect(pokerVideoQuestionFact('Bet or Fold?','Bart Hanson')).toBeNull();
+ });
+ it('grounds an official literal actor all-in without a win or holding claim',()=>{
+  expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN!','PokerGO')).toMatchObject({identity:'all_in:actor:daniel negreanu',subject:"Daniel Negreanu's all-in"});
+  expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN?','PokerGO')).toBeNull();
+  expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN!','Unknown')).toBeNull();
+ });
+});
 
 describe('source-bound named tournament stages from actual verified inventory',()=>{
  it.each([
