@@ -64,6 +64,15 @@ describe('retained natural news grounding failures', () => {
     expect(relevanceOf("Yandy Díaz's", homer)).toBeLessThan(.3);
     expect(relevanceOf("Yandy Díaz's three-run home run", homer)).toBeLessThan(.3);
   });
+  it.each(['Folding the 3rd Nuts?','No Pair Call All-in?','Representing Top Pair as Bluff?','What Does This River Bet Mean?','Monster Flush Draw: Flat Or Shove?','Can We Fold Top Set Here?','Should Hero Call This Flop Jam?'])('frames the literal Bart Hanson question without claiming the decision happened: %s', title => {
+    const brief = briefForAsset({kind:'video', title, source:'Bart Hanson', domainHint:'poker'});
+    const result = composeCaption(brief, styleSheetFor('15165d49-c7b3-42bc-b2e9-f46195e151ec'));
+    expect(result.text).not.toBe('');
+    expect(result.semanticKey).toContain('poker_question');
+    expect(result.relevance).toBeGreaterThanOrEqual(.3);
+    expect(result.text).not.toMatch(/\b(?:result|outcome|winner|won|lost)\b/i);
+    expect(composeCaption({...brief, source:'Unknown'}, styleSheetFor('15165d49-c7b3-42bc-b2e9-f46195e151ec')).text).toBe('');
+  });
   it.each([
     ['The Rays snatch the lead behind a Junior Caminero double down the line! 🔥', 'baseball:go_ahead_double:actor:junior caminero:team:rays'],
     ['Jonathan Aranda brings home another two runs for the Rays!', 'baseball:runs_batted_in:actor:jonathan aranda:team:rays:runs:2'],

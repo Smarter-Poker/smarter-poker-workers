@@ -9,14 +9,14 @@ import { publicFigureDomain, type PostBrief } from './PostBrief.js';
 import type { StyleSheet } from './StyleSheet.js';
 import {captionHolding} from './CaptionHolding.js';
 export {captionHolding} from './CaptionHolding.js';
-import { pokerVideoContextFact } from './VideoContextFact.js';
+import { pokerVideoContextFact, pokerVideoQuestionFact } from './VideoContextFact.js';
 import { newsTitleFact } from './NewsTitleFact.js';
 import {sportsVideoFact} from './SportsVideoFact.js';
 
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'news_report_context' | 'poker_event_context' | 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context' | 'baseball_series_context' | 'sports_technical_context' | 'made_hand_context';
+  action: 'poker_question_context' | 'news_report_context' | 'poker_event_context' | 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context' | 'baseball_series_context' | 'sports_technical_context' | 'made_hand_context';
   subject: string;
 }
 
@@ -25,7 +25,12 @@ const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}
 
 /** Conservative actor/action binding, not entity presence mistaken for agency. */
 export function captionFact(b: PostBrief): CaptionFact | null {
-  if ((b.kind !== 'video' && b.kind !== 'link') || b.isQuestion) return null;
+  if (b.kind !== 'video' && b.kind !== 'link') return null;
+  if (b.kind === 'video' && b.domain === 'poker') {
+    const question = pokerVideoQuestionFact(b.title, b.source);
+    if (question) return question;
+  }
+  if (b.isQuestion) return null;
   const titleForGuards = b.title.replace(/[\u2018\u2019]/g,"'");
   if (/\b(?:not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|couldn't|wouldn't|shouldn't|might|may|if|unless)\b/i.test(titleForGuards)) return null;
   if (b.kind === 'link') {
@@ -93,6 +98,9 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  poker_question_context: [
+    {key:'decision_context',variants:s=>[`What information matters for ${s}?`,`I'd look at the information available for ${s}.`,`Which details would help with ${s}?`]},
+  ],
   news_report_context: [
     {key:'report_context',variants:s=>[`Which details matter in ${s}?`,`I'd look at the reported details of ${s}.`,`What context accompanies ${s}?`]},
   ],
@@ -188,6 +196,7 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'poker_question_context:decision_context': ['the effective stacks','the possible opposing ranges','the information available at the decision','the board and betting sequence'],
   'news_report_context:report_context': ['the reported details','the available context','the details established by the report','the context in the report'],
   'poker_event_context:event_stage': ['the decisions at this stage','the action through the session','the choices from hand to hand','the pace of play'],
   'baseball_series_context:series_game_context': ['the game context','the individual games','the games around the series state','the game details'],
@@ -228,6 +237,7 @@ const FOCUS: Record<string, string[]> = {
 // never claims that an unseen action/result happened. Keys are existing
 // typed facts, not video IDs or new factual freshness identities.
 const CONTEXT_FOCUS: Record<string, string[]> = {
+  'poker_question:': ['the effective stacks','the possible opposing ranges','the board and betting sequence','the information available at the decision','the range of possible holdings','the stack sizes and betting','the actions leading to the decision','the situation at the table'],
   'news:ankle_evaluation:': ['the reported circumstances','the information in the report','the evaluation rather than guesses about recovery','the details already confirmed','the description of the ankle concern','the information available so far','the distinction between evaluation and diagnosis','the details of the exit'],
   'news:trade_analysis:': ['the fit for each roster','the changes for both teams','the expectations on each side','the role on the new roster','the decisions facing each team','the roster needs on both sides','the reasons for the roster changes','the difference in team needs'],
   'news:cooler:': ['the effective stacks','the action before the final decision','the board and betting sequence','the tournament situation','the ranges reaching the decision','the decisions before the runout','the stack depth and bet sizes','the information available at the time'],
@@ -338,7 +348,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const judgement = style.slang === 'heavy' ? 'read' : 'take';
   const aJudgement = `a ${judgement}`;
   const relation = 'on';
-  const contextWithoutResult = fact.action === 'news_guarantee' || fact.action === 'poker_event_context' || fact.action === 'news_report_context';
+  const contextWithoutResult = fact.action === 'news_guarantee' || fact.action === 'poker_event_context' || fact.action === 'news_report_context' || fact.action === 'poker_question_context';
   const intent = {
     first: ["I'd start with", 'I want to check', 'I would look at', 'My first question is about', "I'm interested in", "I'd begin with", 'I want to know more about', 'I would dig into', 'I keep thinking about', 'I want to understand'],
     impersonal: ['Start with', 'Take a look at', 'Worth asking about', 'First, look at', 'Begin with', 'Keep an eye on', 'The first question is about', 'Look more closely at', 'Pay attention to', 'Try to understand'],

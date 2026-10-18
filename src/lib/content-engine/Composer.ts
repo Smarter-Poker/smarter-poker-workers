@@ -564,7 +564,7 @@ function specificTakePool(b: PostBrief): string[] {
 export function hasSpecificTake(b: PostBrief): boolean {
   // Articles additionally require literal grounding. A typed fact with no
   // legacy take remains eligible through subjectCaption, not this pool flag.
-  if (b.kind === 'link' && !captionFact(b)) return false;
+  if ((b.kind === 'link' || b.isQuestion) && !captionFact(b)) return false;
   return specificTakePool(b).length > 0;
 }
 
