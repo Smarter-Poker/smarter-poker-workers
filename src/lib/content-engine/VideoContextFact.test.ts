@@ -78,6 +78,8 @@ describe('literal video context facts',()=>{
   ['$4000 ALL IN!','all_in:amount:4000:unit:dollars'],
   ['Winning a 33k Pot Live On Stream Has To Feel Sooooooo Good','pot:amount:33000:unit:unspecified'],
   ['Big Mike Plays HIGH STAKES $50/100 - Commentary by Raver','stakes:50:100:unit:dollars'],
+  ["LIVE POKER | $10/$25 No-Limit Hold'em Cash Game | TCH Social Austin",'stakes:10:25:unit:dollars'],
+  ["LIVE POKER | $2/$5 No Limit Hold'em Cash Game | TCHLIVE Dallas",'stakes:2:5:unit:dollars'],
   ['Super High Roller Bowl Final Table with $1,150,000 Top Prize!','event:super high roller bowl:top_prize:1150000:unit:dollars'],
   ['PGT PLO Series $25,000 Championship! $420,000 1st-Place Prize!','event:pgt plo series:top_prize:420000:unit:dollars'],
   ['$250,000GTD Trailblazer Signature Final Table','event:trailblazer signature:guarantee:250000:unit:dollars'],

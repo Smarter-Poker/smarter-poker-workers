@@ -108,7 +108,8 @@ function quantifiedContext(title:string):CaptionFact|null {
     if(value) return {person:'',action:'pot_context',identity:`pot:amount:${value}:unit:${denomination(wonPot[1]!)}`,subject:`the ${displayAmount(value,wonPot[1]!)} pot`};
   }
   const stakes=title.match(/(?:\bhigh stakes\s+|\bcash (?:game )?)(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])/)
-    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe)\b/);
+    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe)\b/)
+    ?? title.match(/(?<![\d.$,-])(\$)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+no[- ]limit hold'?em cash game\b/);
   if(stakes) {
     const small=quantity(stakes[2]!,undefined),big=quantity(stakes[3]!,undefined);
     if(small && big && big>small) return {person:'',action:'stakes_context',identity:`stakes:${small}:${big}:unit:${denomination(stakes[1]!)}`,subject:`the ${displayAmount(small,stakes[1]!)}/${displayAmount(big,stakes[1]!)} stakes`};
