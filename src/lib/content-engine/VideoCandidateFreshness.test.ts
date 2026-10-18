@@ -76,6 +76,14 @@ describe('bounded semantic screening before video selection',()=>{
     expect(await freshVideoCaptionCandidates(Array.from({length:1001},(_,i)=>clip(i)),'poker',profile)).toMatchObject({status:'unknown'});
     expect(db.reads).toHaveLength(0);
   });
+  it('screens a fact-diverse bounded catalogue beyond the former 120-key ceiling',async()=>{
+    const clips=Array.from({length:130},(_,i)=>clip(i,`He Put $${i+1} Into a $1000 Pot!`));
+    const staleKeys=clips.slice(0,129).flatMap(c=>videoCandidateMeanings(c,'poker',profile));
+    expect(new Set(staleKeys).size).toBeGreaterThan(120);
+    for(const key of staleKeys)db.used.add(`horse_semantic_ledger:${key}`);
+    expect(await freshVideoCaptionCandidates(clips,'poker',profile)).toMatchObject({status:'ok',clips:[clips[129]],scanned:130,stale:129});
+    expect(db.reads.every(read=>read.keys.length<=VIDEO_FRESHNESS_KEY_CHUNK)).toBe(true);
+  });
   it.each([502,503,504])('repeats only the failed SELECT once after HTTP %s',async status=>{
     db.failures=[{status}];
     const result=await freshVideoCaptionCandidates([clip(0)],'poker',profile);

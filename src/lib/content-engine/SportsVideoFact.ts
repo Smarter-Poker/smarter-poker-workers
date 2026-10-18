@@ -1,4 +1,5 @@
 import type { PostBrief } from './PostBrief.js';
+import {literalSportsInventory} from './LiteralSportsInventory.js';
 
 export interface SportsVideoFact {
   person: '';
@@ -42,6 +43,8 @@ function inningNumber(value:string):number|null {
 export function sportsVideoFact(b:PostBrief):SportsVideoFact|null {
   if(b.kind!=='video'||b.domain!=='sports'||b.isQuestion) return null;
   const original=b.title.replace(/[\u2018\u2019]/g,"'").replace(/[\u2010-\u2015]/g,'-');
+  const inventory=literalSportsInventory(original,b.source?.toLowerCase());
+  if(inventory)return inventory;
   if(/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|might|may|if|unless|without|before|after|then|reacts|watches|denies)\b/i.test(original)) return null;
   const title=original.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')
     .replace(/(?:\s+#[A-Za-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').replace(/[.!]+$/,'').trim();
@@ -87,6 +90,14 @@ export function sportsVideoFact(b:PostBrief):SportsVideoFact|null {
     }
   }
   if(source==='mlb'){
+    // Literal maintained MLB source titles, not category-triggered opinions.
+    // A lead or two RBI is not a final score, a win or a claim about technique.
+    if(/^The Rays snatch the lead behind a Junior Caminero double down the line$/i.test(title))
+      return context('baseball:go_ahead_double:actor:junior caminero:team:rays', "Junior Caminero's go-ahead double down the line for the Rays");
+    if(/^Jonathan Aranda brings home another two runs for the Rays$/i.test(title))
+      return context('baseball:runs_batted_in:actor:jonathan aranda:team:rays:runs:2', 'Jonathan Aranda driving in two more runs for the Rays');
+    if(/^Yandy D[ií]az with a 2-run shot$/i.test(title))
+      return context('baseball:home_run:actor:yandy diaz:runs:2', "Yandy Díaz's two-run home run", 'baseball_home_run_context');
     const close=title.match(/^Trevor Megill closes out a Game ([1-7]) win for the (.+?)$/i);
     if(close){
       const team=MLB_ALIASES[close[2]!.toLowerCase()];if(!team)return null;

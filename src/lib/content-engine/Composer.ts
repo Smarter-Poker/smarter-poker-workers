@@ -560,8 +560,11 @@ function specificTakePool(b: PostBrief): string[] {
   return hits;
 }
 
-/** A caption is publishable only when its title supports a domain take. */
+/** Legacy take-pool eligibility, separate from the typed subject-fact path. */
 export function hasSpecificTake(b: PostBrief): boolean {
+  // Articles additionally require literal grounding. A typed fact with no
+  // legacy take remains eligible through subjectCaption, not this pool flag.
+  if ((b.kind === 'link' || b.isQuestion) && !captionFact(b)) return false;
   return specificTakePool(b).length > 0;
 }
 
@@ -607,6 +610,19 @@ export interface ComposeResult {
 export function relevanceOf(text: string, b: PostBrief): number {
   const lc = text.toLowerCase();
   let score = 0;
+  // The closed fact extractors bind a canonical subject to this exact brief.
+  // Keep its complete subject as evidence, including StyleSheet's documented
+  // one-through-twelve numeral rendering. No arbitrary title, partial actor,
+  // generic vocabulary or supplied semantic key earns this subject weight.
+  const fact = captionFact(b);
+  if (fact) {
+    const words = ['one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
+    const normal = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/)
+      .map(token => words.includes(token) ? String(words.indexOf(token)+1) : token).join(' ');
+    const normalizedText = ` ${normal(text)} `;
+    if (normalizedText.includes(` ${normal(fact.subject)} `)) score += 0.5;
+  }
   for (const p of b.people) if (lc.includes(p.toLowerCase())) { score += 0.5; break; }
   for (const t of b.teams) if (lc.includes(t.toLowerCase())) { score += 0.35; break; }
   for (const c of b.concepts) {
@@ -685,7 +701,11 @@ export function composeCaption(
   style: StyleSheet,
   variantSeed = '0',
 ): ComposeResult {
+  // Article categories and concept words do not establish a play, medical
+  // outcome, hand decision or timeline. Only the closed literal news grammar
+  // may ground an article caption; never fall through to video take pools.
   const fact = captionFact(b);
+  if (b.kind === 'link' && !fact) return { text: '', relevance: 0, grounding: [] };
   // Source brands are not sport identity: an NBA-labelled source can carry
   // a baseball report. Only the established typed fact selects a sport.
   const emojiTopic: CaptionEmojiTopic | undefined = b.domain === 'poker' ? 'poker'

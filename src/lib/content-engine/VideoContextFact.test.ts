@@ -1,11 +1,71 @@
 import {describe,it,expect} from 'vitest';
-import {pokerVideoContextFact} from './VideoContextFact.js';
+import {pokerVideoContextFact,pokerVideoQuestionFact} from './VideoContextFact.js';
 import {captionFact,subjectCaption} from './CaptionVoice.js';
-import {briefForAsset} from './PostBrief.js';
+import {briefForAsset,cleanTitle} from './PostBrief.js';
 import {styleSheetFor} from './StyleSheet.js';
 import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
 const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
+
+describe('literal question topics, never asserted decisions',()=>{
+ it.each([
+  ['Folding the 3rd Nuts? 🤔','decision:fold:hand_rank:third_nuts'],
+  ['No Pair Call All-in? 😱','decision:call:wager:all_in:holding:no_pair'],
+  ['Representing Top Pair as Bluff? 🤔','decision:bluff:represented_holding:top_pair'],
+  ['What Does This River Bet Mean? 🤔','decision:interpret_bet:street:river'],
+  ['Monster Flush Draw: Flat Or Shove ? 🤔','decision:flat_or_shove:holding:flush_draw'],
+  ['Can We Fold Top Set Here? 😱','decision:fold:holding:top_set'],
+  ['Should Hero Call This Flop Jam? 😬','decision:call:street:flop:wager:jam'],
+  ['Did The River Overbet Save This Hand? 💸','decision:overbet:street:river'],
+ ])('binds only the actual question topic %s',(title,identity)=>{
+  const f=pokerVideoQuestionFact(title,'Bart Hanson');expect(f?.identity).toBe(`poker_question:${identity}`);
+  expect(f?.subject).not.toMatch(/won|winning|saved|folded|called/i);
+ });
+ it.each(['Can We Fold Top Set Here','Can We Fold Bottom Set Here?','He folded top set?','Can We Fold Top Set Here and win?'])('refuses changed assertion, cards and extra outcome %s',title=>expect(pokerVideoQuestionFact(title,'Bart Hanson')).toBeNull());
+ it('does not borrow a wrong source or promote arbitrary headline questions',()=>{
+  expect(pokerVideoQuestionFact('Can We Fold Top Set Here?','Unknown')).toBeNull();
+  expect(pokerVideoQuestionFact('Bet or Fold?','Bart Hanson')).toBeNull();
+ });
+ it('grounds an official literal actor all-in without a win or holding claim',()=>{
+  expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN!','PokerGO')).toMatchObject({identity:'all_in:actor:daniel negreanu',subject:"Daniel Negreanu's all-in"});
+  expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN?','PokerGO')).toBeNull();
+  expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN!','Unknown')).toBeNull();
+ });
+});
+
+describe('source-bound named tournament stages from actual verified inventory',()=>{
+ it.each([
+  ['Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','poker_event:poker masters:year:2026:event:5:stage:final_table'],
+  ['Poker Masters 2026 | Event #5 - Day 1 with Adrian Mateos & Nick Schulman','poker_event:poker masters:year:2026:event:5:stage:day_1'],
+  ["Poker Masters 2026 | Event #3 $10K No-Limit Hold'em - Day 1",'poker_event:poker masters:year:2026:event:3:stage:day_1'],
+  ['Super High Roller Bowl $100,000 Pot-Limit Omaha | Day 2','poker_event:super high roller bowl:variant:plo:stage:day_2'],
+ ])('grounds the explicit event and stage without guessing standings: %s',(title,key)=>{
+  const fact=pokerVideoContextFact(title,'PokerGO');expect(fact?.identity).toBe(key);
+  expect(fact?.subject).not.toMatch(/won|winner|leader|\$|stack/i);
+  expect(fact?.subject).toMatch(/^the /);
+  const b=brief(title);expect(captionFact(b)?.identity).toBe(key);
+ });
+ it('preserves numeric event facts while removing actual hashtags and channel tails',()=>{
+  expect(cleanTitle('Poker Masters 2026 | Event #5 - Day 1 | PokerGO #poker #shorts'))
+   .toBe('Poker Masters 2026 | Event #5 - Day 1');
+  expect(cleanTitle('A specific poker title | PokerGO')).toBe('A specific poker title');
+ });
+ it('coalesces punctuation, coverage labels and participants instead of inventing extra supply',()=>{
+  const a=pokerVideoContextFact('Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','PokerGO');
+  const b=pokerVideoContextFact('2026 Poker Masters Event 5 Final Table Highlights with Nick Schulman','PokerGO');
+  expect(a).not.toBeNull();expect(b?.identity).toBe(a?.identity);
+  const shrb=pokerVideoContextFact('Super High Roller Bowl Day 2','PokerGO');
+  expect(pokerVideoContextFact('2026 Super High Roller Bowl Day 2','PokerGO')?.identity).toBe(shrb?.identity);
+ });
+ it.each([
+  ['Poker Masters 2026 | Event #5 - Final Table','Unknown source'],
+  ['Poker Masters 2026 Event #5 Day 1 and Final Table','PokerGO'],
+  ['Poker Masters 2026 Event #5 Day 1 and Event #6 Day 2','PokerGO'],
+  ['Poker Masters Event #5 highlights','PokerGO'],
+  ['Poker Masters Event #1 Final Table','PokerGO'],
+  ['Poker Masters 2026 Event #5 Day 1 predictions','PokerGO'],
+ ])('does not manufacture a stage or resolve ambiguous metadata: %s',(title,source)=>expect(pokerVideoContextFact(title,source)).toBeNull());
+});
 
 describe('literal made hands and explicitly bound holding pot',()=>{
  const rows=[
@@ -54,6 +114,8 @@ describe('literal video context facts',()=>{
   ['$4000 ALL IN!','all_in:amount:4000:unit:dollars'],
   ['Winning a 33k Pot Live On Stream Has To Feel Sooooooo Good','pot:amount:33000:unit:unspecified'],
   ['Big Mike Plays HIGH STAKES $50/100 - Commentary by Raver','stakes:50:100:unit:dollars'],
+  ["LIVE POKER | $10/$25 No-Limit Hold'em Cash Game | TCH Social Austin",'stakes:10:25:unit:dollars'],
+  ["LIVE POKER | $2/$5 No Limit Hold'em Cash Game | TCHLIVE Dallas",'stakes:2:5:unit:dollars'],
   ['Super High Roller Bowl Final Table with $1,150,000 Top Prize!','event:super high roller bowl:top_prize:1150000:unit:dollars'],
   ['PGT PLO Series $25,000 Championship! $420,000 1st-Place Prize!','event:pgt plo series:top_prize:420000:unit:dollars'],
   ['$250,000GTD Trailblazer Signature Final Table','event:trailblazer signature:guarantee:250000:unit:dollars'],

@@ -251,7 +251,9 @@ describe('P2C-11 closers rotate instead of signing every post', () => {
   });
 
   it('a verdict horse does not close every post with a verdict', () => {
-    const b = briefForAsset({ kind: 'video', title: 'Where Do MTT Players Have the Biggest Edge?', source: 'Run It Once', domainHint: 'poker' });
+    // Use the maintained non-question corpus fixture, retaining the legacy
+    // pool/closer path. Typed subject captions intentionally omit closers.
+    const b = briefForAsset({ kind: 'video', title: 'My Greatest Comeback EVER Playing HIGH STAKES Poker!', source: 'PokerGO', domainHint: 'poker' });
     const verdictHorses = fleetIds(400).map(styleSheetFor).filter((s) => s.closer === 'verdict').slice(0, 30);
     let closed = 0;
     let total = 0;
@@ -265,6 +267,7 @@ describe('P2C-11 closers rotate instead of signing every post', () => {
       }
     }
     expect(total).toBeGreaterThan(100);
+    expect(closed).toBeGreaterThan(0);
     expect(closed / total).toBeLessThan(0.6);
   });
 });

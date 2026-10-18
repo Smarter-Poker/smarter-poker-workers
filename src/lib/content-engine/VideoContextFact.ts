@@ -12,6 +12,27 @@ const pairPattern = Object.keys(PAIRS).join('|');
 const HOLDING=`(?:pocket (?:${pairPattern})|[akqjt2-9][- ]?[akqjt2-9](?: (?:suited|offsuit))?)`;
 const MONEY = '(?<![a-z0-9.$,-])(\\$?)([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(million|thousand|m|k)?(?:(?![a-z0-9.,])|(?=gtd\\b))';
 
+/** Literal questions remain questions: no fold, call or result is asserted. */
+export function pokerVideoQuestionFact(rawTitle:string,source?:string):CaptionFact|null{
+ if(source?.toLowerCase()!=='bart hanson')return null;
+ const clean=rawTitle.toLowerCase().replace(/[\u2018\u2019]/g,"'")
+  .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ').replace(/\s+/g,' ').trim();
+ if(!clean.endsWith('?'))return null;
+ const title=clean.slice(0,-1).trim();
+ const rules:Array<[RegExp,string,string]>=[
+  [/^folding the (?:3rd|third) nuts$/,'decision:fold:hand_rank:third_nuts','the decision about folding the third nuts'],
+  [/^no pair call all[- ]in$/,'decision:call:wager:all_in:holding:no_pair','the all-in calling question with no pair'],
+  [/^representing top pair as (?:a )?bluff$/,'decision:bluff:represented_holding:top_pair','the question of representing top pair as a bluff'],
+  [/^what does this river bet mean$/,'decision:interpret_bet:street:river','the question about interpreting a river bet'],
+  [/^monster flush draw: flat or shove$/,'decision:flat_or_shove:holding:flush_draw','the flat-or-shove question with a flush draw'],
+  [/^can we fold top set here$/,'decision:fold:holding:top_set','the question of folding top set'],
+  [/^should hero call this flop jam$/,'decision:call:street:flop:wager:jam','the calling decision facing a flop jam'],
+  [/^did the river overbet save this hand$/,'decision:overbet:street:river','the question about the river overbet'],
+ ];
+ const rule=rules.find(([pattern])=>pattern.test(title));
+ return rule?{person:'',action:'poker_question_context',identity:`poker_question:${rule[1]}`,subject:rule[2]}:null;
+}
+
 function quantity(raw:string, scale:string|undefined):number|null {
   if(!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(raw)) return null;
   const multiplier=/^(?:million|m)$/.test(scale??'')?1_000_000:/^(?:thousand|k)$/.test(scale??'')?1_000:1;
@@ -61,6 +82,30 @@ const EVENTS:Array<[RegExp,string,string]>=[
   [/\bwsopc\b.*\bplo ring event\b|\bplo ring event\b.*\bwsopc\b/,'wsopc plo ring event','WSOPC PLO Ring Event'],
 ];
 
+/** Official coverage supplies a literal event/stage, not an inferred result.
+ * Entrants, hype, source labels and video identity do not create new meaning.
+ */
+function tournamentStageContext(title:string,source?:string):CaptionFact|null {
+  if(source?.toLowerCase()!=='pokergo'||/\b(?:prediction|predictions|preview|previews)\b/.test(title))return null;
+  const names=[...title.matchAll(/\b(poker masters|super high roller bowl)\b/g)];
+  if(names.length!==1)return null;
+  const event=names[0]![1]!;
+  const years=[...title.matchAll(/\b(20\d{2})\b/g)].map(m=>m[1]!);
+  const numbers=[...title.matchAll(/\bevent\s*#?\s*(\d{1,3})\b/g)].map(m=>Number(m[1]));
+  const stages=[...title.matchAll(/\bfinal\s*table\b|\bday\s+([1-9]\d?)\b/g)]
+    .map(m=>m[1]?`day_${Number(m[1])}`:'final_table');
+  if(years.length>1||numbers.length>1||stages.length!==1||numbers.some(n=>n<1))return null;
+  // An unidentified Masters edition must not become extra supply alongside
+  // the same explicitly dated event. SHRB names the event itself.
+  if(event==='poker masters'&&(numbers.length!==1||years.length!==1))return null;
+  const variant=/\bpot[- ]limit omaha\b/.test(title)?'plo':null;
+  const stage=stages[0]!,year=event==='poker masters'?years[0]:undefined,number=numbers[0];
+  const name=event==='poker masters'?'Poker Masters':'Super High Roller Bowl';
+  return {person:'',action:'poker_event_context',
+    identity:`poker_event:${event}${year?`:year:${year}`:''}${number?`:event:${number}`:''}${variant?`:variant:${variant}`:''}:stage:${stage}`,
+    subject:`the ${year?`${year} `:''}${name}${number?` Event #${number}`:''}${variant?' Pot-Limit Omaha':''} ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
+}
+
 /** Bound quantities have distinct roles: pot, commitment, stakes and prize. */
 function quantifiedContext(title:string):CaptionFact|null {
   if(/(?:-\s*\$|\$\s*-)\s*\d/.test(title))return null;
@@ -85,7 +130,8 @@ function quantifiedContext(title:string):CaptionFact|null {
     if(value) return {person:'',action:'pot_context',identity:`pot:amount:${value}:unit:${denomination(wonPot[1]!)}`,subject:`the ${displayAmount(value,wonPot[1]!)} pot`};
   }
   const stakes=title.match(/(?:\bhigh stakes\s+|\bcash (?:game )?)(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])/)
-    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe)\b/);
+    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe)\b/)
+    ?? title.match(/(?<![\d.$,-])(\$)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+no[- ]limit hold'?em cash game\b/);
   if(stakes) {
     const small=quantity(stakes[2]!,undefined),big=quantity(stakes[3]!,undefined);
     if(small && big && big>small) return {person:'',action:'stakes_context',identity:`stakes:${small}:${big}:unit:${denomination(stakes[1]!)}`,subject:`the ${displayAmount(small,stakes[1]!)}/${displayAmount(big,stakes[1]!)} stakes`};
@@ -109,10 +155,14 @@ function quantifiedContext(title:string):CaptionFact|null {
 /** Literal context only: no actor, winner, bet size or cards are inferred. */
 export function pokerVideoContextFact(rawTitle: string, source?: string): CaptionFact | null {
   const title = rawTitle.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').trim();
-  if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(title)) return null;
+  const guardedTitle=title.replace(/\bno[- ]limit hold'?em\b/g,'holdem');
+  if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(guardedTitle)) return null;
   const literalContext=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')
     .replace(/(?:\s+#[a-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').trim().replace(/[.!]+$/,'').trim();
   const sourceName=source?.toLowerCase();
+  if(sourceName==='pokergo'&&/^daniel negreanu all[- ]in[.!]*$/.test(literalContext))return {
+    person:'',action:'all_in_context',identity:'all_in:actor:daniel negreanu',subject:"Daniel Negreanu's all-in",
+  };
   // Whole source-bound made-hand contexts, not guessed holdings, results or
   // monetary roles. Reversing a matchup never creates a new meaning.
   if(sourceName==='pokergo'||sourceName==='doug polk poker'){
@@ -196,5 +246,5 @@ export function pokerVideoContextFact(rawTitle: string, source?: string): Captio
     person:'',action:'river_context',identity:`river:player:${riverPerson}:card`,
     subject:`the river card for ${riverPerson.replace(/\b[a-z]/g,letter=>letter.toUpperCase())}`,
   };
-  return holdingContext(title)??quantifiedContext(title);
+  return holdingContext(title)??quantifiedContext(title)??tournamentStageContext(title,source);
 }

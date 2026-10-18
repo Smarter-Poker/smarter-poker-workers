@@ -9,14 +9,14 @@ import { publicFigureDomain, type PostBrief } from './PostBrief.js';
 import type { StyleSheet } from './StyleSheet.js';
 import {captionHolding} from './CaptionHolding.js';
 export {captionHolding} from './CaptionHolding.js';
-import { pokerVideoContextFact } from './VideoContextFact.js';
+import { pokerVideoContextFact, pokerVideoQuestionFact } from './VideoContextFact.js';
 import { newsTitleFact } from './NewsTitleFact.js';
 import {sportsVideoFact} from './SportsVideoFact.js';
 
 export interface CaptionFact {
   person: string;
   identity?: string;
-  action: 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context' | 'baseball_series_context' | 'sports_technical_context' | 'made_hand_context';
+  action: 'poker_question_context' | 'news_report_context' | 'poker_event_context' | 'bluff' | 'river_call' | 'river_fold' | 'river_decision' | 'pot_contribution' | 'three' | 'dunk' | 'goal' | 'fold' | 'bracelet' | 'all_in_context' | 'pot_context' | 'river_context' | 'aces_cracked_context' | 'news_guarantee' | 'news_bubble' | 'news_sweep' | 'stakes_context' | 'prize_context' | 'holding_context' | 'baseball_home_run_context' | 'baseball_close_context' | 'soccer_goal_total_context' | 'baseball_matchup_context' | 'basketball_passing_context' | 'soccer_equalizer_context' | 'baseball_series_context' | 'sports_technical_context' | 'made_hand_context';
   subject: string;
 }
 
@@ -25,7 +25,12 @@ const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}
 
 /** Conservative actor/action binding, not entity presence mistaken for agency. */
 export function captionFact(b: PostBrief): CaptionFact | null {
-  if ((b.kind !== 'video' && b.kind !== 'link') || b.isQuestion) return null;
+  if (b.kind !== 'video' && b.kind !== 'link') return null;
+  if (b.kind === 'video' && b.domain === 'poker') {
+    const question = pokerVideoQuestionFact(b.title, b.source);
+    if (question) return question;
+  }
+  if (b.isQuestion) return null;
   const titleForGuards = b.title.replace(/[\u2018\u2019]/g,"'");
   if (/\b(?:not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|couldn't|wouldn't|shouldn't|might|may|if|unless)\b/i.test(titleForGuards)) return null;
   if (b.kind === 'link') {
@@ -93,6 +98,15 @@ export function captionFact(b: PostBrief): CaptionFact | null {
 
 type Angle = { key: string; variants: (subject: string) => string[] };
 const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>, Angle[]> = {
+  poker_question_context: [
+    {key:'decision_context',variants:s=>[`What information matters for ${s}?`,`I'd look at the information available for ${s}.`,`Which details would help with ${s}?`]},
+  ],
+  news_report_context: [
+    {key:'report_context',variants:s=>[`Which details matter in ${s}?`,`I'd look at the reported details of ${s}.`,`What context accompanies ${s}?`]},
+  ],
+  poker_event_context: [
+    {key:'event_stage',variants:s=>[`Which decisions stand out in ${s}?`,`I'd follow the decisions during ${s}.`,`What would you look for in ${s}?`]},
+  ],
   baseball_series_context: [
     {key:'series_game_context',variants:s=>[`What game context accompanies ${s}?`,`I'd examine the games around ${s}.`,`Which game details matter when discussing ${s}?`]},
   ],
@@ -182,6 +196,9 @@ const ANGLES: Record<Exclude<CaptionFact['action'], 'river_call' | 'river_fold'>
 };
 
 const FOCUS: Record<string, string[]> = {
+  'poker_question_context:decision_context': ['the effective stacks','the possible opposing ranges','the information available at the decision','the board and betting sequence'],
+  'news_report_context:report_context': ['the reported details','the available context','the details established by the report','the context in the report'],
+  'poker_event_context:event_stage': ['the decisions at this stage','the action through the session','the choices from hand to hand','the pace of play'],
   'baseball_series_context:series_game_context': ['the game context','the individual games','the games around the series state','the game details'],
   'sports_technical_context:literal_sequence': ['the sequence of the play','the movement in the sequence','the details of the play','the buildup to the play'],
   'made_hand_context:board_context': ['the board context','the board around the hands','the relevant board details','the cards on the board'],
@@ -220,6 +237,18 @@ const FOCUS: Record<string, string[]> = {
 // never claims that an unseen action/result happened. Keys are existing
 // typed facts, not video IDs or new factual freshness identities.
 const CONTEXT_FOCUS: Record<string, string[]> = {
+  'basketball:four_point_play:': ['the space before the shot','the shooting motion','the contact on the attempt','the balance before the release','the defensive positioning','the approach to the shot','the timing of the release','the closeout on the shooter'],
+  'basketball:quarter_points:': ['the shots during that quarter','the opportunities to score','the movement before the shots','the shot selection','the possessions during that stretch','the defensive matchups','the chances around the basket','the scoring opportunities in that stretch'],
+  'soccer:goal:': ['the buildup to the finish','the angle toward goal','the space before the finish','the positioning around the ball','the movement before the shot','the timing of the finish','the approach toward goal','the room available for the shot'],
+  'soccer:goal_total:actor:josuha guilavogui:': ['the chances across the match','the shooting opportunities','the positioning before the finishes','the movement around the box','the buildup to the finishes','the scoring opportunities','the space around the area','the chances rather than just the total'],
+  'baseball:triple_and_run:': ['the situation before the hit','the approach at the plate','the running between bases','the play following the hit','the count before the swing','the sequence from the hit to the scoring','the defensive positioning','the decisions on the bases'],
+  'poker_question:': ['the effective stacks','the possible opposing ranges','the board and betting sequence','the information available at the decision','the range of possible holdings','the stack sizes and betting','the actions leading to the decision','the situation at the table'],
+  'news:ankle_evaluation:': ['the reported circumstances','the information in the report','the evaluation rather than guesses about recovery','the details already confirmed','the description of the ankle concern','the information available so far','the distinction between evaluation and diagnosis','the details of the exit'],
+  'news:trade_analysis:': ['the fit for each roster','the changes for both teams','the expectations on each side','the role on the new roster','the decisions facing each team','the roster needs on both sides','the reasons for the roster changes','the difference in team needs'],
+  'news:cooler:': ['the effective stacks','the action before the final decision','the board and betting sequence','the tournament situation','the ranges reaching the decision','the decisions before the runout','the stack depth and bet sizes','the information available at the time'],
+  'baseball:go_ahead_double:': ['the count before the swing','the pitch sequence','the approach at the plate','the situation before the double','the lead-in to the swing','the earlier pitches','the scoring situation','the placement down the line'],
+  'baseball:runs_batted_in:': ['the situation before the scoring','the approach at the plate','the count at the plate','the pitches leading up to it','the plate appearance','the lead-in to the scoring','the earlier pitches','the offensive approach'],
+  'poker_event:': ['the decisions at this stage','the action through the session','the different approaches at the table','the choices from hand to hand','the pace of play','the way the hands develop','the decisions during the session','the changing table dynamics'],
   'hockey:puck_handling:': ['the available space','the puck control','the change of direction','the defenders around the puck','the timing of the move','the skating angle','the room to turn','the handling under pressure'],
   'hockey:goal:': ['the buildup to the finish','the shooting angle','the space before the shot','the timing of the release','the route toward the net','the positioning before the finish','the lead-in to the shot','the room around the crease'],
   'baseball:go_ahead_at_bat:': ['the pitches leading up to it','the count along the way','the approach at the plate','the changes from pitch to pitch','the timing of the swing','the earlier pitches','the choices at the plate','the battle through the count'],
@@ -324,6 +353,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const judgement = style.slang === 'heavy' ? 'read' : 'take';
   const aJudgement = `a ${judgement}`;
   const relation = 'on';
+  const contextWithoutResult = fact.action === 'news_guarantee' || fact.action === 'poker_event_context' || fact.action === 'news_report_context' || fact.action === 'poker_question_context';
   const intent = {
     first: ["I'd start with", 'I want to check', 'I would look at', 'My first question is about', "I'm interested in", "I'd begin with", 'I want to know more about', 'I would dig into', 'I keep thinking about', 'I want to understand'],
     impersonal: ['Start with', 'Take a look at', 'Worth asking about', 'First, look at', 'Begin with', 'Keep an eye on', 'The first question is about', 'Look more closely at', 'Pay attention to', 'Try to understand'],
@@ -358,7 +388,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `Hard to judge ${fact.subject} without ${focus}`,
     `${intent} ${focus} when considering ${fact.subject}`,
     `For ${aJudgement} ${relation} ${fact.subject}, put ${focus} first`,
-    fact.action === 'news_guarantee' ? `For ${fact.subject}, I'd want to understand ${focus}` : `I'd separate the outcome of ${fact.subject} from ${focus}`,
+    contextWithoutResult ? `For ${fact.subject}, I'd want to understand ${focus}` : `I'd separate the outcome of ${fact.subject} from ${focus}`,
     `What would ${focus} add to ${aJudgement} ${relation} ${fact.subject}?`,
     `${preface}, ${continuingIntent} ${focus}`,
     `I'd want ${focus} before making up my mind about ${fact.subject}`,
@@ -366,13 +396,19 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const conversational = [
     `On ${fact.subject}, what about ${focus}?`,
     `What I want to know about ${fact.subject} is ${focus}`,
-    `I need ${focus} to form ${aJudgement} ${relation} ${fact.subject}`,
+    fact.action === 'baseball_close_context'
+      ? `For ${fact.subject}, how did ${focus} unfold?`
+      : fact.action === 'baseball_matchup_context'
+        ? `When discussing ${fact.subject}, I'd follow ${focus}`
+        : `I'd take a closer look at ${focus} in ${fact.subject}`,
     `${fact.subject} is where I'd ask about ${focus}`,
-    fact.action === 'news_guarantee' ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
+    fact.action === 'poker_question_context'
+      ? `When considering ${fact.subject}, ${followupQuestion.charAt(0).toLowerCase()}${followupQuestion.slice(1)}`
+      : contextWithoutResult ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
     `For me, I'd take a closer look at ${focus} in ${fact.subject}`,
-    fact.action === 'news_guarantee' ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
+    contextWithoutResult ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
     `Anyone looking at ${focus} for ${fact.subject}?`,
     `For ${fact.subject}, ${continuingIntent} ${focus}`,
     `With ${fact.subject}, I'd want to know more about ${focus}`,
@@ -382,7 +418,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `I'm curious about ${focus} in ${fact.subject}`,
     `I'd look at ${focus} before judging ${fact.subject}`,
     `I'd start by looking at ${focus} for ${fact.subject}`,
-    fact.action === 'news_guarantee' ? `Looking more closely at ${fact.subject}: ${followupQuestion}` : `Looking beyond the result of ${fact.subject}: ${followupQuestion}`,
+    contextWithoutResult ? `Looking more closely at ${fact.subject}: ${followupQuestion}` : `Looking beyond the result of ${fact.subject}: ${followupQuestion}`,
     `You'd have to look at ${focus} for ${fact.subject}`,
     `With ${fact.subject}, my focus would be ${focus}`,
     `Before calling ${fact.subject} either way, I'd check ${focus}`,
@@ -434,7 +470,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `For ${fact.subject}, I'd want to know about ${focus}`,
     `I'm curious about ${focus} in ${fact.subject}`,
     `A closer look at ${fact.subject}: ${focus}`,
-    fact.action === 'news_guarantee' ? `${fact.subject}, with attention to ${focus}` : `${fact.subject}, beyond the result: ${focus}`,
+    contextWithoutResult ? `${fact.subject}, with attention to ${focus}` : `${fact.subject}, beyond the result: ${focus}`,
   ];
   if (style.length === 'terse' || style.length === 'short') {
     text = [compact, compactConversational, compactAnalytical][plan.cadence]![style.captionSyntax % compact.length]!;
@@ -460,7 +496,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
                 : fact.action === 'stakes_context' ? 'those stakes' : fact.action === 'prize_context' ? 'that listed prize' : fact.action === 'holding_context' ? 'that holding'
                   : fact.action === 'baseball_home_run_context' ? 'that home run' : fact.action === 'baseball_close_context' ? 'that close' : fact.action === 'soccer_goal_total_context' ? 'that goal total'
                     : fact.action === 'baseball_matchup_context' ? 'that matchup' : fact.action === 'basketball_passing_context' ? 'that passing sequence' : fact.action === 'soccer_equalizer_context' ? 'that equalizer'
-                      : fact.action === 'baseball_series_context' ? 'that series context' : fact.action === 'sports_technical_context' ? 'that play' : fact.action === 'made_hand_context' ? 'that hand context' : 'that decision';
+                      : fact.action === 'baseball_series_context' ? 'that series context' : fact.action === 'sports_technical_context' ? 'that play' : fact.action === 'made_hand_context' ? 'that hand context' : fact.action === 'poker_event_context' ? 'that session' : 'that decision';
   // Compound frames already establish the full source fact in their preface.
   // Refer back to it in the question instead of repeating the whole headline.
   // Keep the source fact once, and never change its canonical meaning key.
