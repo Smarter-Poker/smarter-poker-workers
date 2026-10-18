@@ -1,7 +1,5 @@
 import type {SportsVideoFact} from './SportsVideoFact.js';
 
-const TEAMS=['Brewers','Dodgers','Padres','Rays','Guardians'] as const;
-const team=(raw:string)=>TEAMS.find(name=>name.toLowerCase()===raw.toLowerCase());
 const key=(text:string)=>text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const fact=(identity:string,subject:string,action:SportsVideoFact['action']='sports_technical_context'):SportsVideoFact=>({person:'',identity,subject,action});
 
@@ -27,12 +25,6 @@ export function literalSportsInventory(title:string,source:string|undefined):Spo
   if(/^Josuha Guilavogui collects his second goal for the BRACE$/i.test(clean))return fact('soccer:goal_total:actor:josuha guilavogui:match:goals:2',"Josuha Guilavogui's two-goal match");
  }
  if(source==='mlb'||source==='fox sports'||source==='bleacher report nba'){
-  const lead=clean.match(/^(?:The )?(Brewers|Dodgers|Padres|Rays|Guardians) (?:are now up|take the) ([0-3])-([0-3]) (?:on the (Brewers|Dodgers|Padres|Rays|Guardians)|series lead)(?: after getting swept by them last year)?$/i);
-  if(lead){
-   const actor=team(lead[1]!)!,a=Number(lead[2]),b=Number(lead[3]),opponent=lead[4]?team(lead[4]):undefined;
-   if(a<=b||actor===opponent)return null;
-   return fact(`baseball:series_lead:team:${key(actor)}:wins:${a}:opponent_wins:${b}${opponent?`:opponent:${key(opponent)}`:''}`,`the ${actor}' ${a}-${b} series lead${opponent?` over the ${opponent}`:''}`,'baseball_series_context');
-  }
   const deficit=clean.match(/^The Padres are down ([1-3])-([0-2]) in the NLDS and lost by one run in each game in Milwaukee$/i);
   if(deficit&&Number(deficit[1])>Number(deficit[2]))return fact(`baseball:series_deficit:team:padres:series:nlds:wins:${deficit[2]}:opponent_wins:${deficit[1]}`,`the Padres trailing ${deficit[1]}-${deficit[2]} in the NLDS`,'baseball_series_context');
   if(/^The Rays are one win away from the ALCS$/i.test(clean))return fact('baseball:advancement_distance:team:rays:target:alcs:wins_needed:1',"the Rays needing one more win to reach the ALCS",'baseball_series_context');

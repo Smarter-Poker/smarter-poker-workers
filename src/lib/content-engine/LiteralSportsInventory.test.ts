@@ -28,6 +28,8 @@ describe('literal official-source inventory facts',()=>{
   ['Unknown','Caleb Wilson dropped 12 points in the third quarter'],
   ['MLS','Hany Mukhtar could score a rebound goal for Nashville'],
   ['MLB','The Rays are one win away from the ALCS and will win it'],
+  ['MLB','Brewers take the 2-0 series lead'],
+  ['FOX Sports','The Brewers are now up 3-0 on the Dodgers after getting swept by them last year'],
   ['MLB','Jo Adell knocks in two for the Guardians in ALDS Game 4 as Cleveland tries to force a Game 4'],
  ])('refuses questions, denial, inference and wrong-source claims %s %s',(source,title)=>{
   expect(literalSportsInventory(title,source.toLowerCase())).toBeNull();
