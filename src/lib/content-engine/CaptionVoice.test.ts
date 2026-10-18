@@ -9,6 +9,47 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('separates the actual consecutive Rays scoring focuses instead of repeating earlier pitches', () => {
+    // A shared pre-swing focus pool regresses these real consecutive authors,
+    // even though their literal subjects and normalized captions differ.
+    const fixtures=[
+      {id:'3ac76bbb-de77-4f26-b2b9-c3408b5bbf1d',title:'YANDY DÍAZ WITH A 2-RUN SHOT! 😤',subject:"Yandy Díaz's two-run home run",focus:/pitch|swing|contact|flight|fence|trajectory|bat/i},
+      {id:'0860d731-0d86-409a-8384-41a17b99a1f4',title:'Jonathan Aranda brings home another two runs for the Rays!',subject:'Jonathan Aranda driving in two more runs for the Rays',focus:/runner|run production|scoring|offense|run support|runs/i},
+      {id:'137ca64e-eb2a-48a1-84ad-1db2b59aa51e',title:'The Rays snatch the lead behind a Junior Caminero double down the line! 🔥',subject:"Junior Caminero's go-ahead double down the line for the Rays",focus:/line|placement|outfield|extra.base|second|gap|ball|defen/i},
+    ];
+    for(const row of fixtures){
+      const b=briefForAsset({kind:'video',domainHint:'sports',source:'MLB',title:row.title});
+      for(const variant of ['0','1','2','3','4','5']){
+        const raw=subjectCaption(b,styleSheetFor(row.id),variant)!;
+        const focus=raw.text.replace(raw.subject,'');
+        expect(raw.subject).toBe(row.subject);
+        expect(focus).toMatch(row.focus);
+        if(row.id!==fixtures[0]!.id)expect(focus).not.toMatch(/pitch|count|plate|swing/i);
+        const out=composeCaption(b,styleSheetFor(row.id),variant);
+        expect(out.text).not.toBe('');
+        expect(out.relevance).toBeGreaterThanOrEqual(.3);
+      }
+    }
+  });
+  it('keeps RBI and go-ahead-double considerations in separate action-specific domains across voices', () => {
+    const fixtures=[
+      {title:'Jonathan Aranda brings home another two runs for the Rays!',focus:/runner|run production|scoring|offense|run support|runs/i,key:'meaning:subject:baseball runs batted in actor jonathan aranda team rays runs 2:sports_technical_context:literal_sequence'},
+      {title:'The Rays snatch the lead behind a Junior Caminero double down the line! 🔥',focus:/line|placement|outfield|extra.base|second|gap|ball|defen/i,key:'meaning:subject:baseball go ahead double actor junior caminero team rays:sports_technical_context:literal_sequence'},
+    ];
+    for(const row of fixtures){
+      const b=briefForAsset({kind:'video',domainHint:'sports',source:'MLB',title:row.title});
+      for(const id of ids){
+        const raw=subjectCaption(b,styleSheetFor(id))!;
+        const focus=raw.text.replace(raw.subject,'');
+        expect(focus).toMatch(row.focus);
+        expect(focus).not.toMatch(/pitch|count|plate|swing/i);
+        expect(raw.semanticKey).toBe(row.key);
+        const out=composeCaption(b,styleSheetFor(id));
+        expect(out.text).not.toBe('');
+        expect(out.relevance).toBeGreaterThanOrEqual(.3);
+      }
+    }
+  });
   it('uses a concrete consideration for the actual Padres deficit without leaking series-state framing', () => {
     const b=briefForAsset({kind:'video',domainHint:'sports',source:'FOX Sports',
       title:'The Padres are down 2-0 in the NLDS and lost by one run in each game in Milwaukee'});
