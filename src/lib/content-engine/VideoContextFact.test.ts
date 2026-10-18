@@ -60,6 +60,7 @@ describe('source-bound named tournament stages from actual verified inventory',(
   ['Poker Masters 2026 Event #5 Day 1 and Final Table','PokerGO'],
   ['Poker Masters 2026 Event #5 Day 1 and Event #6 Day 2','PokerGO'],
   ['Poker Masters Event #5 highlights','PokerGO'],
+  ['Poker Masters Event #1 Final Table','PokerGO'],
   ['Poker Masters 2026 Event #5 Day 1 predictions','PokerGO'],
  ])('does not manufacture a stage or resolve ambiguous metadata: %s',(title,source)=>expect(pokerVideoContextFact(title,source)).toBeNull());
 });

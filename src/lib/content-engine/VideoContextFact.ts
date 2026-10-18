@@ -95,10 +95,11 @@ function tournamentStageContext(title:string,source?:string):CaptionFact|null {
   const stages=[...title.matchAll(/\bfinal\s*table\b|\bday\s+([1-9]\d?)\b/g)]
     .map(m=>m[1]?`day_${Number(m[1])}`:'final_table');
   if(years.length>1||numbers.length>1||stages.length!==1||numbers.some(n=>n<1))return null;
-  // A Masters event requires its explicit number; SHRB names the event itself.
-  if(event==='poker masters'&&numbers.length!==1)return null;
+  // An unidentified Masters edition must not become extra supply alongside
+  // the same explicitly dated event. SHRB names the event itself.
+  if(event==='poker masters'&&(numbers.length!==1||years.length!==1))return null;
   const variant=/\bpot[- ]limit omaha\b/.test(title)?'plo':null;
-  const stage=stages[0]!,year=years[0],number=numbers[0];
+  const stage=stages[0]!,year=event==='poker masters'?years[0]:undefined,number=numbers[0];
   const name=event==='poker masters'?'Poker Masters':'Super High Roller Bowl';
   return {person:'',action:'poker_event_context',
     identity:`poker_event:${event}${year?`:year:${year}`:''}${number?`:event:${number}`:''}${variant?`:variant:${variant}`:''}:stage:${stage}`,
