@@ -9,6 +9,38 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('does not assign an outcome to the actual Malcolm stake-label caption', () => {
+    const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $2/$5 No-Limit Hold'em Cash Game | TCH Social Austin"});
+    for(const variant of ['0','1','2','3','4','5']){
+      const out=composeCaption(b,styleSheetFor('2a79f912-76e9-4763-a865-2b7a3c00d587'),variant);
+      expect(out.text).not.toBe('');
+      expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises a question/i);
+      expect(out.text).toContain('$2/$5');
+      expect(out.text).toContain('stack depth in big blinds');
+      expect(out.semanticKey).toBe('meaning:subject:stakes 2 5 unit dollars:stakes_context:effective_stacks');
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    }
+  });
+  it('keeps every related frame result-free for context labels, not just the observed syntax', () => {
+    const fixtures=[
+      {title:"LIVE POKER | $2/$5 No-Limit Hold'em Cash Game | TCH Social Austin",source:'TCH Live',action:'stakes_context',subject:'the $2/$5 stakes'},
+      {title:'Trailblazer Signature $100K top prize',source:'PokerGO',action:'prize_context',subject:'the $100,000 listed top prize for Trailblazer Signature'},
+      {title:'Playing pocket aces',source:'PokerGO',action:'holding_context',subject:'pocket aces'},
+      {title:'Straight vs Nut Flush in Super High Roller Bowl',source:'PokerGO',action:'made_hand_context',subject:'the nut flush versus straight matchup at Super High Roller Bowl'},
+    ];
+    const profiles=[0,1,2].map(cadence=>ids.map(styleSheetFor).find(style=>captionVoiceProfile(style).cadence===cadence)!);
+    for(const fixture of fixtures){
+      const b=briefForAsset({kind:'video',domainHint:'poker',source:fixture.source,title:fixture.title});
+      expect(captionFact(b)).toMatchObject({action:fixture.action,subject:fixture.subject});
+      for(const profile of profiles)for(const length of ['medium','short','terse'] as const)for(let captionSyntax=0;captionSyntax<12;captionSyntax++){
+        const out=subjectCaption(b,{...profile,length,captionSyntax})!;
+        expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises|aces raises/i);
+        expect(out.subject).toBe(fixture.subject);
+        expect(out.text).toContain(fixture.subject);
+        expect(captionQuality(out.text,{subject:out.subject}).pass).toBe(true);
+      }
+    }
+  });
   it('separates the actual consecutive Rays scoring focuses instead of repeating earlier pitches', () => {
     // A shared pre-swing focus pool regresses these real consecutive authors,
     // even though their literal subjects and normalized captions differ.

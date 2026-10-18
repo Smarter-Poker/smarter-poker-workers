@@ -356,7 +356,10 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const judgement = style.slang === 'heavy' ? 'read' : 'take';
   const aJudgement = `a ${judgement}`;
   const relation = 'on';
-  const contextWithoutResult = fact.action === 'news_guarantee' || fact.action === 'poker_event_context' || fact.action === 'news_report_context' || fact.action === 'poker_question_context';
+  // A literal label/holding/listed amount is context, not an observed result.
+  // Classify it once for every outcome/result frame, including compact ones.
+  const contextWithoutResult = fact.action === 'news_guarantee' || fact.action === 'poker_event_context' || fact.action === 'news_report_context' || fact.action === 'poker_question_context'
+    || fact.action === 'stakes_context' || fact.action === 'prize_context' || fact.action === 'holding_context' || fact.action === 'made_hand_context';
   const intent = {
     first: ["I'd start with", 'I want to check', 'I would look at', 'My first question is about', "I'm interested in", "I'd begin with", 'I want to know more about', 'I would dig into', 'I keep thinking about', 'I want to understand'],
     impersonal: ['Start with', 'Take a look at', 'Worth asking about', 'First, look at', 'Begin with', 'Keep an eye on', 'The first question is about', 'Look more closely at', 'Pay attention to', 'Try to understand'],
@@ -405,9 +408,9 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
         ? `When discussing ${fact.subject}, I'd follow ${focus}`
         : `I'd take a closer look at ${focus} in ${fact.subject}`,
     `${fact.subject} is where I'd ask about ${focus}`,
-    fact.action === 'poker_question_context'
+    contextWithoutResult
       ? `When considering ${fact.subject}, ${followupQuestion.charAt(0).toLowerCase()}${followupQuestion.slice(1)}`
-      : contextWithoutResult ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
+      : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
     `For me, I'd take a closer look at ${focus} in ${fact.subject}`,
