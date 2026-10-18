@@ -199,7 +199,7 @@ const FOCUS: Record<string, string[]> = {
   'poker_question_context:decision_context': ['the effective stacks','the possible opposing ranges','the information available at the decision','the board and betting sequence'],
   'news_report_context:report_context': ['the reported details','the available context','the details established by the report','the context in the report'],
   'poker_event_context:event_stage': ['the decisions at this stage','the action through the session','the choices from hand to hand','the pace of play'],
-  'baseball_series_context:series_game_context': ['the game context','the individual games','the games around the series state','the game details'],
+  'baseball_series_context:series_game_context': ['the game context','the individual games','the scoring opportunities','the game details'],
   'sports_technical_context:literal_sequence': ['the sequence of the play','the movement in the sequence','the details of the play','the buildup to the play'],
   'made_hand_context:board_context': ['the board context','the board around the hands','the relevant board details','the cards on the board'],
   'baseball_matchup_context:game_sequence': ['the inning-by-inning sequence','the decisions across the innings','the course of the game','the inning context'],
