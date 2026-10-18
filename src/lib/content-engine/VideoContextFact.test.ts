@@ -7,6 +7,30 @@ import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
 const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
 
+describe('source-bound named tournament stages from actual verified inventory',()=>{
+ it.each([
+  ['Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','poker_event:poker masters:year:2026:event:5:stage:final_table'],
+  ['Poker Masters 2026 | Event #5 - Day 1 with Adrian Mateos & Nick Schulman','poker_event:poker masters:year:2026:event:5:stage:day_1'],
+  ["Poker Masters 2026 | Event #3 $10K No-Limit Hold'em - Day 1",'poker_event:poker masters:year:2026:event:3:stage:day_1'],
+  ['Super High Roller Bowl $100,000 Pot-Limit Omaha | Day 2','poker_event:super high roller bowl:variant:plo:stage:day_2'],
+ ])('grounds the explicit event and stage without guessing standings: %s',(title,key)=>{
+  const fact=pokerVideoContextFact(title,'PokerGO');expect(fact?.identity).toBe(key);
+  expect(fact?.subject).not.toMatch(/won|winner|leader|\$|stack/i);
+ });
+ it('coalesces punctuation, coverage labels and participants instead of inventing extra supply',()=>{
+  const a=pokerVideoContextFact('Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','PokerGO');
+  const b=pokerVideoContextFact('2026 Poker Masters Event 5 Final Table Highlights with Nick Schulman','PokerGO');
+  expect(a).not.toBeNull();expect(b?.identity).toBe(a?.identity);
+ });
+ it.each([
+  ['Poker Masters 2026 | Event #5 - Final Table','Unknown source'],
+  ['Poker Masters 2026 Event #5 Day 1 and Final Table','PokerGO'],
+  ['Poker Masters 2026 Event #5 Day 1 and Event #6 Day 2','PokerGO'],
+  ['Poker Masters Event #5 highlights','PokerGO'],
+  ['Poker Masters 2026 Event #5 Day 1 predictions','PokerGO'],
+ ])('does not manufacture a stage or resolve ambiguous metadata: %s',(title,source)=>expect(pokerVideoContextFact(title,source)).toBeNull());
+});
+
 describe('literal made hands and explicitly bound holding pot',()=>{
  const rows=[
   ['xzEo_fyDjOI','PokerGO','STRAIGHT FLUSH VS NUT FLUSH IN $100,000 SUPER HIGH ROLLER BOWL!','made_hand:matchup:nut flush:straight flush:event:super high roller bowl'],

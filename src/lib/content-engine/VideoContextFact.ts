@@ -61,6 +61,29 @@ const EVENTS:Array<[RegExp,string,string]>=[
   [/\bwsopc\b.*\bplo ring event\b|\bplo ring event\b.*\bwsopc\b/,'wsopc plo ring event','WSOPC PLO Ring Event'],
 ];
 
+/** Official coverage supplies a literal event/stage, not an inferred result.
+ * Entrants, hype, source labels and video identity do not create new meaning.
+ */
+function tournamentStageContext(title:string,source?:string):CaptionFact|null {
+  if(source?.toLowerCase()!=='pokergo'||/\b(?:prediction|predictions|preview|previews)\b/.test(title))return null;
+  const names=[...title.matchAll(/\b(poker masters|super high roller bowl)\b/g)];
+  if(names.length!==1)return null;
+  const event=names[0]![1]!;
+  const years=[...title.matchAll(/\b(20\d{2})\b/g)].map(m=>m[1]!);
+  const numbers=[...title.matchAll(/\bevent\s*#?\s*(\d{1,3})\b/g)].map(m=>Number(m[1]));
+  const stages=[...title.matchAll(/\bfinal\s*table\b|\bday\s+([1-9]\d?)\b/g)]
+    .map(m=>m[1]?`day_${Number(m[1])}`:'final_table');
+  if(years.length>1||numbers.length>1||stages.length!==1||numbers.some(n=>n<1))return null;
+  // A Masters event requires its explicit number; SHRB names the event itself.
+  if(event==='poker masters'&&numbers.length!==1)return null;
+  const variant=/\bpot[- ]limit omaha\b/.test(title)?'plo':null;
+  const stage=stages[0]!,year=years[0],number=numbers[0];
+  const name=event==='poker masters'?'Poker Masters':'Super High Roller Bowl';
+  return {person:'',action:'poker_event_context',
+    identity:`poker_event:${event}${year?`:year:${year}`:''}${number?`:event:${number}`:''}${variant?`:variant:${variant}`:''}:stage:${stage}`,
+    subject:`${year?`${year} `:''}${name}${number?` Event #${number}`:''}${variant?' Pot-Limit Omaha':''} ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
+}
+
 /** Bound quantities have distinct roles: pot, commitment, stakes and prize. */
 function quantifiedContext(title:string):CaptionFact|null {
   if(/(?:-\s*\$|\$\s*-)\s*\d/.test(title))return null;
@@ -109,7 +132,8 @@ function quantifiedContext(title:string):CaptionFact|null {
 /** Literal context only: no actor, winner, bet size or cards are inferred. */
 export function pokerVideoContextFact(rawTitle: string, source?: string): CaptionFact | null {
   const title = rawTitle.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').trim();
-  if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(title)) return null;
+  const guardedTitle=title.replace(/\bno[- ]limit hold'?em\b/g,'holdem');
+  if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(guardedTitle)) return null;
   const literalContext=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')
     .replace(/(?:\s+#[a-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').trim().replace(/[.!]+$/,'').trim();
   const sourceName=source?.toLowerCase();
@@ -196,5 +220,5 @@ export function pokerVideoContextFact(rawTitle: string, source?: string): Captio
     person:'',action:'river_context',identity:`river:player:${riverPerson}:card`,
     subject:`the river card for ${riverPerson.replace(/\b[a-z]/g,letter=>letter.toUpperCase())}`,
   };
-  return holdingContext(title)??quantifiedContext(title);
+  return holdingContext(title)??quantifiedContext(title)??tournamentStageContext(title,source);
 }
