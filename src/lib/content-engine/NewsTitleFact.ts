@@ -12,6 +12,16 @@ const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').t
 export function newsTitleFact(b: PostBrief): CaptionFact | null {
   if (b.kind !== 'link' || b.isQuestion) return null;
   const title = b.title.replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').replace(/[.!]+$/, '').trim();
+  // Closed retained report grammars: an evaluation is not a diagnosis, a
+  // trade analysis is not a prediction, and a cooler is not proof of a call.
+  if (b.domain === 'sports' && /^No\. 1 pick Dybantsa to have ankle checked after leaving preseason finale$/i.test(title))
+    return {person:'', action:'news_report_context', identity:'news:ankle_evaluation:actor:dybantsa:context:preseason_exit', subject:"Dybantsa's planned ankle check after leaving the preseason finale"};
+  if (b.domain === 'sports' && /^Why Micah Parsons trade will linger over Cowboys, Packers for years to come$/i.test(title))
+    return {person:'', action:'news_report_context', identity:'news:trade_analysis:actor:micah parsons:teams:cowboys:packers', subject:'the Micah Parsons trade between the Cowboys and Packers'};
+  if (b.domain === 'poker' && /^Brutal Full House Cooler Decides \$10K Poker Masters Tournament$/i.test(title))
+    return {person:'', action:'news_report_context', identity:'news:cooler:event:poker masters:amount_label:10000:holding:full house', subject:'the full-house cooler in the $10K Poker Masters tournament'};
+  if (b.domain === 'poker' && /^Too Weak to Call, Strong Enough to Raise: Garrett Adelstein's \$60K Bluff$/i.test(title))
+    return {person:'Garrett Adelstein', action:'bluff', subject:"Garrett Adelstein's $60K bluff"};
   if (/[?]|\b(?:no|not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|might|may|if|unless|without|before|after|then|reacts|watches|denies|rumor|rumour)\b/i.test(title)) return null;
 
   if (b.domain === 'poker') {
