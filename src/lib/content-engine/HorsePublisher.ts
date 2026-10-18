@@ -1397,6 +1397,8 @@ async function postNewsFromSource(
       return {
         ...base,
         success: true,
+        created: published.created,
+        publicationEvidence: published.publicationEvidence,
         postId: postId ?? undefined,
         type: `${newsType}_news`,
         caption: (article.title ?? '').slice(0, 60),

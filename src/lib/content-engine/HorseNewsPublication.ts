@@ -1,5 +1,6 @@
 import { getSupabase } from '../supabase.js';
 import type { PostBrief } from './PostBrief.js';
+import { readHorseNewsPublicationEvidence, type PublicationEvidence } from './PublicationEvidence.js';
 
 export interface HorseNewsPublicationInput {
   authorId: string;
@@ -21,6 +22,7 @@ export interface HorseNewsPublicationResult {
   success: boolean;
   postId?: string;
   created?: boolean;
+  publicationEvidence?: PublicationEvidence;
   reason?: 'already_published' | 'duplicate_slot' | 'posted_recently' | 'asset_used' | 'phrase_used';
   outcome?: 'unknown';
   error?: string;
@@ -95,5 +97,9 @@ export async function publishHorseNewsAtomically(
   if (!row?.social_post_id || row.created !== true) {
     return { success: false, error: 'atomic horse news publication returned no created post' };
   }
-  return { success: true, created: true, postId: row.social_post_id };
+  const publicationEvidence = await readHorseNewsPublicationEvidence({
+    postId: row.social_post_id, authorId: input.authorId, caption: input.content,
+    linkUrl: input.linkUrl, linkTitle: input.linkTitle,
+  });
+  return { success: true, created: true, postId: row.social_post_id, publicationEvidence };
 }

@@ -553,6 +553,10 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     const id = horseWhereGroundedFirstIs(false);
     const r = await publishForHorse(horse(id), { slot: SLOT });
     expect(r).toMatchObject({ success: true, postId: 'post-1' });
+    expect(r.created).toBe(true);
+    // This mock's async limit cannot chain abortSignal: creation is known,
+    // but an unreadable post-commit read must remain visibility unknown.
+    expect(r.publicationEvidence).toMatchObject({ status: 'unknown', endpointVerified: false });
     expect(db.inserts.filter((x) => x.table === 'social_posts')).toHaveLength(0);
     const call = db.rpcCalls.find((x) => x.name === 'publish_horse_news_post')!;
     expect(call.args).toMatchObject({
