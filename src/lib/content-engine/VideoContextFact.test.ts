@@ -54,6 +54,8 @@ describe('source-bound named tournament stages from actual verified inventory',(
   const a=pokerVideoContextFact('Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','PokerGO');
   const b=pokerVideoContextFact('2026 Poker Masters Event 5 Final Table Highlights with Nick Schulman','PokerGO');
   expect(a).not.toBeNull();expect(b?.identity).toBe(a?.identity);
+  const shrb=pokerVideoContextFact('Super High Roller Bowl Day 2','PokerGO');
+  expect(pokerVideoContextFact('2026 Super High Roller Bowl Day 2','PokerGO')?.identity).toBe(shrb?.identity);
  });
  it.each([
   ['Poker Masters 2026 | Event #5 - Final Table','Unknown source'],
