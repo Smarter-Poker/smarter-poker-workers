@@ -237,6 +237,10 @@ const FOCUS: Record<string, string[]> = {
 // never claims that an unseen action/result happened. Keys are existing
 // typed facts, not video IDs or new factual freshness identities.
 const CONTEXT_FOCUS: Record<string, string[]> = {
+  // Stake labels establish no observed hand or result. Ask about different
+  // missing considerations, not eight synonyms for effective stack depth.
+  // Keep the existing canonical meaning/angle so wording cannot reset reuse.
+  'stakes:': ['the effective stacks','the table position','the number of players in the hand','the betting sequence','the possible opposing ranges','the bet sizes relative to the pot','the table format','the buy-in structure'],
   'basketball:four_point_play:': ['the space before the shot','the shooting motion','the contact on the attempt','the balance before the release','the defensive positioning','the approach to the shot','the timing of the release','the closeout on the shooter'],
   'basketball:quarter_points:': ['the shots during that quarter','the opportunities to score','the movement before the shots','the shot selection','the possessions during that stretch','the defensive matchups','the chances around the basket','the scoring opportunities in that stretch'],
   'soccer:goal:': ['the buildup to the finish','the angle toward goal','the space before the finish','the positioning around the ball','the movement before the shot','the timing of the finish','the approach toward goal','the room available for the shot'],
@@ -336,7 +340,15 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // A stable question habit is actually spoken across topics, not an unused
   // profile fingerprint. Every alternative asks about an established fact;
   // none asserts an unseen play, experience, motive or result.
-  const question = contextKey ? [
+  const focusRelation = fact.action === 'stakes_context' ? 'when considering' : 'in';
+  const question = fact.action === 'stakes_context'
+    ? [
+      `What would you want to know about ${focus} when considering ${fact.subject}?`,
+      `For ${fact.subject}, what else would you ask about ${focus}?`,
+      `Which details of ${focus} matter when considering ${fact.subject}?`,
+      `What would you ask about ${focus} when considering ${fact.subject}?`,
+    ][plan.questionHabit]!
+    : contextKey ? [
     `What stands out about ${focus} in ${fact.subject}?`,
     `For ${fact.subject}, what do you notice about ${focus}?`,
     `Anyone else curious about ${focus} in ${fact.subject}?`,
@@ -406,14 +418,14 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
       ? `For ${fact.subject}, how did ${focus} unfold?`
       : fact.action === 'baseball_matchup_context'
         ? `When discussing ${fact.subject}, I'd follow ${focus}`
-        : `I'd take a closer look at ${focus} in ${fact.subject}`,
-    `${fact.subject} is where I'd ask about ${focus}`,
+        : `I'd take a closer look at ${focus} ${focusRelation} ${fact.subject}`,
+    fact.action === 'stakes_context' ? `When considering ${fact.subject}, I'd ask about ${focus}` : `${fact.subject} is where I'd ask about ${focus}`,
     contextWithoutResult
       ? `When considering ${fact.subject}, ${followupQuestion.charAt(0).toLowerCase()}${followupQuestion.slice(1)}`
       : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
-    `For me, I'd take a closer look at ${focus} in ${fact.subject}`,
+    `For me, I'd take a closer look at ${focus} ${focusRelation} ${fact.subject}`,
     contextWithoutResult ? `What I'd like to know about ${fact.subject} is ${focus}` : `I'd rather discuss ${focus} than just the outcome of ${fact.subject}`,
     `Anyone looking at ${focus} for ${fact.subject}?`,
     `For ${fact.subject}, ${continuingIntent} ${focus}`,
@@ -421,7 +433,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   ];
   const analytical = [
     `What can ${focus} tell us about ${fact.subject}?`,
-    `I'm curious about ${focus} in ${fact.subject}`,
+    `I'm curious about ${focus} ${focusRelation} ${fact.subject}`,
     `I'd look at ${focus} before judging ${fact.subject}`,
     `I'd start by looking at ${focus} for ${fact.subject}`,
     contextWithoutResult ? `Looking more closely at ${fact.subject}: ${followupQuestion}` : `Looking beyond the result of ${fact.subject}: ${followupQuestion}`,
@@ -429,7 +441,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `With ${fact.subject}, my focus would be ${focus}`,
     `Before calling ${fact.subject} either way, I'd check ${focus}`,
     `I'd focus on ${focus} when looking at ${fact.subject}`,
-    `What do you notice about ${focus} in ${fact.subject}?`,
+    `What do you notice about ${focus} ${focusRelation} ${fact.subject}?`,
     `Let's talk about ${focus} for ${fact.subject}`,
     `For ${fact.subject}, I still want to know about ${focus}`,
   ];
@@ -440,13 +452,13 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     question,
     `${intent} ${focus} for ${fact.subject}`,
     `${fact.subject}: ${focus} first`,
-    `What about ${focus} in ${fact.subject}?`,
+    `What about ${focus} ${focusRelation} ${fact.subject}?`,
     `${preface}, ${wanting} ${focus}`,
     `I'd check ${focus} for ${fact.subject}`,
     `For ${fact.subject}, start with ${focus}`,
-    `What stands out about ${focus} in ${fact.subject}?`,
+    `What stands out about ${focus} ${focusRelation} ${fact.subject}?`,
     `${fact.subject}, with ${focus} in mind`,
-    `I'd take a closer look at ${focus} in ${fact.subject}`,
+    `I'd take a closer look at ${focus} ${focusRelation} ${fact.subject}`,
     `My question on ${fact.subject}: ${focus}`,
     `${fact.subject}: I want ${focus}`,
   ];
@@ -474,7 +486,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
     `Put ${focus} first when considering ${fact.subject}`,
     `What could ${focus} clarify about ${fact.subject}?`,
     `For ${fact.subject}, I'd want to know about ${focus}`,
-    `I'm curious about ${focus} in ${fact.subject}`,
+    `I'm curious about ${focus} ${focusRelation} ${fact.subject}`,
     `A closer look at ${fact.subject}: ${focus}`,
     contextWithoutResult ? `${fact.subject}, with attention to ${focus}` : `${fact.subject}, beyond the result: ${focus}`,
   ];

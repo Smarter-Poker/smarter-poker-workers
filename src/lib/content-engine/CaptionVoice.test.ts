@@ -9,6 +9,21 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('gives the actual Fiona, Holly and Estelle stakes posts different analytical considerations', () => {
+    const fixtures=[
+      {id:'4c417026-97b3-476e-ac35-18d4455a592d',title:"LIVE POKER | $5/$10 No-Limit Hold'em Cash Game | TCH Social Austin",source:'TCH Live',stakes:'5 10',focus:/betting sequence/i},
+      {id:'c05b9dcf-8a6f-41c7-ab80-0e84228d3ff4',title:'Rampage, Britney, Blank Check Ben & Big Mike HIGH STAKES $50/100 - Commentary by Raver',source:'Hustler Casino Live',stakes:'50 100',focus:/table position/i},
+      {id:'45a5e770-95dd-45de-aea0-7fe2dc0302f7',title:"LIVE POKER | $1/$2 No-Limit Hold'em Cash Game | TCH Dallas",source:'TCH Live',stakes:'1 2',focus:/bet sizes relative to the pot/i},
+    ];
+    for(const row of fixtures)for(const variant of ['0','1','2','3','4','5']){
+      const b=briefForAsset({kind:'video',domainHint:'poker',source:row.source,title:row.title});
+      const out=composeCaption(b,styleSheetFor(row.id),variant);
+      expect(out.text).toMatch(row.focus);
+      expect(out.text).not.toMatch(/effective stacks|stack depth|\b(?:outcome|result)\b/i);
+      expect(out.semanticKey).toBe(`meaning:subject:stakes ${row.stakes} unit dollars:stakes_context:effective_stacks`);
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    }
+  });
   it('does not assign an outcome to the actual Malcolm stake-label caption', () => {
     const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $2/$5 No-Limit Hold'em Cash Game | TCH Social Austin"});
     for(const variant of ['0','1','2','3','4','5']){
@@ -16,7 +31,7 @@ describe('source-bound individual caption voices', () => {
       expect(out.text).not.toBe('');
       expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises a question/i);
       expect(out.text).toContain('$2/$5');
-      expect(out.text).toContain('stack depth in big blinds');
+      expect(out.text).toMatch(/stack depth in big blinds|buy-in structure/);
       expect(out.semanticKey).toBe('meaning:subject:stakes 2 5 unit dollars:stakes_context:effective_stacks');
       expect(out.relevance).toBeGreaterThanOrEqual(.3);
     }
@@ -34,12 +49,28 @@ describe('source-bound individual caption voices', () => {
       expect(captionFact(b)).toMatchObject({action:fixture.action,subject:fixture.subject});
       for(const profile of profiles)for(const length of ['medium','short','terse'] as const)for(let captionSyntax=0;captionSyntax<12;captionSyntax++){
         const out=subjectCaption(b,{...profile,length,captionSyntax})!;
-        expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises|aces raises/i);
+        expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises|stakes is where|aces raises/i);
         expect(out.subject).toBe(fixture.subject);
         expect(out.text).toContain(fixture.subject);
         expect(captionQuality(out.text,{subject:out.subject}).pass).toBe(true);
       }
     }
+  });
+  it('uses distinct stakes considerations across voices without asserting unknown play or changing freshness', () => {
+    const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $5/$10 No-Limit Hold'em Cash Game | TCH Social Austin"});
+    const focuses=new Set<string>();
+    for(const id of ids){
+      const style=styleSheetFor(id);
+      const raw=subjectCaption(b,{...style,length:'terse',captionSyntax:0})!;
+      const out=composeCaption(b,style);
+      expect(out.text).not.toBe('');
+      expect(out.semanticKey).toBe('meaning:subject:stakes 5 10 unit dollars:stakes_context:effective_stacks');
+      expect(out.text).not.toMatch(/\b(?:outcome|result)\b|I (?:watched|played|won)|in the stakes/i);
+      const focus=raw.text.match(/the (?:effective stacks|table position|number of players in the hand|betting sequence|possible opposing ranges|bet sizes relative to the pot|table format|buy-in structure)/);
+      expect(focus).not.toBeNull();
+      focuses.add(focus![0]!);
+    }
+    expect(focuses).toEqual(new Set(['the effective stacks','the table position','the number of players in the hand','the betting sequence','the possible opposing ranges','the bet sizes relative to the pot','the table format','the buy-in structure']));
   });
   it('separates the actual consecutive Rays scoring focuses instead of repeating earlier pitches', () => {
     // A shared pre-swing focus pool regresses these real consecutive authors,
