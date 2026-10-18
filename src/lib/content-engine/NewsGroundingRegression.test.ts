@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { briefForAsset } from './PostBrief.js';
-import { composeCaption } from './Composer.js';
+import { composeCaption, relevanceOf } from './Composer.js';
 import { styleSheetFor } from './StyleSheet.js';
 import { sportsVideoFact } from './SportsVideoFact.js';
 
@@ -27,6 +27,17 @@ describe('retained natural news grounding failures', () => {
     const brief = briefForAsset({kind:'link', title:'NBA injury update and roster rumors', domainHint:'sports', source:'ESPN NBA News'});
     expect(composeCaption(brief, styleSheetFor('484d22c4-ff3c-4430-8058-b6f0d8c2387a')).text).toBe('');
   });
+  it('never promises an injury update or repeats the trade noun in its focus for the actual affected voices', () => {
+    const ids = ['484d22c4-ff3c-4430-8058-b6f0d8c2387a','31eb1c41-1349-499b-844c-8c2ea0268590','387b6e20-0019-429c-b8c1-e6bf5f8e7538','15165d49-c7b3-42bc-b2e9-f46195e151ec','3d872c4e-7a37-487e-ad39-9db7d22ee59d'];
+    for (const id of ids) {
+      const injury = composeCaption(briefForAsset({kind:'link', title:'No. 1 pick Dybantsa to have ankle checked after leaving preseason finale', domainHint:'sports', source:'ESPN NBA News'}), styleSheetFor(id));
+      expect(injury.text).not.toBe('');
+      expect(injury.text).not.toMatch(/next .*update|team update after|information from the check|awaiting confirmation/i);
+      const trade = composeCaption(briefForAsset({kind:'link', title:'Why Micah Parsons trade will linger over Cowboys, Packers for years to come', domainHint:'sports', source:'ESPN NFL News'}), styleSheetFor(id));
+      expect(trade.text).not.toBe('');
+      expect(trade.text.match(/\btrade\b/gi)).toHaveLength(1);
+    }
+  });
   it('does not collapse the retained closing-out and matchup authors into the same need-a-read frame', () => {
     const rows = [
       ['15165d49-c7b3-42bc-b2e9-f46195e151ec', 'Trevor Megill closes out a Game 1 win for the Brewers'],
@@ -35,6 +46,23 @@ describe('retained natural news grounding failures', () => {
     const captions = rows.map(([id, title]) => composeCaption(briefForAsset({kind: 'video', title: title!, domainHint: 'sports', source: 'MLB'}), styleSheetFor(id!)).text);
     expect(captions.every(Boolean)).toBe(true);
     for (const caption of captions) expect(caption).not.toMatch(/I need .* to form a (?:read|take) on/i);
+  });
+  it.each([
+    ['Poker Masters 2026 | Event #5 - Day 1','PokerGO','poker','the 2026 poker masters event #five day one'],
+    ['Live Poker | $10/$25 No-Limit Holdem Cash Game','TCH Live','poker','the $10/$25 stakes'],
+    ['YANDY DÍAZ WITH A 2-RUN SHOT!','MLB','sports',"Yandy Díaz's two-run home run"],
+  ] as const)('recognizes only the closed extracted subject as relevance evidence: %s', (title, source, domainHint, subject) => {
+    const brief = briefForAsset({kind:'video', title, source, domainHint});
+    expect(relevanceOf(`I'd look at ${subject}`, brief)).toBeGreaterThanOrEqual(.3);
+    expect(relevanceOf('An unrelated anecdote about holidays', brief)).toBe(0);
+  });
+  it('does not award typed-subject relevance to incomplete or different fact bindings', () => {
+    const event = briefForAsset({kind:'video', title:'Poker Masters 2026 | Event #5 - Day 1', source:'PokerGO', domainHint:'poker'});
+    expect(relevanceOf('the 2026 Poker Masters Event #5', event)).toBeLessThan(.3);
+    expect(relevanceOf('the 2026 Poker Masters Event #6 Day 1', event)).toBeLessThan(.3);
+    const homer = briefForAsset({kind:'video', title:'YANDY DÍAZ WITH A 2-RUN SHOT!', source:'MLB', domainHint:'sports'});
+    expect(relevanceOf("Yandy Díaz's", homer)).toBeLessThan(.3);
+    expect(relevanceOf("Yandy Díaz's three-run home run", homer)).toBeLessThan(.3);
   });
   it.each([
     ['The Rays snatch the lead behind a Junior Caminero double down the line! 🔥', 'baseball:go_ahead_double:actor:junior caminero:team:rays'],

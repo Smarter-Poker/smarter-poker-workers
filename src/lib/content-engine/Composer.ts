@@ -610,6 +610,19 @@ export interface ComposeResult {
 export function relevanceOf(text: string, b: PostBrief): number {
   const lc = text.toLowerCase();
   let score = 0;
+  // The closed fact extractors bind a canonical subject to this exact brief.
+  // Keep its complete subject as evidence, including StyleSheet's documented
+  // one-through-twelve numeral rendering. No arbitrary title, partial actor,
+  // generic vocabulary or supplied semantic key earns this subject weight.
+  const fact = captionFact(b);
+  if (fact) {
+    const normal = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const words = ['one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
+    const spokenSubject = fact.subject.replace(/(^|[^\dA-Za-z/$.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
+      (match, pre: string, n: string) => words[Number(n)-1] ? `${pre}${words[Number(n)-1]}` : match);
+    const normalizedText = ` ${normal(text)} `;
+    if ([fact.subject, spokenSubject].some(subject => normalizedText.includes(` ${normal(subject)} `))) score += 0.5;
+  }
   for (const p of b.people) if (lc.includes(p.toLowerCase())) { score += 0.5; break; }
   for (const t of b.teams) if (lc.includes(t.toLowerCase())) { score += 0.35; break; }
   for (const c of b.concepts) {
