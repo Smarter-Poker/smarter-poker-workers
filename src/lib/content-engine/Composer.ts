@@ -616,12 +616,12 @@ export function relevanceOf(text: string, b: PostBrief): number {
   // generic vocabulary or supplied semantic key earns this subject weight.
   const fact = captionFact(b);
   if (fact) {
-    const normal = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const words = ['one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
-    const spokenSubject = fact.subject.replace(/(^|[^\dA-Za-z/$.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
-      (match, pre: string, n: string) => words[Number(n)-1] ? `${pre}${words[Number(n)-1]}` : match);
+    const normal = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/)
+      .map(token => words.includes(token) ? String(words.indexOf(token)+1) : token).join(' ');
     const normalizedText = ` ${normal(text)} `;
-    if ([fact.subject, spokenSubject].some(subject => normalizedText.includes(` ${normal(subject)} `))) score += 0.5;
+    if (normalizedText.includes(` ${normal(fact.subject)} `)) score += 0.5;
   }
   for (const p of b.people) if (lc.includes(p.toLowerCase())) { score += 0.5; break; }
   for (const t of b.teams) if (lc.includes(t.toLowerCase())) { score += 0.35; break; }

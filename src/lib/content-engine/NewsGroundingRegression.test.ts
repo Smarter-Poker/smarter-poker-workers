@@ -85,6 +85,23 @@ describe('retained natural news grounding failures', () => {
     const brief = briefForAsset({kind:'video', title:'Where Do MTT Players Have the Biggest Edge?', source:'Run It Once', domainHint:'poker'});
     expect(composeCaption(brief, styleSheetFor('023a16c3-4ddb-427f-a9f8-cd7b1d9072f1')).text).toBe('');
   });
+  it('keeps mixed numeral rendering of the complete event subject relevant', () => {
+    const brief = briefForAsset({kind:'video', title:'Poker Masters 2026 | Event #5 - Day 1', source:'PokerGO', domainHint:'poker'});
+    const out = composeCaption(brief, styleSheetFor('00000000-0000-0000-0000-000000000039'));
+    expect(out.text).not.toBe('');
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    expect(relevanceOf('the 2026 Poker Masters Event #five Day 2', brief)).toBeLessThan(.3);
+  });
+  it.each([
+    ["Count 'Em! Brandin Podziemski with the 4-Point Play",'Warriors'],['Stephen Curry Crazy 4-Point Play','Warriors'],
+    ['Caleb Wilson dropped 12 points in the third quarter','NBA'],["Troy Parrott’s solo goal",'UEFA'],
+    ['Hany Mukhtar SCRAPPY REBOUND GOAL for Nashville','MLS'],['Josuha Guilavogui collects his second goal for the BRACE','MLS'],
+    ['Michael Harris II tripled and then scored to give the Braves a lead in NLDS Game 2','MLB'],
+  ])('never reduces a literal sports fact to the generic play focus: %s', (title, source) => {
+    const out = composeCaption(briefForAsset({kind:'video', title, source, domainHint:'sports'}), styleSheetFor('00000000-0000-0000-0000-000000000002'));
+    expect(out.text).not.toBe('');
+    expect(out.text).not.toMatch(/the details of the play|movement in the sequence/i);
+  });
   it.each([
     ['The Rays snatch the lead behind a Junior Caminero double down the line! 🔥', 'baseball:go_ahead_double:actor:junior caminero:team:rays'],
     ['Jonathan Aranda brings home another two runs for the Rays!', 'baseball:runs_batted_in:actor:jonathan aranda:team:rays:runs:2'],
