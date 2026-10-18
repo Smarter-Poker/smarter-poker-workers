@@ -397,7 +397,9 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
         ? `When discussing ${fact.subject}, I'd follow ${focus}`
         : `I'd take a closer look at ${focus} in ${fact.subject}`,
     `${fact.subject} is where I'd ask about ${focus}`,
-    contextWithoutResult ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
+    fact.action === 'poker_question_context'
+      ? `When considering ${fact.subject}, ${followupQuestion.charAt(0).toLowerCase()}${followupQuestion.slice(1)}`
+      : contextWithoutResult ? `${fact.subject} raises a question. ${followupQuestion}` : `The outcome of ${fact.subject} is one thing. ${followupQuestion}`,
     `My read on ${fact.subject} would depend on ${focus}`,
     `With ${fact.subject}, I'd want to know about ${focus}`,
     `For me, I'd take a closer look at ${focus} in ${fact.subject}`,
