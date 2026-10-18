@@ -16,6 +16,7 @@ describe('source-bound named tournament stages from actual verified inventory',(
  ])('grounds the explicit event and stage without guessing standings: %s',(title,key)=>{
   const fact=pokerVideoContextFact(title,'PokerGO');expect(fact?.identity).toBe(key);
   expect(fact?.subject).not.toMatch(/won|winner|leader|\$|stack/i);
+  expect(fact?.subject).toMatch(/^the /);
   const b=brief(title);expect(captionFact(b)?.identity).toBe(key);
  });
  it('preserves numeric event facts while removing actual hashtags and channel tails',()=>{

@@ -81,7 +81,7 @@ function tournamentStageContext(title:string,source?:string):CaptionFact|null {
   const name=event==='poker masters'?'Poker Masters':'Super High Roller Bowl';
   return {person:'',action:'poker_event_context',
     identity:`poker_event:${event}${year?`:year:${year}`:''}${number?`:event:${number}`:''}${variant?`:variant:${variant}`:''}:stage:${stage}`,
-    subject:`${year?`${year} `:''}${name}${number?` Event #${number}`:''}${variant?' Pot-Limit Omaha':''} ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
+    subject:`the ${year?`${year} `:''}${name}${number?` Event #${number}`:''}${variant?' Pot-Limit Omaha':''} ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
 }
 
 /** Bound quantities have distinct roles: pot, commitment, stakes and prize. */
