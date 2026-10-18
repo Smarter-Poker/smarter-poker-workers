@@ -9,6 +9,43 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('separates the actual consecutive event focuses without changing event freshness', () => {
+    const fixtures=[
+      {id:'4f7f8abb-ba34-464c-9ecb-0ab7a972a978',title:'Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman',identity:'poker event poker masters year 2026 event 5 stage final table',focus:/stack distribution/i},
+      {id:'bb698b9a-2861-4ad4-a051-bba7b7ec4e85',title:'Super High Roller Bowl $100,000 Pot-Limit Omaha | Day 1',identity:'poker event super high roller bowl variant plo stage day 1',focus:/registration format/i},
+      {id:'0362d601-667c-4301-b3a0-e371615a2bc3',title:'Poker Masters 2026 | Event #3 - FINAL TABLE with Jeremy Ausmus, Brock Wilson & Shannon Shorr!',identity:'poker event poker masters year 2026 event 3 stage final table',focus:/payout structure/i},
+      {id:'13133bc4-9139-4066-8b55-8edd31ef2318',title:"Poker Masters 2026 | Event #1 $10K No-Limit Hold'em - Final Table",identity:'poker event poker masters year 2026 event 1 stage final table',focus:/bet sizes relative to the pot/i},
+    ];
+    for(const row of fixtures)for(const variant of ['0','1','2','3','4','5']){
+      const b=briefForAsset({kind:'video',domainHint:'poker',source:'PokerGO',title:row.title});
+      const out=composeCaption(b,styleSheetFor(row.id),variant);
+      expect(out.text).toMatch(row.focus);
+      expect(out.text).not.toMatch(/way the hands develop|action through the session|choices from hand to hand|\b(?:outcome|result)\b/i);
+      expect(out.semanticKey).toBe(`meaning:subject:${row.identity}:poker_event_context:event_stage`);
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    }
+  });
+  it('asks the actual Jerome player-count question as a quantity rather than details of a number', () => {
+    const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $10/$25 No Limit Hold'em Cash Game | TCHLIVE Dallas"});
+    for(const variant of ['0','1','2','3','4','5']){
+      const out=composeCaption(b,styleSheetFor('0ea03648-b12d-4ae7-ba65-aeaff4fcea34'),variant);
+      expect(out.text).toMatch(/how many players/i);
+      expect(out.text).not.toMatch(/details of|number of players.*matter/i);
+      expect(out.text).toContain('$10/$25');
+      expect(out.semanticKey).toBe('meaning:subject:stakes 10 25 unit dollars:stakes_context:effective_stacks');
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    }
+  });
+  it('uses quantity-aware player-count questions across cadences, syntax and lengths', () => {
+    const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $10/$25 No Limit Hold'em Cash Game | TCHLIVE Dallas"});
+    const styles=ids.map(styleSheetFor).filter(s=>captionVoiceProfile(s).contextFocus['stakes:']===2);
+    const profiles=[0,1,2].flatMap(c=>[0,1,2,3].map(q=>styles.find(s=>captionVoiceProfile(s).cadence===c&&captionVoiceProfile(s).questionHabit===q)!));
+    for(const profile of profiles)for(const length of ['medium','short','terse'] as const)for(let captionSyntax=0;captionSyntax<12;captionSyntax++){
+      const out=subjectCaption(b,{...profile,length,captionSyntax})!;
+      expect(out.text).not.toMatch(/details of the (?:number of players|player count)|where would the (?:number of players|player count) fit/i);
+      expect(captionQuality(out.text,{subject:out.subject}).pass).toBe(true);
+    }
+  });
   it('gives the actual Fiona, Holly and Estelle stakes posts different analytical considerations', () => {
     const fixtures=[
       {id:'4c417026-97b3-476e-ac35-18d4455a592d',title:"LIVE POKER | $5/$10 No-Limit Hold'em Cash Game | TCH Social Austin",source:'TCH Live',stakes:'5 10',focus:/betting sequence/i},
@@ -67,8 +104,13 @@ describe('source-bound individual caption voices', () => {
       expect(out.semanticKey).toBe('meaning:subject:stakes 5 10 unit dollars:stakes_context:effective_stacks');
       expect(out.text).not.toMatch(/\b(?:outcome|result)\b|I (?:watched|played|won)|in the stakes/i);
       const focus=raw.text.match(/the (?:effective stacks|table position|number of players in the hand|betting sequence|possible opposing ranges|bet sizes relative to the pot|table format|buy-in structure)/);
-      expect(focus).not.toBeNull();
-      focuses.add(focus![0]!);
+      if(focus) focuses.add(focus[0]);
+      else {
+        // Quantity-aware wording asks the count directly rather than
+        // repeating its noun label in a generic question template.
+        expect(raw.text).toMatch(/how many players/i);
+        focuses.add('the number of players in the hand');
+      }
     }
     expect(focuses).toEqual(new Set(['the effective stacks','the table position','the number of players in the hand','the betting sequence','the possible opposing ranges','the bet sizes relative to the pot','the table format','the buy-in structure']));
   });

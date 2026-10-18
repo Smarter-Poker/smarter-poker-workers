@@ -255,7 +255,7 @@ const CONTEXT_FOCUS: Record<string, string[]> = {
   // These remain considerations, not assertions about unseen base runners.
   'baseball:go_ahead_double:': ['the placement of the hit','the space along the line','the outfield positioning','the route to second base','the extra-base opportunity','the path of the ball','the defensive coverage','the placement down the line'],
   'baseball:runs_batted_in:': ['the chances to bring runners home','the run production','the scoring opportunities','the contribution to the scoring','the chances to produce runs','the run support','the opportunities to add runs','the scoring contribution'],
-  'poker_event:': ['the decisions at this stage','the action through the session','the different approaches at the table','the choices from hand to hand','the pace of play','the way the hands develop','the decisions during the session','the changing table dynamics'],
+  'poker_event:': ['the payout structure','the stack distribution','the pressure from the blinds','the seat positions','the remaining player count','the blind schedule','the possible opposing ranges','the bet sizes relative to the pot'],
   'hockey:puck_handling:': ['the available space','the puck control','the change of direction','the defenders around the puck','the timing of the move','the skating angle','the room to turn','the handling under pressure'],
   'hockey:goal:': ['the buildup to the finish','the shooting angle','the space before the shot','the timing of the release','the route toward the net','the positioning before the finish','the lead-in to the shot','the room around the crease'],
   'baseball:go_ahead_at_bat:': ['the pitches leading up to it','the count along the way','the approach at the plate','the changes from pitch to pitch','the timing of the swing','the earlier pitches','the choices at the plate','the battle through the count'],
@@ -267,6 +267,17 @@ const CONTEXT_FOCUS: Record<string, string[]> = {
   'baseball:game_win:': ['the turning points in that game','the key innings','the pitching decisions','the chances on offense','the scoring opportunities','the decisions during the game','the late-inning situation','the plays that shaped that game'],
   'baseball:series_tied:': ['the next matchup','the pitching options','the adjustments for the next game','the remaining schedule','the choices for the next lineup','the games still ahead','the next batting order','the next pitching decision'],
   'baseball:series_lead:': ['the next matchup','the remaining schedule','the pitching options','the adjustments from game to game','the games still ahead','the next lineup decision','the choices for the next game','the pitching matchups ahead'],
+};
+
+// A day of play and a final table supply different questions, not eight
+// paraphrases of generic hand development. None asserts an unknown value.
+const EARLY_EVENT_FOCUS = ['the starting stack depth','the blind levels','the registration format','the table positions','the bet sizes relative to the pot','the field size','the break schedule','the table format'];
+
+// Scalar considerations need quantity questions, not "details of a number".
+// The authored noun still belongs in noun slots; these clauses own questions.
+const FOCUS_QUESTIONS: Record<string, string[]> = {
+  'the number of players in the hand': ['How many players would be involved?','How many players would be in the hand?','How many players are involved?','How many players are we considering?'],
+  'the remaining player count': ['How many players remain?','How many players would still be involved?','How many players are left?','How many players are still at the table?'],
 };
 
 /** Only grammar choices actually consumed below, never id-only decoration. */
@@ -332,7 +343,15 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const alternatives = angle.variants(fact.subject);
   const focusOptions = FOCUS[`${family}:${angle.key}`]!;
   const contextKey = Object.keys(CONTEXT_FOCUS).find(key=>fact.identity?.startsWith(key));
-  const focus = contextKey
+  const eventFocus = contextKey === 'poker_event:'
+    ? fact.identity!.endsWith(':stage:final_table') ? CONTEXT_FOCUS[contextKey]! : EARLY_EVENT_FOCUS
+    : null;
+  // Bind event consideration to the canonical event/stage, never a video ID.
+  // Stable author cadence remains unchanged, and retries cannot create a new
+  // fact/freshness key merely by choosing different wording.
+  const focus = eventFocus
+    ? eventFocus[voiceChoice(style.profileId, `voice-context-focus:${fact.identity}`, eventFocus.length)]!
+    : contextKey
     ? CONTEXT_FOCUS[contextKey]![plan.contextFocus[contextKey]!]!
     : focusOptions[plan.focus[`${family}:${angle.key}`]!]!;
   const questions = alternatives.filter(x=>x.endsWith('?'));
@@ -341,7 +360,10 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // profile fingerprint. Every alternative asks about an established fact;
   // none asserts an unseen play, experience, motive or result.
   const focusRelation = fact.action === 'stakes_context' ? 'when considering' : 'in';
-  const question = fact.action === 'stakes_context'
+  const quantityQuestion = FOCUS_QUESTIONS[focus]?.[plan.questionHabit];
+  const question = quantityQuestion
+    ? `For ${fact.subject}, ${quantityQuestion.charAt(0).toLowerCase()}${quantityQuestion.slice(1)}`
+    : fact.action === 'stakes_context'
     ? [
       `What would you want to know about ${focus} when considering ${fact.subject}?`,
       `For ${fact.subject}, what else would you ask about ${focus}?`,
@@ -359,7 +381,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // In a compound frame the opening already establishes the source fact.
   // A context-only question develops it without circling through the same
   // event noun in a source, a typed reference and a focus phrase.
-  const followupQuestion = [
+  const followupQuestion = quantityQuestion ?? [
     `What would you want to know about ${focus}?`,
     `Where would ${focus} fit here?`,
     `Which details of ${focus} matter?`,
@@ -465,7 +487,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const compactConversational = [
     `What about ${focus} for ${fact.subject}?`,
     `${fact.subject}: I'd check ${focus}`,
-    `${focus} first for ${fact.subject}`,
+    fact.action === 'poker_event_context' ? `For ${fact.subject}, I'd start with ${focus}` : `${focus} first for ${fact.subject}`,
     `${fact.subject}: where would ${focus} fit?`,
     `I'd want ${focus} for ${fact.subject}`,
     `For ${fact.subject}, start with ${focus}`,
