@@ -407,8 +407,8 @@ async function sharedVideoSupplyPasses(
     (clipFormatPriority(clip) <= 1 ? short : other)[kind].push(clip);
   }
   const passes:Array<{kind:HorseVideoTopic;supply:SharedHorseVideoSupply}>=[];
-  // Preserve the original maximum four category/format scans and each120-key
-  // ceiling. Combining all formats can exceed that safe ledger budget.
+  // Preserve the original maximum four category/format scans. Each scan uses
+  // the bounded clip/draft key budget and limited-concurrency ledger reads.
   for(const tier of [short,other]) {
     for(const kind of kinds) {
       if(!tier[kind].length||!await postModeEnabled(`${kind}_video`)){tier[kind]=[];continue;}
