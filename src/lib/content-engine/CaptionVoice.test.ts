@@ -9,6 +9,40 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('uses a concrete consideration for the actual Padres deficit without leaking series-state framing', () => {
+    const b=briefForAsset({kind:'video',domainHint:'sports',source:'FOX Sports',
+      title:'The Padres are down 2-0 in the NLDS and lost by one run in each game in Milwaukee'});
+    const out=composeCaption(b,styleSheetFor('d0a1f18e-c8a1-4757-b32c-754218cb1f4d'));
+    expect(out.text).not.toMatch(/games around the series|series state/i);
+    expect(out.text).toMatch(/scoring opportunities/);
+    expect(out.text).toContain('Padres trailing 2-0 in the NLDS');
+    expect(out.semanticKey).toBe('meaning:subject:baseball series deficit team padres series nlds wins 0 opponent wins 2:baseball_series_context:series_game_context');
+    expect(out.relevance).toBeGreaterThanOrEqual(.3);
+  });
+  it('keeps all series-state contexts grounded and free of internal series-state wording across voices and drafts', () => {
+    const fixtures=[
+      {title:'The Padres are down 2-0 in the NLDS and lost by one run in each game in Milwaukee',source:'FOX Sports',subject:'the Padres trailing 2-0 in the NLDS',key:'meaning:subject:baseball series deficit team padres series nlds wins 0 opponent wins 2:baseball_series_context:series_game_context'},
+      {title:'The Rays are one win away from the ALCS',source:'MLB',subject:'the Rays needing one more win to reach the ALCS',key:'meaning:subject:baseball advancement distance team rays target alcs wins needed 1:baseball_series_context:series_game_context'},
+      {title:'The Guardians erase an 0-2 series deficit and advance to the ALCS',source:'MLB',subject:'the Guardians reaching the ALCS from a 0-2 series deficit',key:'meaning:subject:baseball advance team guardians target alcs prior series deficit 0 2:baseball_series_context:series_game_context'},
+    ];
+    for(const fixture of fixtures){
+      const b=briefForAsset({kind:'video',domainHint:'sports',source:fixture.source,title:fixture.title});
+      for(const id of ['d0a1f18e-c8a1-4757-b32c-754218cb1f4d',...ids]){
+        const style=styleSheetFor(id);
+        for(const variant of ['0','1','2','3','4','5']){
+          const raw=subjectCaption(b,style,variant)!;
+          expect(raw.subject).toBe(fixture.subject);
+          expect(raw.semanticKey).toBe(fixture.key);
+          expect(raw.text).not.toMatch(/games around the series|series state/i);
+          const out=composeCaption(b,style,variant);
+          expect(out.text).not.toBe('');
+          expect(out.semanticKey).toBe(fixture.key);
+          expect(out.relevance).toBeGreaterThanOrEqual(.3);
+          expect(out.text).not.toMatch(/games around the series|series state|I (?:played|watched)|series winner/i);
+        }
+      }
+    }
+  });
   const liveContexts = [
     {id:'10d08b4f-f6da-41ea-a66c-e97a0d4930e0',title:'Connor McDavid with a casual 1-on-3 dangle',source:'NHL'},
     {id:'316bb405-cc94-4563-9e3b-5026ab1fccdb',title:'Brewers take Game 1 of the NLCS over Dodgers',source:'FOX Sports'},
