@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {pokerVideoContextFact} from './VideoContextFact.js';
 import {captionFact,subjectCaption} from './CaptionVoice.js';
-import {briefForAsset} from './PostBrief.js';
+import {briefForAsset,cleanTitle} from './PostBrief.js';
 import {styleSheetFor} from './StyleSheet.js';
 import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
@@ -16,6 +16,12 @@ describe('source-bound named tournament stages from actual verified inventory',(
  ])('grounds the explicit event and stage without guessing standings: %s',(title,key)=>{
   const fact=pokerVideoContextFact(title,'PokerGO');expect(fact?.identity).toBe(key);
   expect(fact?.subject).not.toMatch(/won|winner|leader|\$|stack/i);
+  const b=brief(title);expect(captionFact(b)?.identity).toBe(key);
+ });
+ it('preserves numeric event facts while removing actual hashtags and channel tails',()=>{
+  expect(cleanTitle('Poker Masters 2026 | Event #5 - Day 1 | PokerGO #poker #shorts'))
+   .toBe('Poker Masters 2026 | Event #5 - Day 1');
+  expect(cleanTitle('A specific poker title | PokerGO')).toBe('A specific poker title');
  });
  it('coalesces punctuation, coverage labels and participants instead of inventing extra supply',()=>{
   const a=pokerVideoContextFact('Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','PokerGO');

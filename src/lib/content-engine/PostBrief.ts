@@ -302,9 +302,14 @@ export function cleanTitle(raw: string | null | undefined): string {
   return raw
     // Emoji and pictographs, including the surrogate ranges YouTube titles use.
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{2B00}-\u{2BFF}]/gu, ' ')
-    .replace(/#\w+/g, ' ')
+    .replace(/#\w+/g, (tag,offset,text:string) => /^#\d+$/.test(tag)&&/\bevent\s*$/i.test(text.slice(0,offset))?tag:' ')
     .replace(/@\w+/g, ' ')
-    .replace(/\s*\|\s*.*$/, '')          // "Title | Channel" tails
+    // Official coverage often places its only event/stage or cash stakes
+    // after a pipe. Keep those typed clauses; a generic channel tail still
+    // contributes no fact and remains stripped.
+    .replace(/\s*\|\s*.*$/, tail => tail.split('|').slice(1)
+      .map(part=>part.trim()).filter(part=>/^(?:event\s*#?\s*\d+\b|day\s+\d+\b|\$[\d,]+\s*\/\s*\$?[\d,]+\s+no[- ]limit hold'?em cash game\b)/i.test(part))
+      .map(part=>` | ${part}`).join(''))
     .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ') // [HD], (Full Highlights)
     .replace(/\s*[-–—]\s*(highlights?|shorts?|full (video|clip)).*$/i, '')
     .replace(/(^|\s)["'`]+|["'`]+(?=\s|$)/g, '$1')   // quotes, not apostrophes
