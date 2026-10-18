@@ -560,10 +560,12 @@ function specificTakePool(b: PostBrief): string[] {
   return hits;
 }
 
-/** A caption is publishable only when its title supports a domain take. */
+/** Legacy take-pool eligibility, separate from the typed subject-fact path. */
 export function hasSpecificTake(b: PostBrief): boolean {
-  if (b.kind === 'link') return captionFact(b) !== null;
-  return captionFact(b) !== null || specificTakePool(b).length > 0;
+  // Articles additionally require literal grounding. A typed fact with no
+  // legacy take remains eligible through subjectCaption, not this pool flag.
+  if (b.kind === 'link' && !captionFact(b)) return false;
+  return specificTakePool(b).length > 0;
 }
 
 function fill(template: string, b: PostBrief, anchor: string | null): string {
