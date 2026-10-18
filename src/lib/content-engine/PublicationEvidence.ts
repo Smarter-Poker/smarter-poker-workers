@@ -16,12 +16,13 @@ export async function readHorseNewsPublicationEvidence(input: {
     const posts = await getSupabase().from('social_posts')
       .select('id,author_id,content,visibility,is_deleted,origin_type,content_type,link_url,link_title')
       .eq('id', input.postId).limit(2).abortSignal(AbortSignal.timeout(6_000));
-    if (posts.error || !Array.isArray(posts.data) || posts.data.length > 1) {
+    if (posts.error || posts.status >= 400 || !Array.isArray(posts.data) || posts.data.length > 1) {
       return { ...base, status: 'unknown', reason: 'Persisted news readback unavailable or malformed' };
     }
     const post = posts.data[0];
     const publicPost = post?.id === input.postId && post.author_id === input.authorId
-      && post.content === input.caption && post.visibility === 'public' && post.is_deleted === false
+      && post.content === input.caption && post.visibility === 'public'
+      && (post.is_deleted === false || post.is_deleted === null)
       && post.origin_type === 'horse' && post.content_type === 'link'
       && post.link_url === input.linkUrl && post.link_title === input.linkTitle;
     return { ...base, status: publicPost ? 'public_persisted' : 'not_public',

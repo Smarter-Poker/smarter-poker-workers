@@ -1,16 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const db=vi.hoisted(()=>({post:{} as Record<string,unknown>,reel:{} as Record<string,unknown>,error:false,throws:false,reads:0}));
+const db=vi.hoisted(()=>({post:{} as Record<string,unknown>,reel:{} as Record<string,unknown>,error:false,throws:false,reads:0,status:200}));
 vi.mock('../supabase.js',()=>({getSupabase:()=>({from:(table:string)=>{
  const chain={select:()=>chain,eq:()=>chain,limit:()=>chain,abortSignal:async()=>{db.reads++;if(db.throws)throw new Error('timeout');
-   return {data:[table==='social_posts'?db.post:db.reel],error:db.error?{message:'offline'}:null};}};return chain;
+   return {data:[table==='social_posts'?db.post:db.reel],error:db.error?{message:'offline'}:null,status:db.status};}};return chain;
 }})}));
 import { publicationDeliverySummary, readHorseVideoPublicationEvidence, readHorseNewsPublicationEvidence } from './PublicationEvidence.js';
 const input={postId:'post1',reelId:'reel1',authorId:'horse1',caption:'Real caption',assetKey:'yt:AAAAAAAAAAA'};
-beforeEach(()=>{db.error=false;db.throws=false;db.reads=0;
+beforeEach(()=>{db.error=false;db.throws=false;db.reads=0;db.status=200;
  db.post={id:'post1',author_id:'horse1',content:'Real caption',visibility:'public',is_deleted:false,origin_type:'horse'};
  db.reel={id:'reel1',source_post_id:'post1',author_id:'horse1',caption:'Real caption',origin_type:'horse',is_public:true,
   canonical_asset_key:'youtube:AAAAAAAAAAA',media_status:'ready',rights_status:'embed_only'};});
 describe('acknowledgement and public persistence are different evidence',()=>{
+ it('accepts the public consumer null-deletion contract for news',async()=>{
+   Object.assign(db.post,{is_deleted:null,content_type:'link',link_url:'https://news.example/story',link_title:'Actual story'});
+   expect(await readHorseNewsPublicationEvidence({...input,linkUrl:'https://news.example/story',linkTitle:'Actual story'})).toMatchObject({status:'public_persisted'});
+ });
+ it('keeps an HTTP read failure unknown even if the SDK error field is absent',async()=>{
+   db.status=503;
+   expect(await readHorseNewsPublicationEvidence({...input,linkUrl:'https://news.example/story',linkTitle:'Actual story'})).toMatchObject({status:'unknown'});
+ });
  it('reads an exact public news post without demanding a Reel',async()=>{
    Object.assign(db.post,{content_type:'link',link_url:'https://news.example/story',link_title:'Actual story'});
    const evidence=await readHorseNewsPublicationEvidence({...input,linkUrl:'https://news.example/story',linkTitle:'Actual story'});
