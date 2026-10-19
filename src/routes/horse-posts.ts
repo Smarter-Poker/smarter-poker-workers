@@ -42,8 +42,10 @@ import { syncStyleSheets } from '../lib/content-engine/VoiceWriter.js';
 import { ledgerReadFailureTotal } from '../lib/content-engine/ContentLedger.js';
 
 export const MAX_POSTS_PER_RUN = 80;
-/** Pace finite eligible stock; this is a creation budget, not an attempt cap. */
-export const MAX_NEW_HORSE_POSTS_PER_RUN = 2;
+// The temporary two-create stock pacing ceiling permitted only 672 posts/week
+// across both producers, below the active fleet's 2,065 scheduled slots.
+// Serve the existing due cohort, never force a post or relax source guards.
+export const MAX_NEW_HORSE_POSTS_PER_RUN = MAX_POSTS_PER_RUN;
 const DEADLINE_MS = 540_000;
 // One at a time. Two workers picking assets concurrently both saw the same
 // clip as fresh and both posted it (4 repeats on 2026-09-05); the ledger's

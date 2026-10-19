@@ -35,7 +35,9 @@ import {
 import type { HorseVideoTopic } from '../lib/content-engine/HorseVideoPublication.js';
 
 export const MAX_HORSE_VIDEO_REELS_PER_RUN = 80;
-export const MAX_NEW_HORSE_VIDEO_REELS_PER_RUN = 2;
+// Capacity follows the existing bounded due cohort rather than a stock-pacing
+// ceiling that cannot satisfy the fleet cadence. Exhaustion still fails closed.
+export const MAX_NEW_HORSE_VIDEO_REELS_PER_RUN = MAX_HORSE_VIDEO_REELS_PER_RUN;
 export const HORSE_VIDEO_REELS_DEADLINE_MS = 540_000;
 export const HORSE_VIDEO_QUEUE_STRATEGY = 'deterministic_round_robin_v1';
 

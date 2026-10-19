@@ -9,6 +9,27 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it.each([
+    {source:'Premier League',title:'Diego Gomez Scores From The Halfway Line',identity:'soccer goal actor diego gomez location halfway line',clause:'Diego Gomez scored from the halfway line.'},
+    {source:'UEFA',title:"Troy Parrott's solo goal",identity:'soccer goal actor troy parrott run solo',clause:'Troy Parrott scored a solo goal.'},
+    {source:'MLS',title:'Hany Mukhtar SCRAPPY REBOUND GOAL for Nashville',identity:'soccer goal actor hany mukhtar team nashville phase rebound',clause:'Hany Mukhtar scored a rebound goal for Nashville.'},
+    {source:'MLS',title:'Sebastian Gomez first goal for Seattle',identity:'soccer goal actor sebastian gomez team seattle milestone first',clause:'Sebastian Gomez scored his first goal for Seattle.'},
+  ])('reports the established soccer goal rather than asking for an unsupported verdict: $title', row => {
+    const b=briefForAsset({kind:'video',domainHint:'sports',sportHint:'soccer',source:row.source,title:row.title});
+    for(const id of ['1f01702e-320c-4e64-b030-e58fdd47cc07',...ids.slice(0,24)])for(const variant of ['0','1','2','3','4','5']){
+      const style=styleSheetFor(id);
+      const raw=subjectCaption(b,style,variant)!;
+      expect(raw.text).toBe(row.clause);
+      expect(raw.semanticKey).toBe(`meaning:subject:${row.identity}:sports_technical_context:literal_sequence`);
+      expect(raw.grounding).toContain('title_action:sports_technical_context');
+      const out=composeCaption(b,style,variant);
+      expect(out.text).not.toBe('');
+      expect(out.text.toLowerCase()).toContain(row.clause.slice(0,-1).toLowerCase());
+      expect(out.text).not.toMatch(/before deciding|before judging|making up my mind|positioning around the ball|\b(?:winner|final score)\b/i);
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+      expect(out.semanticKey).toBe(raw.semanticKey);
+    }
+  });
   it('separates the actual Brittany and Ethan question focuses without changing decision freshness', () => {
     const rows=[
       {id:'bd9b7405-4543-4e63-b82c-9f6126c6443f',source:'Bart Hanson',title:'Would You Flat or 4-Bet Here? 👇',identity:'poker question decision flat or four bet'},

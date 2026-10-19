@@ -80,6 +80,19 @@ describe('cadence and days: weekly is the floor', () => {
 describe('posting hour', () => {
   const fleet = syntheticFleet(300);
 
+  it('keeps daily openings compatible with the unchanged 20-hour guard and late catch-up', () => {
+    for(const id of syntheticFleet().filter(id=>postingCadence(id)===7)){
+      let previous:number|undefined;
+      for(let day=0;day<21;day++){
+        const date=new Date(Date.UTC(2026,9,19+day));
+        const hour=postingHour(id,date.getUTCDay(),isoWeek(date.getUTCFullYear(),date.getUTCMonth()+1,date.getUTCDate()));
+        const opening=date.getTime()+hour*3600000;
+        if(previous!==undefined)expect(opening-previous).toBeGreaterThanOrEqual(22*3600000);
+        previous=opening;
+      }
+    }
+  });
+
   it('always falls inside the awake window', () => {
     for (const id of fleet) {
       const { start, end } = getHorseActiveHours(id);

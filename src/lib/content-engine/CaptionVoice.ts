@@ -47,6 +47,13 @@ export function literalSportInventoryClauses(fact: CaptionFact): string[] {
   const id = fact.identity;
   const s = fact.subject;
   const rules: Array<[RegExp, RegExp, (m: RegExpMatchArray) => string]> = [
+    // These are already source-bound goal roles, not decisions awaiting a
+    // verdict. Render their established action without inventing positioning,
+    // technique or a match result. Identity and freshness remain unchanged.
+    [/^soccer:goal:actor:[a-z ]+:location:halfway_line$/, /^(.+)'s goal from the halfway line$/, m=>`${m[1]} scored from the halfway line`],
+    [/^soccer:goal:actor:[a-z ]+:run:solo$/, /^(.+)'s solo goal$/, m=>`${m[1]} scored a solo goal`],
+    [/^soccer:goal:actor:[a-z ]+:team:[a-z ]+:phase:rebound$/, /^(.+)'s rebound goal for (.+)$/, m=>`${m[1]} scored a rebound goal for ${m[2]}`],
+    [/^soccer:goal:actor:[a-z ]+:team:[a-z ]+:milestone:first$/, /^(.+)'s first goal for (.+)$/, m=>`${m[1]} scored his first goal for ${m[2]}`],
     [/^football:usage:actor:cam skattebo:carries:\d+:snaps:\d+$/, /^(.+)'s (\d+) carries on (\d+) snaps$/, m=>`${m[1]} recorded ${m[2]} carries on ${m[3]} snaps`],
     [/^football:touchdown:actor:damien pierce:opponent:panthers$/, /^(.+)'s touchdown against the Panthers$/, m=>`${m[1]} scored a touchdown against the Panthers`],
     [/^football:sack:actor:kenny clark:down:[1-4]$/, /^(.+)'s sack on down ([1-4])$/, m=>`${m[1]} recorded a sack on down ${m[2]}`],

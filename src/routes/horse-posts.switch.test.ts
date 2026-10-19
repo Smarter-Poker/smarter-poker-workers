@@ -103,12 +103,12 @@ describe('turning the engine off stops a run in flight', () => {
     expect(r.body).toMatchObject({ stopped: 'engine_unreadable', attempted: 1, not_attempted: 3 });
   });
 
-  it('paces a fully eligible run after two fresh creations and syncs style sheets', async () => {
+  it('serves every eligible horse within the existing attempt capacity and syncs style sheets', async () => {
     m.switches = ['on', 'on', 'on', 'on', 'on'];
     const r = await run();
-    expect(m.publishForHorse).toHaveBeenCalledTimes(2);
-    expect(r.body).toMatchObject({ stopped: null, attempted: 2, posted: 2, not_attempted: 2,
-      publication_budget:{limit:2,created:2,hit:true},cap_hit:false });
+    expect(m.publishForHorse).toHaveBeenCalledTimes(4);
+    expect(r.body).toMatchObject({ stopped: null, attempted: 4, posted: 4, not_attempted: 0,
+      publication_budget:{limit:80,created:4,hit:false},cap_hit:false });
     expect(m.syncStyleSheets).toHaveBeenCalledTimes(1);
   });
 });
@@ -163,7 +163,7 @@ describe('each publish names its slot, and skips are counted by reason', () => {
     expect(r.status).toBe(503);
     expect(m.publishForHorse).not.toHaveBeenCalled();
     expect(r.body).toMatchObject({ success:false,video_supply_preflight: 'unknown',unknown:1,
-      halted_on_unknown:true,not_attempted:4,publication_budget:{limit:2,created:0,hit:false} });
+      halted_on_unknown:true,not_attempted:4,publication_budget:{limit:80,created:0,hit:false} });
   });
 
   it('passes the scheduler slot and counts guard, duplicate and recent skips apart from failures', async () => {
@@ -238,13 +238,13 @@ describe('each publish names its slot, and skips are counted by reason', () => {
     });
   });
 
-  it('continues past early exhaustion to fill two fresh slots, without counting replay',async()=>{
+  it('continues past early exhaustion without charging replay as a fresh creation',async()=>{
     m.switches=['on','on','on','on','on'];
     m.publishForHorse.mockResolvedValueOnce({success:false,skipped:'content_exhausted'})
       .mockResolvedValueOnce({success:true,created:false,type:'poker_video'});
     const r=await run();
     expect(m.publishForHorse).toHaveBeenCalledTimes(4);
-    expect(r.body).toMatchObject({attempted:4,posted:3,publication_budget:{limit:2,created:2,hit:true},not_attempted:0});
+    expect(r.body).toMatchObject({attempted:4,posted:3,publication_budget:{limit:80,created:2,hit:false},not_attempted:0});
   });
 
   it('admits no second horse behind an unknown publication acknowledgement',async()=>{
@@ -254,7 +254,7 @@ describe('each publish names its slot, and skips are counted by reason', () => {
     expect(r.status).toBe(503);
     expect(m.publishForHorse).toHaveBeenCalledTimes(1);
     expect(r.body).toMatchObject({success:false,attempted:1,unknown:1,halted_on_unknown:true,not_attempted:3,
-      publication_budget:{limit:2,created:0,hit:false}});
+      publication_budget:{limit:80,created:0,hit:false}});
   });
 
   it('treats an unexpected publisher exception as unknown and never admits the second horse',async()=>{
@@ -264,6 +264,6 @@ describe('each publish names its slot, and skips are counted by reason', () => {
     expect(r.status).toBe(503);
     expect(m.publishForHorse).toHaveBeenCalledTimes(1);
     expect(r.body).toMatchObject({success:false,unknown:1,halted_on_unknown:true,not_attempted:3,
-      publication_budget:{limit:2,created:0,hit:false},errors:{'publisher transport interrupted':1}});
+      publication_budget:{limit:80,created:0,hit:false},errors:{'publisher transport interrupted':1}});
   });
 });
