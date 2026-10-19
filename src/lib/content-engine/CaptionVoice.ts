@@ -246,7 +246,7 @@ const CONTEXT_FOCUS: Record<string, string[]> = {
   'soccer:goal:': ['the buildup to the finish','the angle toward goal','the space before the finish','the positioning around the ball','the movement before the shot','the timing of the finish','the approach toward goal','the room available for the shot'],
   'soccer:goal_total:actor:josuha guilavogui:': ['the chances across the match','the shooting opportunities','the positioning before the finishes','the movement around the box','the buildup to the finishes','the scoring opportunities','the space around the area','the chances rather than just the total'],
   'baseball:triple_and_run:': ['the situation before the hit','the approach at the plate','the running between bases','the play following the hit','the count before the swing','the sequence from the hit to the scoring','the defensive positioning','the decisions on the bases'],
-  'poker_question:': ['the effective stacks','the possible opposing ranges','the board and betting sequence','the information available at the decision','the range of possible holdings','the stack sizes and betting','the actions leading to the decision','the situation at the table'],
+  'poker_question:': ['the effective stacks','the table position','the number of players in the hand','the pot odds','the possible opposing ranges','the previous bet sizes','the available actions','the game format'],
   'news:ankle_evaluation:': ['the reported circumstances','the information in the report','the evaluation rather than guesses about recovery','the details already confirmed','the description of the ankle concern','the information available so far','the distinction between evaluation and diagnosis','the details of the exit'],
   'news:trade_analysis:': ['the fit for each roster','the changes for both teams','the expectations on each side','the role on the new roster','the decisions facing each team','the roster needs on both sides','the reasons for the roster changes','the difference in team needs'],
   'news:cooler:': ['the effective stacks','the action before the final decision','the board and betting sequence','the tournament situation','the ranges reaching the decision','the decisions before the runout','the stack depth and bet sizes','the information available at the time'],
@@ -346,11 +346,13 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const eventFocus = contextKey === 'poker_event:'
     ? fact.identity!.endsWith(':stage:final_table') ? CONTEXT_FOCUS[contextKey]! : EARLY_EVENT_FOCUS
     : null;
-  // Bind event consideration to the canonical event/stage, never a video ID.
+  // Bind event/question consideration to its canonical subject, never a video ID.
   // Stable author cadence remains unchanged, and retries cannot create a new
   // fact/freshness key merely by choosing different wording.
   const focus = eventFocus
     ? eventFocus[voiceChoice(style.profileId, `voice-context-focus:${fact.identity}`, eventFocus.length)]!
+    : contextKey === 'poker_question:'
+    ? CONTEXT_FOCUS[contextKey]![voiceChoice(style.profileId, `voice-context-focus:${fact.identity}`, CONTEXT_FOCUS[contextKey]!.length)]!
     : contextKey
     ? CONTEXT_FOCUS[contextKey]![plan.contextFocus[contextKey]!]!
     : focusOptions[plan.focus[`${family}:${angle.key}`]!]!;
