@@ -74,6 +74,7 @@ import { captionModelIdempotencyKey, takeModelWriterStats } from './ModelWriter.
 import { extractArticleImageUrl, resolveArticleImageUrl, safeArticleUrl } from './NewsImage.js';
 import { publishHorseNewsAtomically } from './HorseNewsPublication.js';
 import { freshVideoCaptionCandidates } from './VideoCandidateFreshness.js';
+import {freshNewsCaptionCandidates} from './NewsCandidateFreshness.js';
 import { orderedNewsSources, type NewsFeedCandidate } from './NewsSourceFallback.js';
 import { balancedVideoPriority, balancedVideoTypes, readRecentVideoContext, type RecentVideoContext } from './VideoFeedBalance.js';
 import { readHorseVideoPublicationEvidence, type PublicationEvidence } from './PublicationEvidence.js';
@@ -1300,6 +1301,11 @@ async function postNewsFromSource(
       };
     }
 
+    const qualified=await freshNewsCaptionCandidates(fresh,newsType,source.name,horse.profile_id);
+    if(qualified.status==='unknown')return {...base,success:false,outcome:'unknown',publicationKey,error:qualified.error};
+    bumpSupplyStat(`${newsType}_news_preflight_ungroundable`,qualified.ungroundable);
+    bumpSupplyStat(`${newsType}_news_preflight_reused_meaning`,qualified.reused);
+    if(!qualified.articles.length)return {...base,success:false,skipped:'caption_exhausted',publicationKey,error:'No fresh source-grounded news meaning in the bounded feed'};
     // A news card without associated art is not an eligible feed item. Do
     // not publish a logo/blank placeholder and hope a later browser repairs it.
     const illustrated: Array<{ article: typeof fresh[number]; image: string }> = [];
@@ -1308,7 +1314,7 @@ async function postNewsFromSource(
     // Inspect supplied art across the entire twenty-item feed before spending
     // the three bounded first-party metadata requests. Three blank leading
     // stories must not hide the genuine artwork on the fourth story.
-    const ranked = [...fresh].sort((a,b) => Number(!extractArticleImageUrl(a)) - Number(!extractArticleImageUrl(b)));
+    const ranked = [...qualified.articles].sort((a,b) => Number(!extractArticleImageUrl(a)) - Number(!extractArticleImageUrl(b)));
     for (const article of ranked.slice(0, 3)) {
       const image = await resolveArticleImageUrl(article);
       if (image) illustrated.push({ article, image });

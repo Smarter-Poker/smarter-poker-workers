@@ -1,11 +1,12 @@
 import type { CaptionFact } from './CaptionVoice.js';
 import { publicFigureDomain, type PostBrief } from './PostBrief.js';
+import { newsResultFact } from './NewsResultFact.js';
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /**
- * Three explicit article facts, not a headline-attribution fallback. Neither
+ * Closed explicit article facts, not a headline-attribution fallback. Neither
  * a URL, article id, arbitrary title nor stylistic wording supplies novelty.
  * Unsupported, hypothetical or ambiguously bound headlines remain silent.
  */
@@ -22,6 +23,8 @@ export function newsTitleFact(b: PostBrief): CaptionFact | null {
     return {person:'', action:'news_report_context', identity:'news:cooler:event:poker masters:amount_label:10000:holding:full house', subject:'the full-house cooler in the $10K Poker Masters tournament'};
   if (b.domain === 'poker' && /^Too Weak to Call, Strong Enough to Raise: Garrett Adelstein's \$60K Bluff$/i.test(title))
     return {person:'Garrett Adelstein', action:'bluff', subject:"Garrett Adelstein's $60K bluff"};
+  const result = newsResultFact(b, title);
+  if (result) return result;
   if (/[?]|\b(?:no|not|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|might|may|if|unless|without|before|after|then|reacts|watches|denies|rumor|rumour)\b/i.test(title)) return null;
 
   if (b.domain === 'poker') {

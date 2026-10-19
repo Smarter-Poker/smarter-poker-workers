@@ -425,7 +425,7 @@ function upperFirst(s: string): string {
 }
 function capitalizeSentenceStarts(s: string): string {
   return upperFirst(s).replace(
-    /([.!?]\s+)([a-z])/g,
+    /(?<!\bJr|\bSr)([.!?]\s+)([a-z])/g,
     (_match, lead: string, letter: string) => `${lead}${letter.toUpperCase()}`,
   );
 }

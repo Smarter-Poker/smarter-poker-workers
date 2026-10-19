@@ -6,6 +6,13 @@ import {briefForAsset} from './PostBrief.js';
 const profiles = Array.from({length:1000},(_,i)=>styleSheetFor(`00000000-0000-4000-8000-${String(i).padStart(12,'0')}`));
 const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu;
 describe('conversational caption rendering',()=>{
+  it('keeps a name suffix inside its sentence while capitalizing the next real sentence',()=>{
+    const style={...profiles[0]!,opener:'none' as const,closer:'none' as const,casing:'sentence' as const,punctuation:'full' as const};
+    const text=render(['Darius Acuff Jr. made his first NBA basket. what a debut?'],style,'suffix');
+    expect(text).toContain('Darius Acuff Jr. made');
+    expect(text).toContain('basket. What');
+    expect(text).not.toContain('Jr. Made');
+  });
   it('drops decorative labels/list dashes while preserving scores, odds, times, names and cards',()=>{
     const text=render(['- My take: king-ten on As Kd Qh, 3-0 at 12:30 with 4:1 odds'],{...profiles[0]!,opener:'none',closer:'none',casing:'sentence'},'fixed');
     expect(text).not.toMatch(/^\s*[-*]|take:|—/);
