@@ -28,7 +28,9 @@ export function literalNewsReportClauses(fact: CaptionFact): string[] {
   if (fact.action !== 'news_report_context') return [];
   if (fact.identity?.startsWith('news:win:')) {
     const win = fact.subject.match(/^(.+)'s (.+) win$/);
-    if (win) return [`${win[1]} won ${win[2]}`, `${win[1]} is the ${win[2]} winner`, `${win[2]} was won by ${win[1]}`];
+    // A title at a festival establishes a win there, not necessarily its
+    // overall championship. Do not promote an event result into a series win.
+    if (win) return [`${win[1]} recorded a win at ${win[2]}`, `${win[1]} won at ${win[2]}`];
   }
   if (fact.identity?.startsWith('news:contract_extension:')) {
     const agreement = fact.subject.match(/^the (.+) agreement on a contract extension with (.+)$/);

@@ -24,11 +24,19 @@ const cases: Array<[string, 'poker' | 'sports']> = [
 ];
 
 describe('source-bound news report voice', () => {
+  it('does not turn an individual event win into a festival or series championship',()=>{
+    for(const title of ['Vitalijs Zavorotnijs Wins Poker Masters Event No. 4',"888's Aaron Barone Wins PokerNews Online Championship Event"]){
+      const b=briefForAsset({kind:'link',title,domainHint:'poker',source:'PokerNews'});
+      const clauses=literalNewsReportClauses(captionFact(b)!);
+      expect(clauses.every(clause=>/\b(?:win|won) at\b/.test(clause))).toBe(true);
+      expect(clauses.join(' ')).not.toMatch(/is the .* winner/);
+    }
+  });
   it('weights only complete literal report clauses, not actors or altered outcomes', () => {
     const brief = {...briefForAsset({kind:'link', title:'Brandon Wilson Wins Super High Roller Bowl XI For $1.1 Million', domainHint:'poker', source:'PokerNews'}),
       people:[], teams:[], concepts:[], amounts:[], topic:undefined, keyPhrase:undefined};
     const clauses = literalNewsReportClauses(captionFact(brief)!);
-    expect(clauses).toHaveLength(3);
+    expect(clauses).toHaveLength(2);
     for (const clause of clauses) expect(relevanceOf(clause, brief)).toBe(0.5);
     for (const wrong of ['Brandon Wilson lost Super High Roller Bowl XI', 'Someone Else won Super High Roller Bowl XI', 'Brandon Wilson won a different tournament', 'Brandon Wilson']) {
       expect(relevanceOf(wrong, brief)).toBe(0);
