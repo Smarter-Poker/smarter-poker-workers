@@ -62,6 +62,7 @@ export function literalSportInventoryClauses(fact: CaptionFact): string[] {
     [/^basketball:block:actor:scoot henderson:kind:chasedown$/, /^(.+)'s chasedown block$/, m=>`${m[1]} made a chasedown block`],
     [/^basketball:dunk:actor:(?:caleb wilson|leonard miller)$/, /^(.+)'s dunk$/, m=>`${m[1]} dunked`],
     [/^basketball:made_basket:actor:demar derozan$/, /^(.+)'s made basket$/, m=>`${m[1]} made a basket`],
+    [/^basketball:go_ahead_shot:actor:keaton wagler:team:clippers$/, /^(.+)'s go-ahead shot for the Clippers$/, m=>`${m[1]} put the Clippers ahead with a shot`],
     [/^basketball:consecutive_and_ones:actor:darryn peterson:count:2$/, /^(.+)'s back-to-back and-one baskets$/, m=>`${m[1]} made back-to-back and-one baskets`],
     [/^basketball:first_basket:actor:darius acuff jr:competition:nba$/, /^(.+)'s first NBA basket$/, m=>`${m[1]} made his first NBA basket`],
     [/^basketball:first_team_basket:actor:(?:john elmore|lebron james|giannis antetokounmpo):team:(?:spurs|76ers|heat)$/, /^(.+)'s first basket for the (.+)$/, m=>`${m[1]} made his first basket for the ${m[2]}`],
@@ -73,6 +74,7 @@ export function literalSportInventoryClauses(fact: CaptionFact): string[] {
     [/^baseball:strikeout:pitcher:didier fuentes:batter:shohei ohtani$/, /^(.+) striking out (.+)$/, m=>`${m[1]} struck out ${m[2]}`],
     [/^baseball:strikeout:pitcher:abner uribe:runners_on:[1-3]$/, /^(.+)'s strikeout with ([1-3]) runners on$/, m=>`${m[1]} recorded a strikeout with ${m[2]} runners on`],
     [/^baseball:go_ahead:actor:(?:will smith|jake cronenworth):team:(?:dodgers|padres)$/, /^(.+) putting the (.+) ahead$/, m=>`${m[1]} put the ${m[2]} ahead`],
+    [/^baseball:runs_batted_in:actor:jose ramirez:team:guardians:runs:1:inning:[1-9]$/, /^(.+) driving in one more run for the Guardians in inning ([1-9])$/, m=>`${m[1]} drove in one more run for the Guardians in inning ${m[2]}`],
   ];
   for (const [identity, subject, clause] of rules) {
     if (!identity.test(id)) continue;

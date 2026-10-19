@@ -10,6 +10,23 @@ const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${St
 
 describe('source-bound individual caption voices', () => {
   it.each([
+    {id:'060c946d-db8d-4d27-b1ec-a203435764f1',source:'NBA',title:'Keaton Wagler Drills the Go-Ahead Shot to Give the Clippers the lead',identity:'basketball go ahead shot actor keaton wagler team clippers',clause:'Keaton Wagler put the Clippers ahead with a shot.',rendered:/Keaton Wagler put the Clippers ahead with a shot/i},
+    {id:'41dbdf32-aec5-450a-80c8-4d8d226c727b',source:'MLB',title:'José Ramírez drives in another for the Guardians in the 9th!',identity:'baseball runs batted in actor jose ramirez team guardians runs 1 inning 9',clause:'José Ramírez drove in one more run for the Guardians in inning 9.',rendered:/José Ramírez drove in one more run for the Guardians in inning (?:9|nine)/i},
+  ])('states the actual 18:25 scoring report without generic verdict framing: $title',row=>{
+    const b=briefForAsset({kind:'video',domainHint:'sports',source:row.source,title:row.title});
+    for(const id of [row.id,...ids.slice(0,24)])for(const variant of ['0','1','2','3','4','5']){
+      const style=styleSheetFor(id);
+      const raw=subjectCaption(b,style,variant)!;
+      expect(raw.text).toBe(row.clause);
+      expect(raw.semanticKey).toBe(`meaning:subject:${row.identity}:sports_technical_context:literal_sequence`);
+      const out=composeCaption(b,style,variant);
+      expect(out.text).toMatch(row.rendered);
+      expect(out.text).not.toMatch(/judg|details of the play|run production|\b(?:winner|won|final score)\b/i);
+      expect(out.semanticKey).toBe(raw.semanticKey);
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    }
+  });
+  it.each([
     {source:'Premier League',title:'Diego Gomez Scores From The Halfway Line',identity:'soccer goal actor diego gomez location halfway line',clause:'Diego Gomez scored from the halfway line.'},
     {source:'UEFA',title:"Troy Parrott's solo goal",identity:'soccer goal actor troy parrott run solo',clause:'Troy Parrott scored a solo goal.'},
     {source:'MLS',title:'Hany Mukhtar SCRAPPY REBOUND GOAL for Nashville',identity:'soccer goal actor hany mukhtar team nashville phase rebound',clause:'Hany Mukhtar scored a rebound goal for Nashville.'},
