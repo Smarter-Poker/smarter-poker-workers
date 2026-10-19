@@ -9,6 +9,39 @@ const brief = (title: string, domainHint: 'poker' | 'sports' = 'poker') => brief
 const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12,'0')}`);
 
 describe('source-bound individual caption voices', () => {
+  it('separates the actual Brittany and Ethan question focuses without changing decision freshness', () => {
+    const rows=[
+      {id:'bd9b7405-4543-4e63-b82c-9f6126c6443f',source:'Bart Hanson',title:'Would You Flat or 4-Bet Here? 👇',identity:'poker question decision flat or four bet'},
+      {id:'d708c5d2-cccf-4e29-b585-1acc3d145927',source:'Mariano',title:'Trapping with Pocket Aces? 🪤',identity:'poker question decision trap holding aa'},
+    ];
+    const considerations=['the effective stacks','the table position','the number of players in the hand','the pot odds','the possible opposing ranges','the previous bet sizes','the available actions','the game format'];
+    const observed=rows.map(row=>{
+      const b=briefForAsset({kind:'video',domainHint:'poker',source:row.source,title:row.title});
+      const out=composeCaption(b,styleSheetFor(row.id));
+      const focus=considerations.find(f=>out.text.toLowerCase().includes(f));
+      expect(focus).toBeDefined();
+      for(const variant of ['0','1','2','3','4','5']){
+        const next=composeCaption(b,styleSheetFor(row.id),variant);
+        expect(next.text).not.toMatch(/stack sizes and betting|situation at the table|information available at the decision/);
+        expect(next.semanticKey).toBe(`meaning:subject:${row.identity}:poker_question_context:decision_context`);
+        expect(next.relevance).toBeGreaterThanOrEqual(.3);
+      }
+      return focus;
+    });
+    expect(new Set(observed).size).toBe(2);
+  });
+  it('keeps question considerations concrete and decision identity stable across affected voices', () => {
+    for(const title of ['Would You Flat or 4-Bet Here? 👇','Trapping with Pocket Aces? 🪤']){
+      const b=briefForAsset({kind:'video',domainHint:'poker',source:title.startsWith('Would')?'Bart Hanson':'Mariano',title});
+      const key=composeCaption(b,styleSheetFor(ids[0]!)).semanticKey;
+      for(const id of ids){
+        const out=composeCaption(b,styleSheetFor(id));
+        expect(out.text).not.toMatch(/stack sizes and betting|situation at the table|information available at the decision|range of possible holdings|board and betting sequence/);
+        expect(out.semanticKey).toBe(key);
+        expect(out.relevance).toBeGreaterThanOrEqual(.3);
+      }
+    }
+  });
   it('separates the actual consecutive event focuses without changing event freshness', () => {
     const fixtures=[
       {id:'4f7f8abb-ba34-464c-9ecb-0ab7a972a978',title:'Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman',identity:'poker event poker masters year 2026 event 5 stage final table',focus:/stack distribution/i},
