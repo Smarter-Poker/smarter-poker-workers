@@ -185,8 +185,9 @@ export async function recordYouTubeVerification(
 /**
  * Publish the post, Reel and dedup ledgers as one database transaction.
  *
- * Timeouts are reported as unknown by the shared Supabase client and are not
- * retried here. A later route invocation presents the same durable asset key;
+ * Transport timeouts have unknown outcomes. PostgreSQL cancellation errors
+ * are definite transaction failures. Neither is retried here. A later route
+ * invocation presents the same durable asset key;
  * the RPC returns the prior post/Reel pair rather than duplicating it.
  */
 export async function publishHorseVideoAtomically(
@@ -224,14 +225,19 @@ export async function publishHorseVideoAtomically(
   if (error) {
     const code = String(error.code ?? '');
     const message = String(error.message ?? 'database request failed');
+    // These server SQLSTATEs abort the transactional RPC. Their timeout
+    // wording must not override the database's definite rollback response.
+    const transactionCancelled = ['57014', '55P03', '40P01'].includes(code);
     if (
-      !code
+      !transactionCancelled && (!code
       || /^PGRST00[0-2]$/.test(code)
-      || /abort|timeout|timed out|network|fetch|connection|socket|econnreset/i.test(message)
+      || /^08/.test(code)
+      || /abort|timeout|timed out|network|fetch|connection|socket|econnreset/i.test(message))
     ) {
       return {
         success: false,
         outcome: 'unknown',
+        ...(code ? { code } : {}),
         error: `atomic horse video publication outcome unknown: ${message}`,
       };
     }
@@ -239,8 +245,13 @@ export async function publishHorseVideoAtomically(
   }
 
   const row = firstRow<PublicationRow>(data);
-  if (!row?.social_post_id || !row.social_reel_id) {
-    return { success: false, error: 'atomic horse video publication returned no linked post/Reel pair' };
+  if (
+    (Array.isArray(data) && data.length !== 1)
+    || typeof row?.social_post_id !== 'string' || !row.social_post_id.trim()
+    || typeof row.social_reel_id !== 'string' || !row.social_reel_id.trim()
+    || typeof row.created !== 'boolean'
+  ) {
+    return { success: false, outcome: 'unknown', error: 'atomic horse video publication returned no linked post/Reel pair' };
   }
   return {
     success: true,

@@ -114,6 +114,32 @@ describe('turning the engine off stops a run in flight', () => {
 });
 
 describe('each publish names its slot, and skips are counted by reason', () => {
+  it.each([undefined, 'unknown'])('persists a bounded failed publication receipt with outcome %s', async (outcome) => {
+    m.switches = ['on', 'on', 'off'];
+    const publicationAttempt = {
+      authorId: 'pid-a', publicationKey: 'fleet:pid-a:slot-of-pid-a',
+      videoUrl: 'https://www.youtube.com/watch?v=AAAAAAAAAAA',
+      caption: 'Called the river with second pair and it held', topic: 'poker',
+      assetKey: 'yt:AAAAAAAAAAA', phraseNorm: 'called the river with second pair and it held',
+      semanticKey: 'sem:river-call-second-pair',
+    };
+    m.publishForHorse.mockResolvedValueOnce({
+      success: false, horse: 'Horse a', profile_id: 'pid-a',
+      publicationKey: publicationAttempt.publicationKey, publicationAttempt,
+      code: outcome ? 'PGRST002' : '57014', outcome, error: 'publication failed',
+      internalMetadata: { secret: 'must-not-be-copied' },
+    });
+    const r = await run();
+    expect(r.status).toBe(outcome ? 503 : 200);
+    expect(r.body.publication_failures).toEqual([{
+      horse: 'Horse a', profile_id: 'pid-a',
+      publicationKey: publicationAttempt.publicationKey, publicationAttempt,
+      code: outcome ? 'PGRST002' : '57014',
+      ...(outcome ? { outcome } : {}), error: 'publication failed',
+    }]);
+    expect(r.body.halted_on_unknown).toBe(Boolean(outcome));
+    expect(m.publishForHorse).toHaveBeenCalledTimes(1);
+  });
   it('prepares one shared video proof snapshot and passes it to every horse', async () => {
     m.switches = ['on', 'on', 'on', 'on', 'on'];
     const supply = { poker: [{ video_id: 'AAAAAAAAAAA' }], sports: [] };

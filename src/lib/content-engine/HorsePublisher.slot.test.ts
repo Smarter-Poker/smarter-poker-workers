@@ -417,6 +417,35 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(ledger.recordBrief).toHaveBeenCalledWith('post-1', expect.anything());
   });
 
+  it.each([
+    ['57014', 'canceling statement due to statement timeout', undefined],
+    ['55P03', 'canceling statement due to lock timeout', undefined],
+    ['40P01', 'deadlock detected', undefined],
+    ['PGRST002', 'database connection unavailable', 'unknown'],
+  ])('retains the exact failed video tuple for %s and makes no alternate publication', async (code, message, outcome) => {
+    modes.grounded = false;
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    db.rpcResult = { data: null, error: { code, message } };
+    const id = horseWhereGroundedFirstIs(false);
+    const result = await publishForHorse(horse(id), { slot: SLOT });
+    const writes = db.rpcCalls.filter(call => call.name === 'publish_horse_video_reel');
+    expect(writes).toHaveLength(1);
+    const args = writes[0]!.args;
+    expect(result).toMatchObject({
+      success: false, code, publicationKey: `fleet:${id}:${SLOT}`,
+      publicationAttempt: {
+        authorId: id, publicationKey: `fleet:${id}:${SLOT}`,
+        videoUrl: args.p_video_url, caption: 'Called the river with second pair and it held',
+        topic: 'poker', assetKey: args.p_asset_key,
+        phraseNorm: 'called the river with second pair and it held',
+        semanticKey: 'sem:river-call-second-pair',
+      },
+    });
+    expect(result.outcome).toBe(outcome);
+    expect(feed.parseURL).not.toHaveBeenCalled();
+    expect(ledger.recordBrief).not.toHaveBeenCalled();
+  });
+
   it('prefers a genuine linked video/Reel over an available illustrated news article', async () => {
     modes.grounded = false;
     const result = await publishForHorse(horse(horseWhereGroundedFirstIs(false)), { slot: SLOT });
