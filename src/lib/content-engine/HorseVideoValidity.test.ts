@@ -122,7 +122,7 @@ afterEach(() => {
 
 describe('horse video oEmbed proof', () => {
   it('falls back to a genuine long format only after both approved short categories are exhausted',async()=>{
-    const poker=[formatClip('AAAAAAAAAAA','All in on the river stale',40),formatClip('BBBBBBBBBBB','Final table river call',12000)];
+    const poker=[formatClip('AAAAAAAAAAA','HIGH STAKES $5/$10 stale',40),formatClip('BBBBBBBBBBB','HIGH STAKES $10/$25',12000)];
     const sports=[formatClip('CCCCCCCCCCC','LeBron James dunks stale',15,'NBA')];
     mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA','yt:BBBBBBBBBBB','yt:CCCCCCCCCCC']));
     mocks.writeCaption.mockImplementation(async (_horse,asset)=>({text:asset.title.includes('stale')?'':'A fresh grounded caption',
@@ -137,7 +137,7 @@ describe('horse video oEmbed proof', () => {
   });
 
   it('never attempts long fallback after an unknown short-video publication acknowledgement',async()=>{
-    const poker=[formatClip('AAAAAAAAAAA','All in on the river stale',40),formatClip('BBBBBBBBBBB','Final table river call',12000)];
+    const poker=[formatClip('AAAAAAAAAAA','HIGH STAKES $5/$10 stale',40),formatClip('BBBBBBBBBBB','HIGH STAKES $10/$25',12000)];
     const sports=[formatClip('CCCCCCCCCCC','LeBron James dunks',15,'NBA')];
     mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA','yt:BBBBBBBBBBB','yt:CCCCCCCCCCC']));
     mocks.writeCaption.mockImplementation(async (_horse,asset)=>({text:asset.title.includes('stale')?'':'A fresh grounded caption',
@@ -151,7 +151,7 @@ describe('horse video oEmbed proof', () => {
   });
 
   it('shares a six-caption category budget across short and long tiers instead of doubling attempts',async()=>{
-    const poker=Array.from({length:8},(_,index)=>formatClip(String(index).padStart(11,'D'),`All in on the river stale ${index}`,index<3?40:12000));
+    const poker=Array.from({length:8},(_,index)=>formatClip(String(index).padStart(11,'D'),`HIGH STAKES $5/$10 stale ${index}`,index<3?40:12000));
     mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map(clip=>`yt:${clip.video_id}`)));
     mocks.writeCaption.mockResolvedValue({text:'',semanticKey:'meaning:stale',stale:true,brief:{},relevance:1,grounding:['title'],attempts:6,belowFloor:false});
     expect(await publishVideoForHorse({id:1,name:'Alpha',profile_id:pokerFirstProfile()},
@@ -167,7 +167,7 @@ describe('horse video oEmbed proof', () => {
       .find(id=>videoKindOrder(id,now,['poker','sports'])[0]==='poker')!;
     const make=(id:string,title:string,source:string,duration_seconds:number)=>({id,video_id:id,
       source_url:`https://youtube.com/watch?v=${id}`,source,title,category:source==='NBA'?'basketball':'poker',oembed_ok:true,duration_seconds});
-    const poker=[make('AAAAAAAAAAA','All in on the river stale','PokerGO',40),make('BBBBBBBBBBB','Final table river call','PokerGO',12000)];
+    const poker=[make('AAAAAAAAAAA','HIGH STAKES $5/$10 stale','PokerGO',40),make('BBBBBBBBBBB','HIGH STAKES $10/$25','PokerGO',12000)];
     const sports=[make('CCCCCCCCCCC','LeBron James dunks','NBA',15)];
     mocks.filterUnusedAssets.mockResolvedValue(new Set(['yt:AAAAAAAAAAA','yt:BBBBBBBBBBB','yt:CCCCCCCCCCC']));
     mocks.writeCaption.mockImplementation(async (_horse,asset)=>({text:asset.title.includes('stale')?'':'A fresh grounded caption',
@@ -186,7 +186,7 @@ describe('horse video oEmbed proof', () => {
         video_id: domain === 'poker' ? 'AAAAAAAAAAA' : 'BBBBBBBBBBB',
         source_url: `https://youtube.com/watch?v=${domain === 'poker' ? 'AAAAAAAAAAA' : 'BBBBBBBBBBB'}`,
         source: `${domain} source`,
-        title: domain === 'poker' ? 'All in on the river' : 'Buzzer beater game winner',
+        title: domain === 'poker' ? 'HIGH STAKES $5/$10' : 'LeBron James dunks',
         category: domain,
         oembed_ok: null,
       }],
@@ -250,7 +250,7 @@ describe('horse video oEmbed proof', () => {
         video_id: videoId,
         source_url: `https://youtube.com/watch?v=${videoId}`,
         source: 'Poker source',
-        title: `All in on the river ${videoId}`,
+        title: `HIGH STAKES $5/$10 ${videoId}`,
         category: 'poker',
         oembed_ok: null,
       })),
@@ -273,9 +273,9 @@ describe('horse video oEmbed proof', () => {
   it('separates fresh verifier proof from grounded-caption readiness before horses run', async () => {
     const poker = [
       ['8IseCEZyIxU', 'Rampage Poker', 'Dreams do come true 🙏 ✨️', 'vlog'],
-      ['rcMpnCfR2UM', 'PokerGO', 'JENNIFER TILLY REACTS TO EPIC POKER HAND VS ANTONIO ESFANDIARI', 'stream'],
+      ['rcMpnCfR2UM', 'PokerGO', 'HIGH STAKES $5/$10', 'stream'],
       ['RYZXl4LBlZc', 'The Lodge', 'The Kind Of River Card You Think About On Your Drive Home...', 'stream'],
-      ['faH94pxMH6U', 'Bart Hanson', 'The $1,700 Bet That Put Pocket Aces in Hell', 'training'],
+      ['faH94pxMH6U', 'Bart Hanson', 'HIGH STAKES $10/$25', 'training'],
     ].map(([videoId, source, title, category]) => ({
       id: `clip-${videoId}`,
       video_id: videoId!,
@@ -309,13 +309,12 @@ describe('horse video oEmbed proof', () => {
       supply: {
         poker: [
           { video_id: 'rcMpnCfR2UM' },
-          { video_id: 'RYZXl4LBlZc' },
           { video_id: 'faH94pxMH6U' },
         ],
         sports: [],
       },
       counts: {
-        poker: { scanned: 4, verified: 4, captionable: 3 },
+        poker: { scanned: 4, verified: 4, captionable: 2 },
         sports: { scanned: 3, verified: 3, captionable: 0 },
       },
     });
@@ -348,7 +347,7 @@ describe('horse video oEmbed proof', () => {
       poker: [{
         id: 'clip-a', video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
-        source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
+        source: 'Poker source', title: 'HIGH STAKES $5/$10', category: 'poker', oembed_ok: null,
       }],
       sports: [],
     };
@@ -386,7 +385,7 @@ describe('horse video oEmbed proof', () => {
       poker: [{
         id: 'clip-a', video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
-        source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
+        source: 'Poker source', title: 'HIGH STAKES $5/$10', category: 'poker', oembed_ok: null,
       }],
       sports: [],
     };
@@ -461,7 +460,7 @@ describe('horse video oEmbed proof', () => {
     const sports = [{
       id: 'sports-b', video_id: 'BBBBBBBBBBB',
       source_url: 'https://youtube.com/watch?v=BBBBBBBBBBB',
-      source: 'Sports source', title: 'Buzzer beater game winner', category: 'football', oembed_ok: null,
+      source: 'Sports source', title: 'LeBron James dunks', category: 'football', oembed_ok: null,
     }];
 
     await expect(publishVideoForHorse(
@@ -489,7 +488,7 @@ describe('horse video oEmbed proof', () => {
     const poker = [{
       id: 'clip-b', video_id: 'BBBBBBBBBBB',
       source_url: 'https://youtube.com/watch?v=BBBBBBBBBBB',
-      source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
+      source: 'Poker source', title: 'HIGH STAKES $5/$10', category: 'poker', oembed_ok: null,
     }];
 
     await expect(publishVideoForHorse(
@@ -507,7 +506,7 @@ describe('horse video oEmbed proof', () => {
         return {
           id: `clip-${index}`, video_id: videoId,
           source_url: `https://youtube.com/watch?v=${videoId}`,
-          source: `Source ${index}`, title: `All in on the river ${index}`, category: 'poker', oembed_ok: null,
+          source: `Source ${index}`, title: `HIGH STAKES $5/$10 ${index}`, category: 'poker', oembed_ok: null,
         };
       }),
       sports: [],
@@ -532,7 +531,7 @@ describe('horse video oEmbed proof', () => {
       video_id: videoId,
       source_url: `https://youtube.com/watch?v=${videoId}`,
       source: 'Poker source',
-      title: 'All in on the river',
+      title: 'HIGH STAKES $5/$10',
       category: 'poker',
       oembed_ok: null,
     }));
@@ -580,7 +579,7 @@ describe('horse video oEmbed proof', () => {
         video_id: videoId,
         source_url: `https://youtube.com/watch?v=${videoId}`,
         source: 'Poker source',
-        title: 'All in on the river',
+        title: 'HIGH STAKES $5/$10',
         category: 'poker',
         oembed_ok: null,
       };
@@ -623,7 +622,7 @@ describe('horse video oEmbed proof', () => {
       video_id: videoId,
       source_url: `https://youtube.com/watch?v=${videoId}`,
       source: 'Poker source',
-      title: 'All in on the river',
+      title: 'HIGH STAKES $5/$10',
       category: 'poker',
       oembed_ok: null,
     }));
@@ -658,7 +657,7 @@ describe('horse video oEmbed proof', () => {
       video_id: videoId,
       source_url: `https://youtube.com/watch?v=${videoId}`,
       source: 'Poker source',
-      title: 'All in on the river',
+      title: 'HIGH STAKES $5/$10',
       category: 'poker',
       oembed_ok: null,
     }));
@@ -690,7 +689,7 @@ describe('horse video oEmbed proof', () => {
       video_id: videoId,
       source_url: `https://youtube.com/watch?v=${videoId}`,
       source: 'Poker source',
-      title: 'All in on the river',
+      title: 'HIGH STAKES $5/$10',
       category: 'poker',
       oembed_ok: null,
     }));
@@ -698,7 +697,7 @@ describe('horse video oEmbed proof', () => {
     mocks.filterUnusedAssets.mockResolvedValue(new Set(poker.map((clip) => `yt:${clip.video_id}`)));
     mocks.recordYouTubeVerification.mockResolvedValue(true);
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      html: '<iframe src="x"></iframe>', title: 'All in on the river',
+      html: '<iframe src="x"></iframe>', title: 'HIGH STAKES $5/$10',
     }), { status: 200 })) as typeof fetch;
     mocks.writeCaption
       .mockResolvedValueOnce({
@@ -867,7 +866,7 @@ describe('horse video oEmbed proof', () => {
         video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
         source: 'Test channel',
-        title: 'All in on the river',
+        title: 'HIGH STAKES $5/$10',
         category: 'cash',
         oembed_ok: null,
       }],
@@ -921,7 +920,7 @@ describe('horse video oEmbed proof', () => {
         video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
         source: 'Test channel',
-        title: 'All in on the river',
+        title: 'HIGH STAKES $5/$10',
         category: 'cash',
         oembed_ok: null,
       }],
@@ -942,7 +941,7 @@ describe('horse video oEmbed proof', () => {
       poker: [{
         id: 'clip-a', video_id: 'AAAAAAAAAAA',
         source_url: 'https://youtube.com/watch?v=AAAAAAAAAAA',
-        source: 'Poker source', title: 'All in on the river', category: 'poker', oembed_ok: null,
+        source: 'Poker source', title: 'HIGH STAKES $5/$10', category: 'poker', oembed_ok: null,
       }],
       sports: [],
     };
@@ -988,7 +987,7 @@ describe('horse video oEmbed proof', () => {
         video_id: videoId,
         source_url: `https://youtube.com/watch?v=${videoId}`,
         source: 'Test channel',
-        title: 'All in on the river',
+        title: 'HIGH STAKES $5/$10',
         category: 'cash',
         oembed_ok: null,
       })),

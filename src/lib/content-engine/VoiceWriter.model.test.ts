@@ -63,7 +63,8 @@ describe('VoiceWriter model candidate gates', () => {
 
   it('rejects reused model meaning and continues through deterministic fallback drafts', async () => {
     mocks.phraseRecentlyUsed.mockImplementation(async (key: string) => key === 'meaning:phil ivey river bluff line');
-    const written = await writeCaption(horse, asset, [], { modelIdempotencyKey: 'caption:slot:asset' });
+    const written = await writeCaption(horse, {...asset,title:'HIGH STAKES $5/$10'}, [], { modelIdempotencyKey: 'caption:slot:asset' });
+    expect(written.text).toContain('$5/$10');
     expect(written.text).not.toContain('made the river bluff work because the line held together');
     expect(written.text).not.toBe('');
     expect(written.attempts).toBeGreaterThan(1);

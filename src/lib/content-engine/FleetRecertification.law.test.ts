@@ -69,9 +69,8 @@ describe('captions read like a person sharing the actual item', () => {
     }
   });
 
-  it('a supported concept earns a real take instead of a headline wrapper', () => {
-    const [domain, title] = titles[5]!;
-    const brief = briefForAsset({ kind: 'video', title, domainHint: domain });
+  it('a source-established fact earns a real take instead of a headline wrapper', () => {
+    const brief = briefForAsset({ kind: 'video', title: 'HIGH STAKES $5/$10', domainHint: 'poker' });
     const captions = fleetIds(80).map((id) => composeCaption(brief, styleSheetFor(id)).text);
     expect(captions.filter((caption) => caption.includes(':')).length).toBe(0);
     for (const caption of captions) expect(relevanceOf(caption, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);

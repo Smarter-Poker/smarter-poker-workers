@@ -14,11 +14,23 @@ const MONEY = '(?<![a-z0-9.$,-])(\\$?)([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(million|t
 
 /** Literal questions remain questions: no fold, call or result is asserted. */
 export function pokerVideoQuestionFact(rawTitle:string,source?:string):CaptionFact|null{
- if(source?.toLowerCase()!=='bart hanson')return null;
+ const sourceName=source?.toLowerCase();
+ if(sourceName!=='bart hanson'&&sourceName!=='mariano')return null;
  const clean=rawTitle.toLowerCase().replace(/[\u2018\u2019]/g,"'")
   .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ').replace(/\s+/g,' ').trim();
  if(!clean.endsWith('?'))return null;
  const title=clean.slice(0,-1).trim();
+ const extra=sourceName==='mariano'?[
+  [/^trapping with pocket aces$/,'decision:trap:holding:aa','the trapping decision with pocket aces'],
+  [/^flatting a (?:3|three)[- ]bet out of position madness$/,'decision:flat:bet_level:3:position:oop','the decision about flatting a three-bet out of position'],
+ ] as const:[
+  [/^would you fold (?:5[- ]4|five[- ]four) suited here$/,'decision:fold:holding:54s','the folding decision with five-four suited'],
+  [/^would you flat or (?:4|four)[- ]bet here$/,'decision:flat_or_four_bet','the flat-or-four-bet decision'],
+  [/^bet or fold$/,'decision:bet_or_fold','the bet-or-fold decision'],
+ ] as const;
+ const added=extra.find(([pattern])=>pattern.test(title));
+ if(added)return {person:'',action:'poker_question_context',identity:`poker_question:${added[1]}`,subject:added[2]};
+ if(sourceName!=='bart hanson')return null;
  const rules:Array<[RegExp,string,string]>=[
   [/^folding the (?:3rd|third) nuts$/,'decision:fold:hand_rank:third_nuts','the decision about folding the third nuts'],
   [/^no pair call all[- ]in$/,'decision:call:wager:all_in:holding:no_pair','the all-in calling question with no pair'],
@@ -155,6 +167,27 @@ function quantifiedContext(title:string):CaptionFact|null {
 /** Literal context only: no actor, winner, bet size or cards are inferred. */
 export function pokerVideoContextFact(rawTitle: string, source?: string): CaptionFact | null {
   const title = rawTitle.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').trim();
+  const sourceLiteral=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ').replace(/(?:\s+#[a-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').replace(/[.!]+$/,'').trim();
+  const literalFact=(identity:string,subject:string,action:CaptionFact['action']='holding_context'):CaptionFact=>({person:'',identity,subject,action});
+  // Complete clauses from maintained sources only. Money roles are bound to
+  // their verb/noun; punctuation, scale and episode metadata cannot salt keys.
+  if(source?.toLowerCase()==='mariano'){
+    const firing=sourceLiteral.match(/^firing \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? with pure ten high$/);
+    if(firing){const amount=quantity(firing[1]!,firing[2]);if(amount)return literalFact(`wager:amount:${amount}:unit:dollars:holding:t_high`,`the $${amount.toLocaleString('en-US')} wager with ten-high`);}
+  }
+  if(source?.toLowerCase()==='bart hanson'){
+    if(/^turned top pair in a (?:3|three)[- ]bet pot$/.test(sourceLiteral))return literalFact('made_hand:top_pair:street:turn:pot_bet_level:3','the top pair made on the turn in a three-bet pot','made_hand_context');
+    if(/^facing a river all[- ]in$/.test(sourceLiteral))return literalFact('all_in:street:river:facing','the decision facing a river all-in','all_in_context');
+    if(/^hero refused to fold top pair$/.test(sourceLiteral))return literalFact('holding:top_pair:decision:not_fold','the decision not to fold top pair');
+    const shove=sourceLiteral.match(/^reg shoved \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? into hero's kings$/);
+    if(shove){const amount=quantity(shove[1]!,shove[2]);if(amount)return literalFact(`holding:kk:facing:shove:amount:${amount}:unit:dollars`,`the pocket kings facing a $${amount.toLocaleString('en-US')} shove`);}
+  }
+  if(source?.toLowerCase()==='pokerstars'){
+    const appt=sourceLiteral.match(/^(main event|super high roller) [-|] (day ?[1-9]\d?|final day) \| appt championship manila$/);
+    if(appt){const event=appt[1]==='main event'?'main':'super_high_roller',stage=appt[2]==='final day'?'final_day':`day_${Number(appt[2]!.replace(/day ?/,''))}`;return literalFact(`poker_event:appt championship manila:event:${event}:stage:${stage}`,`the APPT Championship Manila ${appt[1]} ${stage==='final_day'?'final day':`Day ${stage.slice(4)}`}`,'poker_event_context');}
+    const heat=sourceLiteral.match(/^big game on tour \| s([1-9]\d?) heat ([1-9]\d?) \| hands only, no breaks$/);
+    if(heat)return literalFact(`poker_event:big game on tour:season:${Number(heat[1])}:heat:${Number(heat[2])}`,`Big Game on Tour Season ${Number(heat[1])} Heat ${Number(heat[2])}`,'poker_event_context');
+  }
   const guardedTitle=title.replace(/\bno[- ]limit hold'?em\b/g,'holdem');
   if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(guardedTitle)) return null;
   const literalContext=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')

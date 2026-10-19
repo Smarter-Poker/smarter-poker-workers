@@ -683,7 +683,7 @@ describe('live caption failures cannot recur', () => {
     }
   });
 
-  it('grounds the two fresh-production poker titles the old vocabulary rejected', () => {
+  it('does not treat fresh-production concept words as proof of a caption claim', () => {
     const titles = [
       'JENNIFER TILLY REACTS TO EPIC POKER HAND VS ANTONIO ESFANDIARI',
       'The $1,700 Bet That Put Pocket Aces in Hell',
@@ -693,8 +693,10 @@ describe('live caption failures cannot recur', () => {
       expect(brief.concepts.length).toBeGreaterThan(0);
       for (const id of fleetIds(80)) {
         const out = composeCaption(brief, styleSheetFor(id));
-        expect(out.text).not.toBe('');
-        expect(relevanceOf(out.text, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+        if(out.text){
+          expect(out.semanticKey).toMatch(/^meaning:subject:/);
+          expect(relevanceOf(out.text, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+        }else expect(out.semanticKey).toBeUndefined();
       }
     }
   });

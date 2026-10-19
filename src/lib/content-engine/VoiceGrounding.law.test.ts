@@ -238,9 +238,9 @@ describe('P2C-10 a question is the last thing said', () => {
 describe('P2C-11 closers rotate instead of signing every post', () => {
   it('a tag-question horse does not end every caption with the same question', () => {
     const titles = [
-      'Suddenly my river bluff doesn’t seem so scary', 'why your bankroll is tiny...', 'Where Do MTT Players Have the Biggest Edge?',
-      'every pot was worth more than a ferrari', 'Daniel Negreanu’s Secret Exploit Vs Canadians!', 'My Greatest Comeback EVER Playing HIGH STAKES Poker!',
-      'The BEST & WORST Hands From WSOP Canada', 'everyone is WRONG about BLUFFING',
+      'HIGH STAKES $1/$2', 'HIGH STAKES $2/$5', 'HIGH STAKES $5/$10',
+      'HIGH STAKES $10/$25', 'Poker Masters 2026 Event #1 Final Table',
+      'Poker Masters 2026 Event #2 Final Table', 'Super High Roller Bowl Day 1',
     ].map((title) => briefForAsset({ kind: 'video', title, source: 'PokerGO', domainHint: 'poker' }));
     const taggers = fleetIds(400).map(styleSheetFor).filter((s) => s.closer === 'tag_question').slice(0, 20);
     expect(taggers.length).toBeGreaterThan(5);
@@ -251,9 +251,9 @@ describe('P2C-11 closers rotate instead of signing every post', () => {
   });
 
   it('a verdict horse does not close every post with a verdict', () => {
-    // Use the maintained non-question corpus fixture, retaining the legacy
-    // pool/closer path. Typed subject captions intentionally omit closers.
-    const b = briefForAsset({ kind: 'video', title: 'My Greatest Comeback EVER Playing HIGH STAKES Poker!', source: 'PokerGO', domainHint: 'poker' });
+    // Fact-bound captions deliberately omit stock verdicts entirely; the
+    // style's old closer preference must not reintroduce unsupported claims.
+    const b = briefForAsset({ kind: 'video', title: 'HIGH STAKES $5/$10', source: 'PokerGO', domainHint: 'poker' });
     const verdictHorses = fleetIds(400).map(styleSheetFor).filter((s) => s.closer === 'verdict').slice(0, 30);
     let closed = 0;
     let total = 0;
@@ -267,8 +267,7 @@ describe('P2C-11 closers rotate instead of signing every post', () => {
       }
     }
     expect(total).toBeGreaterThan(100);
-    expect(closed).toBeGreaterThan(0);
-    expect(closed / total).toBeLessThan(0.6);
+    expect(closed).toBe(0);
   });
 });
 
