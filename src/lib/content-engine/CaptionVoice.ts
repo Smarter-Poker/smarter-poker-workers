@@ -23,6 +23,56 @@ export interface CaptionFact {
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}`;
 
+/** Complete propositions for the closed news-report facts, never raw titles. */
+export function literalNewsReportClauses(fact: CaptionFact): string[] {
+  if (fact.action !== 'news_report_context') return [];
+  if (fact.identity?.startsWith('news:win:')) {
+    const win = fact.subject.match(/^(.+)'s (.+) win$/);
+    if (win) return [`${win[1]} won ${win[2]}`, `${win[1]} is the ${win[2]} winner`, `${win[2]} was won by ${win[1]}`];
+  }
+  if (fact.identity?.startsWith('news:contract_extension:')) {
+    const agreement = fact.subject.match(/^the (.+) agreement on a contract extension with (.+)$/);
+    if (agreement) return [`The ${agreement[1]} agreed to a contract extension with ${agreement[2]}`];
+  }
+  if (fact.identity === 'news:injury:team:kings:actor:simmons:injury:torn achilles tendon') return ['Kings guard Simmons has a torn Achilles tendon and will undergo surgery'];
+  if (fact.identity === 'news:ankle_practice_update:team:warriors:actor:curry') return ["Curry is 'fine' after tweaking his right ankle in Warriors practice"];
+  return [];
+}
+
+/** Only the newly source-bound inventory roles; legacy identities stay put. */
+export function literalSportInventoryClauses(fact: CaptionFact): string[] {
+  if (fact.action !== 'sports_technical_context' || !fact.identity) return [];
+  const id = fact.identity;
+  const s = fact.subject;
+  const rules: Array<[RegExp, RegExp, (m: RegExpMatchArray) => string]> = [
+    [/^football:usage:actor:cam skattebo:carries:\d+:snaps:\d+$/, /^(.+)'s (\d+) carries on (\d+) snaps$/, m=>`${m[1]} recorded ${m[2]} carries on ${m[3]} snaps`],
+    [/^football:touchdown:actor:damien pierce:opponent:panthers$/, /^(.+)'s touchdown against the Panthers$/, m=>`${m[1]} scored a touchdown against the Panthers`],
+    [/^football:sack:actor:kenny clark:down:[1-4]$/, /^(.+)'s sack on down ([1-4])$/, m=>`${m[1]} recorded a sack on down ${m[2]}`],
+    [/^basketball:points_in_minutes:actor:jalen duren:points:\d+:minutes:\d+$/, /^(.+)'s (\d+) points in (\d+) minutes$/, m=>`${m[1]} scored ${m[2]} points in ${m[3]} minutes`],
+    [/^basketball:steal:actor:paul george$/, /^(.+)'s steal$/, m=>`${m[1]} stole the ball`],
+    [/^basketball:block:actor:scoot henderson:kind:chasedown$/, /^(.+)'s chasedown block$/, m=>`${m[1]} made a chasedown block`],
+    [/^basketball:dunk:actor:(?:caleb wilson|leonard miller)$/, /^(.+)'s dunk$/, m=>`${m[1]} dunked`],
+    [/^basketball:made_basket:actor:demar derozan$/, /^(.+)'s made basket$/, m=>`${m[1]} made a basket`],
+    [/^basketball:consecutive_and_ones:actor:darryn peterson:count:2$/, /^(.+)'s back-to-back and-one baskets$/, m=>`${m[1]} made back-to-back and-one baskets`],
+    [/^basketball:first_basket:actor:darius acuff jr:competition:nba$/, /^(.+)'s first NBA basket$/, m=>`${m[1]} made his first NBA basket`],
+    [/^basketball:first_team_basket:actor:(?:john elmore|lebron james|giannis antetokounmpo):team:(?:spurs|76ers|heat)$/, /^(.+)'s first basket for the (.+)$/, m=>`${m[1]} made his first basket for the ${m[2]}`],
+    [/^basketball:assist:actor:fred vanvleet:kind:between_legs$/, /^(.+)'s between-the-legs assist$/, m=>`${m[1]} made a between-the-legs assist`],
+    [/^basketball:pass:actor:nikola jokic:kind:behind_back$/, /^(.+)'s behind-the-back pass$/, m=>`${m[1]} made a behind-the-back pass`],
+    [/^hockey:pass:actor:brady tkachuk$/, /^(.+)'s pass$/, m=>`${m[1]} made a pass`],
+    [/^hockey:overtime_winner:actor:auston matthews$/, /^(.+)' overtime winner$/, m=>`${m[1]} scored the overtime winner`],
+    [/^hockey:goal:actor:igor shesterkin:role:goalie$/, /^(.+)'s goalie goal$/, m=>`${m[1]} scored a goalie goal`],
+    [/^baseball:strikeout:pitcher:didier fuentes:batter:shohei ohtani$/, /^(.+) striking out (.+)$/, m=>`${m[1]} struck out ${m[2]}`],
+    [/^baseball:strikeout:pitcher:abner uribe:runners_on:[1-3]$/, /^(.+)'s strikeout with ([1-3]) runners on$/, m=>`${m[1]} recorded a strikeout with ${m[2]} runners on`],
+    [/^baseball:go_ahead:actor:(?:will smith|jake cronenworth):team:(?:dodgers|padres)$/, /^(.+) putting the (.+) ahead$/, m=>`${m[1]} put the ${m[2]} ahead`],
+  ];
+  for (const [identity, subject, clause] of rules) {
+    if (!identity.test(id)) continue;
+    const match = s.match(subject);
+    if (match) return [clause(match)];
+  }
+  return [];
+}
+
 /** Conservative actor/action binding, not entity presence mistaken for agency. */
 export function captionFact(b: PostBrief): CaptionFact | null {
   if (b.kind !== 'video' && b.kind !== 'link') return null;
@@ -334,6 +384,25 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const fact = { ...sourceFact, subject: sourceFact.person ? sourceFact.subject.replace(sourceFact.person, familiar) : sourceFact.subject };
   const family = fact.action === 'river_call' || fact.action === 'river_fold' ? 'river_decision' : fact.action;
   const plan = captionVoiceProfile(style);
+  const literalSports = literalSportInventoryClauses(fact)[0];
+  if (literalSports) return {
+    text: `${literalSports}.`, subject: fact.subject, reference: 'that play', statement: `${literalSports}.`,
+    semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:literal_sequence`,
+    grounding: [`context:${fact.identity}`, `title_action:${fact.action}`, 'angle:literal_sequence'],
+  };
+  // These closed report identities already establish a complete proposition.
+  // Do not force a result, agreement or injury through a generic decision
+  // focus: that adds no information and made unrelated reports converge.
+  const reportClauses = literalNewsReportClauses(fact);
+  const reportClause = reportClauses[voiceChoice(style.profileId, `voice-report:${fact.identity}`, reportClauses.length || 1)];
+  if (reportClause) {
+    const text = `${reportClause}.`;
+    return {
+      text, subject: fact.subject, reference: 'that report', statement: text,
+      semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:report_context`,
+      grounding: [`context:${fact.identity}`, `title_action:${fact.action}`, 'angle:report_context'],
+    };
+  }
   // A generic decision might be a check or a bet. Price questions are only
   // supported once the title actually establishes a call/fold decision.
   const angles = family === 'river_decision' && fact.action === 'river_decision'

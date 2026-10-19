@@ -134,6 +134,9 @@ import {
 } from './HorsePublisher.js';
 import { fleetHash, isDueForPost } from './FleetScheduler.js';
 import { newsSources, sliceForHorse, type SupplyClip } from './ClipSupply.js';
+import {composeCaption} from './Composer.js';
+import {briefForAsset} from './PostBrief.js';
+import {styleSheetFor} from './StyleSheet.js';
 
 const NOW = new Date('2026-09-21T14:30:00Z');
 const SLOT = '2026-09-21T14';
@@ -185,7 +188,7 @@ beforeEach(() => {
   ledger.recordAssetUse.mockClear();
   ledger.recordBrief.mockClear();
   feed.parseURL.mockReset();
-  feed.parseURL.mockResolvedValue({ items: [{ title: 'Deep run at the Main Event', link: 'https://news.example/a', enclosure: { url: 'https://cdn.news.example/photos/main-event.webp' } }] });
+  feed.parseURL.mockResolvedValue({ items: [{ title: 'APT Championship offers $8.1 million guaranteed', link: 'https://news.example/a', enclosure: { url: 'https://cdn.news.example/photos/main-event.webp' } }] });
   voice.writeCaption.mockReset();
   freshness.screen.mockReset();
   freshness.screen.mockImplementation(async (clips: SupplyClip[]) => ({ status: 'ok', clips, scanned: clips.length, stale: 0, keys: clips.length }));
@@ -540,7 +543,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 
   it('does not publish an article card with missing or generic artwork', async () => {
     modes.grounded=false;modes.video=false;
-    feed.parseURL.mockResolvedValue({items:[{title:'Deep run at the Main Event',link:'https://news.example/a',enclosure:{url:'https://cdn.example/publisher-logo.png'}}]});
+    feed.parseURL.mockResolvedValue({items:[{title:'APT Championship offers $8.1 million guaranteed',link:'https://news.example/a',enclosure:{url:'https://cdn.example/publisher-logo.png'}}]});
     const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
     expect(result).toMatchObject({success:false,skipped:'content_exhausted'});
     expect(result.error).toContain('genuine associated story artwork');
@@ -565,7 +568,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
       p_phrase_norm: 'called the river with second pair and it held',
       p_semantic_key: 'sem:river-call-second-pair',
       p_link_url: 'https://news.example/a',
-      p_link_title: 'Deep run at the Main Event',
+      p_link_title: 'APT Championship offers $8.1 million guaranteed',
       p_link_site_name: 'Poker Wire',
     });
     expect(['poker', 'sports']).toContain(call.args.p_news_type);
@@ -581,7 +584,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
       {id:'b',name:'Healthy',feed_url:'https://healthy.example/rss',fallback_urls:null},
     ]);
     feed.parseURL.mockRejectedValueOnce(new Error('Status code 429')).mockResolvedValueOnce({items:[
-      {title:'Deep run at the Main Event',link:'https://healthy.example/a',content:'<img src="https://cdn.healthy.example/photos/story.jpg">'},
+      {title:'APT Championship offers $8.1 million guaranteed',link:'https://healthy.example/a',content:'<img src="https://cdn.healthy.example/photos/story.jpg">'},
     ]});
     const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
     expect(result.success).toBe(true);
@@ -591,14 +594,29 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 
   it('finds genuine inline story art beyond three blank leading articles', async () => {
     modes.grounded=false;modes.video=false;
-    feed.parseURL.mockResolvedValue({items:[...Array.from({length:3},(_,index)=>({title:'Deep run at the Main Event',link:`https://news.example/blank${index}`})),
-      {title:'Deep run at the Main Event',link:'https://news.example/illustrated',content:'<img src="https://cdn.news.example/photos/actual-story.jpg">'},
+    feed.parseURL.mockResolvedValue({items:[...Array.from({length:3},(_,index)=>({title:'APT Championship offers $8.1 million guaranteed',link:`https://news.example/blank${index}`})),
+      {title:'APT Championship offers $8.1 million guaranteed',link:'https://news.example/illustrated',content:'<img src="https://cdn.news.example/photos/actual-story.jpg">'},
     ]});
     const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
     expect(result.success).toBe(true);
     expect(db.rpcCalls.find(call=>call.name==='publish_horse_news_post')?.args).toMatchObject({
       p_link_url:'https://news.example/illustrated',p_link_image:'https://cdn.news.example/photos/actual-story.jpg',
     });
+  });
+
+  it('screens unsupported article facts before spending the three artwork slots', async () => {
+    modes.grounded=false;modes.video=false;
+    const id=horseWhereGroundedFirstIs(false);
+    const items=[...Array.from({length:3},(_,index)=>({title:'Poker strategy chatter without a literal fact',link:`https://news.example/unsupported${index}`,content:`<img src="https://cdn.news.example/photos/unsupported${index}.jpg">`})),
+      {title:'APT Championship offers $8.1 million guaranteed',link:'https://news.example/factual-fourth',content:'<img src="https://cdn.news.example/photos/championship.jpg">'}];
+    feed.parseURL.mockResolvedValue({items});
+    voice.writeCaption.mockImplementation(async (_author:unknown,asset:Parameters<typeof briefForAsset>[0])=>{
+      const brief=briefForAsset(asset);
+      return {...composeCaption(brief,styleSheetFor(id)),brief,attempts:1,belowFloor:false};
+    });
+    const result=await publishForHorse(horse(id),{slot:SLOT});
+    expect(result.success).toBe(true);
+    expect(db.rpcCalls.find(call=>call.name==='publish_horse_news_post')?.args).toMatchObject({p_link_url:'https://news.example/factual-fourth',p_link_image:'https://cdn.news.example/photos/championship.jpg'});
   });
 
   it('does not try another feed after an unknown atomic-news acknowledgement', async () => {
@@ -610,11 +628,11 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
   });
 
-  it('tries an already-illustrated factual second article after the first caption is unsupported', async () => {
+  it('tries an already-illustrated factual second article after the first caption fails the quality gate', async () => {
     modes.grounded=false;modes.video=false;
     vi.spyOn(Math,'random').mockReturnValue(0);
     feed.parseURL.mockResolvedValue({items:[
-      {title:'Unsupported lucky-charm headline',link:'https://news.example/unsupported',content:'<img src="https://cdn.news.example/photos/first.jpg">'},
+      {title:'Adrian Mateos Wins Poker Masters Title',link:'https://news.example/unsupported',content:'<img src="https://cdn.news.example/photos/first.jpg">'},
       {title:'APT Championship offers $8.1 million guaranteed',link:'https://news.example/guarantee',content:'<img src="https://cdn.news.example/photos/second.jpg">'},
     ]});
     const good=await voice.writeCaption.getMockImplementation()!(horse(horseId(0)),{});
@@ -624,7 +642,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(feed.parseURL).toHaveBeenCalledTimes(1);
     expect(voice.writeCaption).toHaveBeenCalledTimes(2);
     expect(voice.writeCaption.mock.calls.map(call=>call[1].title)).toEqual([
-      'Unsupported lucky-charm headline','APT Championship offers $8.1 million guaranteed',
+      'Adrian Mateos Wins Poker Masters Title','APT Championship offers $8.1 million guaranteed',
     ]);
     expect(voice.writeCaption.mock.calls[0]?.[3].modelAttempt).toBe(voice.writeCaption.mock.calls[1]?.[3].modelAttempt);
     expect(db.rpcCalls.filter(call=>call.name==='publish_horse_news_post')).toHaveLength(1);
@@ -635,8 +653,8 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     modes.grounded=false;modes.video=false;
     vi.spyOn(Math,'random').mockReturnValue(0);
     feed.parseURL.mockResolvedValue({items:[
-      {title:'First factual article',link:'https://news.example/first',content:'<img src="https://cdn.news.example/photos/first.jpg">'},
-      {title:'Second factual article',link:'https://news.example/second',content:'<img src="https://cdn.news.example/photos/second.jpg">'},
+      {title:'Adrian Mateos Wins Poker Masters Title',link:'https://news.example/first',content:'<img src="https://cdn.news.example/photos/first.jpg">'},
+      {title:'APT Championship offers $8.1 million guaranteed',link:'https://news.example/second',content:'<img src="https://cdn.news.example/photos/second.jpg">'},
     ]});
     db.newsRpcResult={data:null,error:{message:'Connection lost after request'}};
     const result=await publishForHorse(horse(horseWhereGroundedFirstIs(false)),{slot:SLOT});
@@ -651,7 +669,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     modes.video = false;
     feed.parseURL.mockResolvedValue({
       items: [{
-        title: 'Deep run at the Main Event',
+        title: 'APT Championship offers $8.1 million guaranteed',
         link: 'https://news.example/a',
         enclosure: { url: 'https://cdn.news.example/photos/main-event.webp' },
       }],
@@ -664,7 +682,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     expect(result.type).toMatch(/^(poker|sports)_news$/);
     expect(db.rpcCalls.find((x) => x.name === 'publish_horse_news_post')!.args).toMatchObject({
       p_link_url: 'https://news.example/a',
-      p_link_title: 'Deep run at the Main Event',
+      p_link_title: 'APT Championship offers $8.1 million guaranteed',
       p_link_image: 'https://cdn.news.example/photos/main-event.webp',
     });
   });
@@ -673,7 +691,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     modes.grounded = false;
     modes.video = false;
     feed.parseURL.mockResolvedValue({
-      items: [{ title: 'Deep run at the Main Event', link: 'javascript:alert(1)' }],
+      items: [{ title: 'APT Championship offers $8.1 million guaranteed', link: 'javascript:alert(1)' }],
     });
     const id = horseWhereGroundedFirstIs(false);
 

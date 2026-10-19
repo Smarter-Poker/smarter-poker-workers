@@ -28,7 +28,7 @@ import { briefForComment, publicFigureDomain, type PostBrief } from './PostBrief
 import { fleetHash } from './FleetScheduler.js';
 import { render, targetWords, withCaptionEmoji, type CaptionEmojiTopic, type StyleSheet } from './StyleSheet.js';
 import { isDisagreement, isQuestion } from './ReplyEngine.js';
-import { captionFact, subjectCaption } from './CaptionVoice.js';
+import { captionFact, subjectCaption, literalNewsReportClauses, literalSportInventoryClauses } from './CaptionVoice.js';
 import { captionQuality } from './CaptionQuality.js';
 
 // ─── takes, by concept ───────────────────────────────────────────────────
@@ -621,7 +621,9 @@ export function relevanceOf(text: string, b: PostBrief): number {
       .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/)
       .map(token => words.includes(token) ? String(words.indexOf(token)+1) : token).join(' ');
     const normalizedText = ` ${normal(text)} `;
-    if (normalizedText.includes(` ${normal(fact.subject)} `)) score += 0.5;
+    if (normalizedText.includes(` ${normal(fact.subject)} `)
+      || [...literalNewsReportClauses(fact), ...literalSportInventoryClauses(fact)]
+        .some(clause => normalizedText.includes(` ${normal(clause)} `))) score += 0.5;
   }
   for (const p of b.people) if (lc.includes(p.toLowerCase())) { score += 0.5; break; }
   for (const t of b.teams) if (lc.includes(t.toLowerCase())) { score += 0.35; break; }
