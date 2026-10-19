@@ -21,7 +21,7 @@
  * 3. NEVER print big blinds, or any number. Money is felt in comparisons: a
  *    good pot, a big pot, a brutal one.
  * 4. A post is allowed to say LESS than the row knows. Most of what makes a
- *    hand worth telling is one detail and a feeling, not a full accounting.
+ *    hand worth telling is one established detail, not a full accounting.
  *
  * AND ONE RULE ABOUT THE TRUTH (2026-09-21 recertification, P3C-03..P3C-10).
  * The first HandVoice knew the board, the net and the tags, and not the
@@ -238,97 +238,97 @@ interface Line {
 
 const LINES: Record<string, Line[]> = {
   big_win: [
-    { t: 'Won {money} with {holding}. I\'ll take that every time.', needs: ['money', 'holding'] },
-    { t: '{holding} held up at showdown. Nice when the simple plan works.', needs: ['holding'], when: showdown },
+    { t: 'Won {money} with {holding}.', needs: ['money', 'holding'] },
+    { t: '{holding} held up at showdown.', needs: ['holding'], when: showdown },
     { t: 'Took it down with {holding} and never had to show.', needs: ['holding'], when: not(showdown) },
-    { t: '{money} with {holding}. No complaints from this seat.', needs: ['money', 'holding'] },
-    { t: 'One of those pots where {holding} did exactly what you hoped.', needs: ['holding'] },
+    { t: '{holding} brought in {money}.', needs: ['money', 'holding'] },
+    { t: 'Won the pot with {holding}.', needs: ['holding'] },
     { t: 'Went to showdown with {holding} and dragged {money}.', needs: ['holding', 'money'], when: showdown },
     { t: 'Took down {money} {street} with {holding}.', needs: ['money', 'street', 'holding'], when: not(showdown) },
     { t: 'Shoved {street} with {holding} and got the fold.', needs: ['street', 'holding'], when: shoveTookIt },
     { t: 'Got it all in {street} with {holding} and it held.', needs: ['street', 'holding'], when: all(ranOut) },
     { t: '{holding} on {board}, and the pot came my way.', needs: ['holding', 'board'] },
     { t: 'Ran it {runs} with {holding} and came out ahead.', needs: ['runs', 'holding'], when: all(ranMore, allIn, showdown) },
-    { t: 'Good pot with {holding}. On to the next one.', needs: ['holding'] },
+    { t: 'Finished the hand with {holding} and a win.', needs: ['holding'] },
     // Omaha holdings are never spoken, so these carry an Omaha win.
     { t: 'Got it all in {street} and it held.', needs: ['street'], when: ranOut },
-    { t: 'Dragged {money} at showdown. I\'ll take it.', needs: ['money'], when: showdown },
-    { t: 'Took down {money} {street}. No complaints from this seat.', needs: ['money', 'street'], when: not(showdown) },
+    { t: 'Dragged {money} at showdown.', needs: ['money'], when: showdown },
+    { t: 'Collected {money} {street}.', needs: ['money', 'street'], when: not(showdown) },
     { t: 'Called it off {street} and it was good.', needs: ['street'], when: all(calledAllIn, showdown) },
   ],
   bad_beat: [
     // A big loss at showdown. Nothing here says the deck did it: there is
     // no evaluator to prove the player was ahead (P3C-04).
-    { t: 'Dropped {money} with {holding}. On to the next one.', needs: ['money', 'holding'], when: notSmall },
-    { t: '{holding} on {board}. That one\'s going to linger.', needs: ['holding', 'board'] },
+    { t: 'Dropped {money} with {holding}.', needs: ['money', 'holding'], when: notSmall },
+    { t: '{holding} on {board}, and I lost the pot.', needs: ['holding', 'board'] },
     { t: 'Lost {money} at showdown with {holding}.', needs: ['money', 'holding'], when: all(showdown, notSmall) },
-    { t: '{money}. No speech, just the next hand.', needs: ['money'], when: notSmall },
-    { t: 'Some pots stay with you longer than they should. That was one.', needs: [] },
-    { t: 'Tough one with {holding}. Back to work.', needs: ['holding'] },
+    { t: 'The hand cost me {money}.', needs: ['money'], when: notSmall },
+    { t: 'The pot went the other way at showdown.', needs: [], when: showdown },
+    { t: 'Played {holding} and lost the pot.', needs: ['holding'] },
     { t: 'Went all the way to the river with {holding} and came up short.', needs: ['holding'], when: all(riverDecided, showdown) },
-    { t: 'Still replaying that one with {holding}.', needs: ['holding'] },
+    { t: 'The hand ended in a loss with {holding}.', needs: ['holding'] },
     { t: 'Got it all in {street} with {holding} and ended up on the wrong side.', needs: ['street', 'holding'], when: all(allIn, showdown) },
     { t: 'The whole stack went in {street} and didn\'t come back.', needs: ['street'], when: stackInThere },
-    { t: 'Not the result I wanted with {holding}.', needs: ['holding'] },
-    { t: 'Lost {money} with {holding}. Going to need a minute.', needs: ['money', 'holding'], when: notSmall },
+    { t: 'Lost the hand with {holding}.', needs: ['holding'] },
+    { t: 'Lost {money} with {holding}.', needs: ['money', 'holding'], when: notSmall },
     { t: 'Ran it {runs} and still came out behind.', needs: ['runs'], when: all(ranMore, allIn, showdown) },
   ],
   cooler: [
-    { t: '{holding} on {board}. Sometimes the second-best hand costs the most.', needs: ['holding', 'board'], when: notSmall },
-    { t: 'That felt unavoidable. It still cost me {money}.', needs: ['money'], when: notSmall },
-    { t: 'Had a strong hand and ran into a stronger one.', needs: [], when: showdown },
-    { t: 'Not enough with {holding} on {board}. Nothing pretty about that.', needs: ['holding', 'board'] },
-    { t: 'One of those spots that looks obvious only after it\'s over.', needs: [] },
-    { t: '{money} in the wrong direction. Coolers don\'t ask permission.', needs: ['money'], when: notSmall },
-    { t: '{holding}, second best, next hand.', needs: ['holding'] },
-    { t: 'There are losses you study and losses you absorb. This felt like the second kind.', needs: [] },
-    { t: 'Second best with {holding}. Nothing to do but move on.', needs: ['holding'] },
-    { t: 'Ran {holding} into a better hand. It happens fast in this game.', needs: ['holding'], when: showdown },
-    { t: 'That was {money}. The cards had their own plan.', needs: ['money'], when: notSmall },
-    { t: 'Got it all in {street} with a big hand and a bigger one showed up.', needs: ['street'], when: all(allIn, showdown) },
+    { t: 'Lost {money} with {holding} on {board}.', needs: ['money', 'holding', 'board'], when: notSmall },
+    { t: 'That hand cost me {money}.', needs: ['money'], when: notSmall },
+    { t: 'Went to showdown and lost the pot.', needs: [], when: showdown },
+    { t: '{holding} on {board}, and the result was a loss.', needs: ['holding', 'board'] },
+    { t: 'The hand ended with {holding} and a loss.', needs: ['holding'] },
+    { t: 'Dropped {money} in that hand.', needs: ['money'], when: notSmall },
+    { t: '{holding}, with the pot going the other way.', needs: ['holding'] },
+    { t: 'Played the hand through to a loss at showdown.', needs: [], when: showdown },
+    { t: 'Lost the pot holding {holding}.', needs: ['holding'] },
+    { t: 'Showed down {holding} and lost the hand.', needs: ['holding'], when: showdown },
+    { t: 'The loss came to {money}.', needs: ['money'], when: notSmall },
+    { t: 'Got it all in {street} and lost at showdown.', needs: ['street'], when: all(allIn, showdown) },
   ],
   tough_spot: [
     // Losses the reviewer tagged as the player's own kind of spot. Neutral:
     // no luck, no cooler, no deck to blame (P3C-08).
-    { t: 'Tough spot with {holding}. Going to look at that one again.', needs: ['holding'] },
-    { t: 'Lost {money} with {holding}. That one goes in the review pile.', needs: ['money', 'holding'], when: notSmall },
-    { t: 'Still thinking about how I played {holding} there.', needs: ['holding'] },
+    { t: 'Played {holding} in a pot that went the other way.', needs: ['holding'] },
+    { t: 'Lost {money} holding {holding}.', needs: ['money', 'holding'], when: notSmall },
+    { t: 'The result with {holding} was a loss.', needs: ['holding'] },
     { t: '{holding} on {board}, and it went the other way.', needs: ['holding', 'board'] },
-    { t: 'Paid for that one with {holding}. Moving on.', needs: ['holding'] },
+    { t: 'Dropped the pot with {holding}.', needs: ['holding'] },
     { t: 'Got it all in {street} and came out on the wrong side.', needs: ['street'], when: all(allIn, showdown) },
     { t: 'Went to the river with {holding} and came up short.', needs: ['holding'], when: all(riverDecided, showdown) },
-    { t: 'Some hands you play and then think about for a while. This was one.', needs: [] },
-    { t: 'Tough one. {money} in the wrong direction.', needs: ['money'], when: notSmall },
-    { t: 'Not every spot goes your way. That one cost me {money}.', needs: ['money'], when: notSmall },
-    { t: 'Worth a second look, that hand with {holding}.', needs: ['holding'] },
+    { t: 'Lost the pot at the end of the hand.', needs: [] },
+    { t: 'The hand ended with a loss of {money}.', needs: ['money'], when: notSmall },
+    { t: 'That pot cost me {money}.', needs: ['money'], when: notSmall },
+    { t: 'Finished that hand with {holding} and a loss.', needs: ['holding'] },
     { t: 'Played a big pot with {holding} and lost it.', needs: ['holding'], when: notSmall },
   ],
   river_aggression: [
     { t: 'Kept the pressure on through the river and took it down.', needs: [], when: barrelled },
-    { t: 'The last bet told the story. This time it worked.', needs: [], when: pressedRiver },
+    { t: 'Put more chips in on the river and won the pot.', needs: [], when: pressedRiver },
     { t: '{board}. One more bet, and the pot came my way.', needs: ['board'], when: pressedRiver },
-    { t: 'River decisions are rarely comfortable. I pressed this one.', needs: [], when: pressedRiver },
+    { t: 'Pressed the river with {holding} and won.', needs: ['holding'], when: pressedRiver },
     { t: 'Fired the river with {holding} and got paid.', needs: ['holding'], when: all(pressedRiver, showdown) },
     { t: 'Bet the river and got the fold.', needs: [], when: all(pressedRiver, not(showdown)) },
-    { t: 'The river gave me a decision. I chose pressure.', needs: [], when: pressedRiver },
+    { t: 'Put chips in on the river and collected the pot.', needs: [], when: pressedRiver },
     { t: 'Stayed on the gas through {board}. Got the result.', needs: ['board'], when: barrelled },
     { t: 'Made one more bet on the river and dragged {money}.', needs: ['money'], when: pressedRiver },
-    { t: 'The hand reached the river and I didn\'t slow down.', needs: [], when: pressedRiver },
-    { t: 'Put the river decision on the other side of the table.', needs: [], when: pressedRiver },
+    { t: 'The hand reached the river, where I put more chips in.', needs: [], when: pressedRiver },
+    { t: 'Made a river bet with {holding} and won the pot.', needs: ['holding'], when: pressedRiver },
     { t: 'Made the river expensive and collected {money}.', needs: ['money'], when: pressedRiver },
-    { t: 'Pressure was the plan on the last card. The plan held.', needs: [], when: pressedRiver },
+    { t: 'Pressed on the last card and took the pot.', needs: [], when: pressedRiver },
   ],
   big_fold: [
-    { t: 'Folded {holding} {street}. Those never make the highlight reel.', needs: ['holding', 'street'] },
-    { t: 'Let it go {street}. Not every fold feels good.', needs: ['street'] },
-    { t: 'The fold nobody claps for. {holding} in the muck.', needs: ['holding'] },
-    { t: 'Passed on it and moved to the next hand.', needs: [] },
-    { t: 'Hard to let {holding} go {street}.', needs: ['holding', 'street'] },
+    { t: 'Folded {holding} {street}.', needs: ['holding', 'street'] },
+    { t: 'Let it go {street}.', needs: ['street'] },
+    { t: 'Put {holding} in the muck.', needs: ['holding'] },
+    { t: 'Folded before the hand reached showdown.', needs: [] },
+    { t: 'Let {holding} go {street}.', needs: ['holding', 'street'] },
     { t: 'Found the fold on {board}.', needs: ['board'] },
-    { t: 'Sometimes the best chip is the one you don\'t put in.', needs: [] },
-    { t: 'The river asked an expensive question. I folded.', needs: [], when: riverDecided },
-    { t: '{holding} went into the muck {street}. Onward.', needs: ['holding', 'street'] },
-    { t: 'No trophy for that fold, but I\'ll remember it.', needs: [] },
+    { t: 'Ended the hand with a fold.', needs: [] },
+    { t: 'Folded on the river.', needs: [], when: riverDecided },
+    { t: '{holding} went into the muck {street}.', needs: ['holding', 'street'] },
+    { t: 'My part in the hand ended when I folded {holding}.', needs: ['holding'] },
     { t: 'Put a lot in with {holding} and still let it go {street}.', needs: ['holding', 'street'], when: notSmall },
   ],
   stackoff: [
@@ -338,35 +338,35 @@ const LINES: Record<string, Line[]> = {
     { t: 'Committed the stack {street} and got the result.', needs: ['street'], when: all(won, stackInThere) },
     { t: 'Put the whole stack in with {holding} and it paid off.', needs: ['holding'], when: all(won, stackIn) },
     { t: 'Once the money went in, all that was left was the runout.', needs: [], when: ranOut },
-    { t: '{board} and every chip in play. Poker gets simple fast.', needs: ['board'], when: all(stackIn, showdown) },
-    { t: 'Full-stack pot with {holding}. Deep breath.', needs: ['holding'], when: all(stackIn, showdown) },
-    { t: 'No half measures in that one. {money} changed hands.', needs: ['money'], when: all(allIn, notSmall) },
+    { t: 'Put the whole stack in on {board} and went to showdown.', needs: ['board'], when: all(stackIn, showdown) },
+    { t: 'Full-stack pot with {holding} at showdown.', needs: ['holding'], when: all(stackIn, showdown) },
+    { t: 'Got it all in and went to showdown.', needs: [], when: all(allIn, showdown, notSmall) },
     { t: 'Shoved {street} with {holding} and nobody wanted it.', needs: ['street', 'holding'], when: shoveTookIt },
     { t: 'Ran it {runs} for the whole stack and came out ahead.', needs: ['runs'], when: all(won, ranMore, stackIn, showdown) },
     { t: 'Everything went in with {holding} and it went the wrong way.', needs: ['holding'], when: all(lost, allIn, showdown) },
-    { t: 'Whole stack in the middle with {holding}. Glad that one went my way.', needs: ['holding'], when: all(won, stackIn, showdown) },
+    { t: 'Whole stack in the middle with {holding}, and I won the pot.', needs: ['holding'], when: all(won, stackIn, showdown) },
   ],
   grind: [
-    { t: 'Quiet one with {holding}. Most of the game looks like that.', needs: ['holding'], when: all(small, not(stackIn)) },
-    { t: 'Small pot, no drama, next hand.', needs: [], when: all(small, not(stackIn)) },
+    { t: 'Played a small pot with {holding}.', needs: ['holding'], when: all(small, not(stackIn)) },
+    { t: 'A small pot with {holding} on {board}.', needs: ['holding','board'], when: all(small, not(stackIn)) },
     { t: 'Wrapped that one up {street}. Nothing dramatic.', needs: ['street'], when: all(won, small, endedThere, not(stackIn)) },
-    { t: 'This is what most of a session looks like.', needs: [], when: all(small, not(stackIn)) },
+    { t: 'The hand ended with a small pot.', needs: [], when: all(small, not(stackIn)) },
     // A small pot can still be a shove that got through.
     { t: 'Shoved {street} with {holding} and got the fold.', needs: ['street', 'holding'], when: shoveTookIt },
-    { t: '{holding}, no drama, moving on.', needs: ['holding'], when: all(small, not(stackIn)) },
-    { t: '{board} and a routine result. They count too.', needs: ['board'], when: small },
-    { t: 'Not every hand needs a speech. This one did its job.', needs: [], when: won },
-    { t: 'Lost a small one and kept the session moving.', needs: [], when: all(lost, small) },
-    { t: 'Won a small one and kept the session moving.', needs: [], when: all(won, small) },
-    { t: '{holding} on {board}. File it under ordinary poker.', needs: ['holding', 'board'], when: small },
-    { t: 'One more decision made, one more hand in the books.', needs: [] },
-    { t: 'The unglamorous part of the grind still matters.', needs: [], when: all(small, not(stackIn)) },
+    { t: '{holding} in a small pot.', needs: ['holding'], when: all(small, not(stackIn)) },
+    { t: 'Played a small pot on {board}.', needs: ['board'], when: small },
+    { t: 'Won the hand with {holding}.', needs: ['holding'], when: won },
+    { t: 'Lost a small pot with {holding}.', needs: ['holding'], when: all(lost, small) },
+    { t: 'Won a small pot with {holding}.', needs: ['holding'], when: all(won, small) },
+    { t: '{holding} on {board}, in a small pot.', needs: ['holding', 'board'], when: small },
+    { t: 'The hand was played with {holding}.', needs: ['holding'] },
+    { t: 'A small pot decided {street}.', needs: ['street'], when: all(small, endedThere, not(stackIn)) },
     { t: 'Picked up {money} with {holding}.', needs: ['money', 'holding'], when: all(won, notSmall) },
-    { t: 'Dropped {money} with {holding}. Part of the job.', needs: ['money', 'holding'], when: all(lost, notSmall) },
+    { t: 'Dropped {money} with {holding}.', needs: ['money', 'holding'], when: all(lost, notSmall) },
     { t: 'Took down {money} {street}.', needs: ['money', 'street'], when: all(won, not(showdown)) },
-    { t: 'Won {money} {street}. On to the next one.', needs: ['money', 'street'], when: all(won, notSmall, not(showdown)) },
+    { t: 'Won {money} {street}.', needs: ['money', 'street'], when: all(won, notSmall, not(showdown)) },
     { t: 'Ran it {runs} and came out ahead.', needs: ['runs'], when: all(won, ranMore, allIn, showdown) },
-    { t: 'Dropped {money} {street}. Part of the job.', needs: ['money', 'street'], when: all(lost, notSmall, riverDecided) },
+    { t: 'Dropped {money} {street}.', needs: ['money', 'street'], when: all(lost, notSmall, riverDecided) },
   ],
 };
 
@@ -379,6 +379,11 @@ const SHORTHAND_HOLDING = /\b(?:[AKQJT][AKQJT2-9]|[2-9][AKQJT])[so]\b|\b([AKQJT]
 const EMOJI = /\p{Extended_Pictographic}/u;
 const DASHES = /[\u2013\u2014]/;
 const BACKSTORY = /\b(?:a year ago|years?|finally|bankroll|breathe again|today|tonight|yesterday|last week|this week|months?)\b/i;
+// A completed hand establishes actions and results, not private thoughts,
+// intentions, remembered experience or another session. Leak tags likewise
+// do not evaluate either player's cards or establish relative hand strength.
+const UNSUPPORTED_EXPERIENCE = /\b(?:remember\w*|replay\w*|review\w*|stud(?:y|ied|ying)|think(?:ing)?|thought|plan\w*|hope\w*|want\w*|glad|complaints?|felt|feel\w*|unavoidable|linger\w*|stay with you|session|most of (?:the game|a session)|every time|next (?:one|hand)|onward|moving on|back to work|deep breath|going to|i['’]ll|i will|worth a second look|look at that one again)\b/i;
+const UNVERIFIED_STRENGTH = /\b(?:second[- ]best|stronger|better hand|strong hand|big hand|bigger (?:one|hand))\b/i;
 const FILLER_OPENER = /^(?:look|nah|okay|ok|well|honestly|so|yeah|lol|ngl|fair enough|for me|one thing|the thing is|what gets me|on another watch|the interesting part|the part i keep|the detail worth|i keep coming back)\b/i;
 
 /**
@@ -392,6 +397,7 @@ export function spokenLineMatches(text: string, facts: HandFacts): boolean {
   if (/\d/.test(text) || /\bbb\b|big blinds?/i.test(text)) return false;
   if (EMOJI.test(text) || DASHES.test(text)) return false;
   if (BACKSTORY.test(text) || FILLER_OPENER.test(text)) return false;
+  if (UNSUPPORTED_EXPERIENCE.test(text) || UNVERIFIED_STRENGTH.test(text)) return false;
 
   const t = text.toLowerCase();
   const p = facts.play;
@@ -441,6 +447,9 @@ export function spokenLineMatches(text: string, facts: HandFacts): boolean {
 
   // Size.
   if (/\b(?:small|quiet|ordinary|routine|unglamorous|no drama|nothing dramatic)\b/.test(t) && Math.abs(facts.netBb) >= 40) return false;
+  // A small net result does not establish a small pot (split/side pots).
+  if (/\b(?:small pot|quiet|ordinary|routine|unglamorous|no drama|nothing dramatic)\b/.test(t)
+    && (!Number.isFinite(facts.potBb) || facts.potBb <= 0 || facts.potBb >= 40)) return false;
   // A hand its own stack went into was not quiet, whatever it won.
   if (/\b(?:quiet|no drama|nothing dramatic)\b/.test(t) && p.stackInStreet) return false;
   if (/\ba small pot\b/.test(t) && facts.category !== 'grind') return false;

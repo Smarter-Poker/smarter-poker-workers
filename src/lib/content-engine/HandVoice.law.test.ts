@@ -350,8 +350,8 @@ describe('every proposed sentence keeps the same laws', () => {
     facts('river_aggression'),
     facts('big_fold'),
     facts('stackoff', { isWin: true, netBb: 120 }),
-    facts('grind', { isWin: true, netBb: 12 }),
-    facts('grind', { isWin: false, netBb: -12 }),
+    facts('grind', { isWin: true, netBb: 12, potBb: 24 }),
+    facts('grind', { isWin: false, netBb: -12, potBb: 24 }),
   ];
 
   it('renders broad, category-specific variety', () => {
@@ -418,6 +418,45 @@ describe('every proposed sentence keeps the same laws', () => {
     const f = facts('big_win');
     expect(lineFor({ ...f, play: undefined as unknown as HandPlay }, 'seed')).toBeNull();
     expect(spokenLineMatches('Good pot with pocket aces. On to the next one.', { ...f, play: undefined as unknown as HandPlay })).toBe(false);
+  });
+});
+
+describe('own-hand facts do not establish memory, intent or comparative strength',()=>{
+  it('does not call a large pot small because the player netted only a small part',()=>{
+    const f=facts('grind',{isWin:true,netBb:20,potBb:220});
+    expect(spokenLineMatches('Won a small pot with pocket aces.',f)).toBe(false);
+    expect(spokenLineMatches('Played a small pot with pocket aces.',{...f,potBb:0})).toBe(false);
+    expect(spokenLineMatches('Won a small pot with pocket aces.',{...f,potBb:30})).toBe(true);
+  });
+  it.each([
+    ['bad_beat','Some pots stay with you longer than they should. That was one.'],
+    ['tough_spot','Some hands you play and then think about for a while. This was one.'],
+    ['tough_spot','Going to look at that one again with pocket aces.'],
+    ['bad_beat','Still replaying that one with pocket aces.'],
+    ['river_aggression','Pressure was the plan on the last card. The plan held.'],
+    ['big_fold',"No trophy for that fold, but I'll remember it."],
+    ['tough_spot','Lost a stack-sized pot with pocket aces. That one goes in the review pile.'],
+    ['cooler','Had a strong hand and ran into a stronger one.'],
+    ['cooler','Pocket aces, second best, next hand.'],
+    ['cooler','Ran pocket aces into a better hand.'],
+    ['cooler','Got it all in on the river with a big hand and a bigger one showed up.'],
+    ['grind','Won a small one and kept the session moving.'],
+  ] as const)('rejects an unsupported %s claim at the finished-sentence boundary: %s',(category,text)=>{
+    const f=facts(category,{play: category==='cooler'?{allInStreet:'river',stackInStreet:'river'}:undefined});
+    expect(spokenLineMatches(text,f)).toBe(false);
+  });
+
+  it('renders every available frame with hand facts instead of mental states, habits or hand-strength guesses',()=>{
+    const unsupported=/\b(?:remember\w*|replay\w*|review|think(?:ing)?|thought|plan\w*|hope\w*|want\w*|felt|feel\w*|unavoidable|linger\w*|session|most of|every time|next hand|next one|onward|moving on|back to work|deep breath|second.best|stronger|better hand|big hand|bigger one|no complaints)\b/i;
+    for(const category of ['big_win','bad_beat','cooler','tough_spot','river_aggression','big_fold','stackoff','grind'] as const){
+      const f=facts(category,category==='grind'?{isWin:true,netBb:20}:{});
+      const lines=rendered(f);
+      expect(lines.length,category).toBeGreaterThan(0);
+      for(const line of lines){
+        expect(line.text,`${category}: ${line.text}`).not.toMatch(unsupported);
+        expect(line.text,`${category}: ${line.text}`).toMatch(/pocket aces|board|showdown|fold|let it go|muck|bet|river|pot|won|lost|chips|stack/i);
+      }
+    }
   });
 });
 
