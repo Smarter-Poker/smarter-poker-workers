@@ -1,5 +1,6 @@
 import type { PostBrief } from './PostBrief.js';
 import {literalSportsInventory} from './LiteralSportsInventory.js';
+import {literalVerifiedInventory} from './LiteralVerifiedInventory.js';
 
 export interface SportsVideoFact {
   person: '';
@@ -43,6 +44,8 @@ function inningNumber(value:string):number|null {
 export function sportsVideoFact(b:PostBrief):SportsVideoFact|null {
   if(b.kind!=='video'||b.domain!=='sports'||b.isQuestion) return null;
   const original=b.title.replace(/[\u2018\u2019]/g,"'").replace(/[\u2010-\u2015]/g,'-');
+  const verified=literalVerifiedInventory(original,b.source?.toLowerCase());
+  if(verified)return verified;
   const inventory=literalSportsInventory(original,b.source?.toLowerCase());
   if(inventory)return inventory;
   if(/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|could|would|should|might|may|if|unless|without|before|after|then|reacts|watches|denies)\b/i.test(original)) return null;

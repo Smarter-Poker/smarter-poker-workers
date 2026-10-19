@@ -7,6 +7,53 @@ import {composeCaption} from './Composer.js';
 const brief=(title:string)=>briefForAsset({kind:'video',title,source:'PokerGO',domainHint:'poker'});
 const style=styleSheetFor('46887b99-8cd6-45db-861c-ad24232efbfe');
 
+describe('additional verified source-bound literal inventory',()=>{
+ it('does not wrap literal decisions in repeated question frames for the actual first roster author',()=>{
+  const s=styleSheetFor('00000000-0000-0000-0000-000000000002');
+  for(const [source,title] of [['Mariano','Trapping with Pocket Aces?'],['Mariano','Flatting A 3-Bet Out Of Position Madness?'],['Bart Hanson','Would You Fold 5-4 Suited Here?'],['Bart Hanson','Would You Flat or 4-Bet Here?'],['Bart Hanson','Bet or Fold?']]){
+   const b=briefForAsset({kind:'video',domainHint:'poker',source,title});
+   const out=composeCaption(b,s);
+   expect(out.text).not.toBe('');
+   expect(out.text.match(/\bquestion\b/gi)?.length??0).toBeLessThanOrEqual(1);
+   expect(pokerVideoQuestionFact(title!,source)?.subject).not.toMatch(/question/);
+  }
+ });
+ it.each([
+  ['Bart Hanson','Would You Fold 5-4 Suited Here?','poker_question:decision:fold:holding:54s'],
+  ['Bart Hanson','Would You Flat or 4-Bet Here?','poker_question:decision:flat_or_four_bet'],
+  ['Bart Hanson','Bet or Fold?','poker_question:decision:bet_or_fold'],
+  ['Mariano','Trapping with Pocket Aces?','poker_question:decision:trap:holding:aa'],
+  ['Mariano','Flatting A 3-Bet Out Of Position Madness?','poker_question:decision:flat:bet_level:3:position:oop'],
+ ])('retains the question, not an asserted decision: %s %s',(source,title,key)=>{
+  expect(pokerVideoQuestionFact(title,source)?.identity).toBe(key);
+  expect(pokerVideoQuestionFact(title,'Unknown')).toBeNull();
+ });
+ it.each([
+  ['Mariano','Firing $6,400 With Pure Ten High','wager:amount:6400:unit:dollars:holding:t_high'],
+  ['Bart Hanson','Turned Top Pair In A 3-Bet Pot','made_hand:top_pair:street:turn:pot_bet_level:3'],
+  ['Bart Hanson',"Reg Shoved $1,300 into Hero’s Kings",'holding:kk:facing:shove:amount:1300:unit:dollars'],
+  ['Bart Hanson','Facing a river all-in','all_in:street:river:facing'],
+  ['Bart Hanson','Hero Refused To Fold Top Pair!','holding:top_pair:decision:not_fold'],
+  ['PokerStars','MAIN EVENT — DAY3 | APPT Championship Manila','poker_event:appt championship manila:event:main:stage:day_3'],
+  ['PokerStars','SUPER HIGH ROLLER — FINAL DAY | APPT Championship Manila','poker_event:appt championship manila:event:super_high_roller:stage:final_day'],
+  ['PokerStars','Big Game On Tour | S2 Heat 2 | Hands Only, No Breaks!','poker_event:big game on tour:season:2:heat:2'],
+ ])('extracts only the complete literal proposition: %s %s',(source,title,key)=>{
+  expect(pokerVideoContextFact(title,source)?.identity).toBe(key);
+  expect(pokerVideoContextFact(title,'Unknown')?.identity).not.toBe(key);
+ });
+ it.each(['Firing $6,400 With Pure Ten High and wins','Firing $6,400 With Pure Ten High?','Never Firing $6,400 With Pure Ten High','Firing $6,400 With Pure Ten High before aces win','Firing $6,400 prize With Pure Ten High','4-Way Pre-Flop All-In For $40K and $50K','Reg Shoved $1,300 into Hero’s Kings and aces','MAIN EVENT DAY 2 and DAY 3 | APPT Championship Manila'])('refuses compounded, denied or mismatched roles %s',title=>{
+  expect(pokerVideoContextFact(title,'Mariano')).toBeNull();
+ });
+ it('coalesces equivalent amounts and explicit event spellings',()=>{
+  expect(pokerVideoContextFact('Firing $6.4K With Pure Ten High','Mariano')?.identity).toBe(pokerVideoContextFact('Firing $6,400 With Pure Ten High','Mariano')?.identity);
+  expect(pokerVideoContextFact('MAIN EVENT - DAY 3 | APPT Championship Manila','PokerStars')?.identity).toBe(pokerVideoContextFact('MAIN EVENT — DAY3 | APPT Championship Manila','PokerStars')?.identity);
+ });
+ it('preserves already typed all-in meaning and refuses ambiguous cooler money role',()=>{
+  expect(pokerVideoContextFact('4-Way Pre-Flop All-In For $40K','Mariano')?.identity).toBe('all_in:amount:40000:unit:dollars');
+  expect(pokerVideoContextFact('FLUSH vs FLUSH in $85,000 COOLER!!!','Mariano')).toBeNull();
+ });
+});
+
 describe('literal question topics, never asserted decisions',()=>{
  it.each([
   ['Folding the 3rd Nuts? 🤔','decision:fold:hand_rank:third_nuts'],
@@ -24,7 +71,7 @@ describe('literal question topics, never asserted decisions',()=>{
  it.each(['Can We Fold Top Set Here','Can We Fold Bottom Set Here?','He folded top set?','Can We Fold Top Set Here and win?'])('refuses changed assertion, cards and extra outcome %s',title=>expect(pokerVideoQuestionFact(title,'Bart Hanson')).toBeNull());
  it('does not borrow a wrong source or promote arbitrary headline questions',()=>{
   expect(pokerVideoQuestionFact('Can We Fold Top Set Here?','Unknown')).toBeNull();
-  expect(pokerVideoQuestionFact('Bet or Fold?','Bart Hanson')).toBeNull();
+  expect(pokerVideoQuestionFact('Bet or Fold and win?','Bart Hanson')).toBeNull();
  });
  it('grounds an official literal actor all-in without a win or holding claim',()=>{
   expect(pokerVideoContextFact('DANIEL NEGREANU ALL-IN!','PokerGO')).toMatchObject({identity:'all_in:actor:daniel negreanu',subject:"Daniel Negreanu's all-in"});

@@ -560,11 +560,11 @@ function specificTakePool(b: PostBrief): string[] {
   return hits;
 }
 
-/** Legacy take-pool eligibility, separate from the typed subject-fact path. */
+/** Legacy pool flag cannot admit a caption without a typed source fact. */
 export function hasSpecificTake(b: PostBrief): boolean {
-  // Articles additionally require literal grounding. A typed fact with no
-  // legacy take remains eligible through subjectCaption, not this pool flag.
-  if ((b.kind === 'link' || b.isQuestion) && !captionFact(b)) return false;
+  // A typed fact with no legacy take remains eligible through subjectCaption,
+  // not this pool flag. Shared supply must reject keyword-only verdicts too.
+  if (!captionFact(b)) return false;
   return specificTakePool(b).length > 0;
 }
 
@@ -718,7 +718,12 @@ export function composeCaption(
   // allowing poker posts about aliens and sports clips with clipped captions.
   // Silence is recoverable; publishing something we did not understand is not.
   const subject = subjectCaption(b, style, variantSeed);
-  if (!subject && !hasSpecificTake(b)) return { text: '', relevance: 0, grounding: [] };
+  // A category keyword is not evidence for the legacy pool's verdicts. In
+  // particular, "tilt" establishes neither a universal cost ranking nor an
+  // effective ten-minute remedy; two such lines are not two grounded angles.
+  // Captions require the closed source-fact path. Keep legacy takes available
+  // to the separately governed comment path, never as caption fallback.
+  if (!subject) return { text: '', relevance: 0, grounding: [] };
 
   // A source-established actor/action gives the opinion a genuine subject.
   // Unlike a video-id suffix, this changes what the sentence actually asks
