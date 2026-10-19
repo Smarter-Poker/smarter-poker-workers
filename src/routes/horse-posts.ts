@@ -180,6 +180,17 @@ export async function horsePosts(c: Context) {
       content_exhausted: skippedByReason.content_exhausted ?? 0,
       skipped_by_reason: skippedByReason,
       failed: failed.length,
+      // Keep the exact bounded video attempt for durable operator recovery.
+      // Select fields explicitly: arbitrary metadata never enters this receipt.
+      publication_failures: failed.filter(result => result.publicationAttempt).map(result => ({
+        horse: result.horse,
+        profile_id: result.profile_id,
+        publicationKey: result.publicationKey,
+        publicationAttempt: result.publicationAttempt,
+        code: result.code,
+        outcome: result.outcome,
+        error: result.error,
+      })),
       unknown: results.filter(result => result.outcome === 'unknown' || result.skipped === 'guard_unreadable').length
         + (preparedVideoSupply?.status === 'unknown' ? 1 : 0),
       halted_on_unknown: run.unknown,

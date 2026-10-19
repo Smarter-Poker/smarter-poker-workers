@@ -68,6 +68,7 @@ import {
   readFreshSharedYouTubeVerificationIds,
   recordYouTubeVerification,
   type HorseVideoTopic,
+  type HorseVideoPublicationInput,
 } from './HorseVideoPublication.js';
 import { verifyYouTubeMetadata } from './YouTubeMetadataVerifier.js';
 import { captionModelIdempotencyKey, takeModelWriterStats } from './ModelWriter.js';
@@ -122,6 +123,9 @@ export interface PublishResult {
   collided?: boolean;
   error?: string;
   outcome?: 'unknown';
+  code?: string;
+  /** Exact non-secret inputs for durable recovery of a failed video RPC. */
+  publicationAttempt?: Omit<HorseVideoPublicationInput, 'metadata'> & { publicationKey: string };
   skipped?: PublishSkip;
   /** metadata.publication_key this attempt used or collided with. */
   publicationKey?: string;
@@ -1060,6 +1064,18 @@ export async function publishVideoClip(
         ...base,
         success: false,
         outcome: published.outcome,
+        code: published.code,
+        publicationKey,
+        publicationAttempt: {
+          authorId: horse.profile_id,
+          publicationKey,
+          videoUrl: candidate.source_url,
+          caption: picked.text,
+          topic: clipType,
+          assetKey: key,
+          phraseNorm: picked.norm,
+          semanticKey: written.semanticKey,
+        },
         error: published.error ?? 'Atomic horse video publication failed',
       };
     }

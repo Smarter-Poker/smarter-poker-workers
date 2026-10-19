@@ -145,8 +145,47 @@ describe('atomic horse video publication', () => {
     });
     await expect(publishHorseVideoAtomically(input)).resolves.toMatchObject({
       success: false,
+      outcome: 'unknown',
       error: expect.stringContaining('no linked post/Reel pair'),
     });
+  });
+
+  it.each([
+    null,
+    [],
+    [{ social_post_id: 'post-1', social_reel_id: 'reel-1' }],
+    [{ social_post_id: 1, social_reel_id: 'reel-1', created: true }],
+    [{ social_post_id: 'post-1', social_reel_id: 'reel-1', created: 'true' }],
+    [
+      { social_post_id: 'post-1', social_reel_id: 'reel-1', created: true },
+      { social_post_id: 'post-2', social_reel_id: 'reel-2', created: true },
+    ],
+  ].map(data => ({ data })))('keeps malformed success payload $data unknown', async ({ data }) => {
+    rpc.mockResolvedValue({ data, error: null });
+    await expect(publishHorseVideoAtomically(input)).resolves.toMatchObject({
+      success: false, outcome: 'unknown',
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['57014', 'canceling statement due to statement timeout'],
+    ['55P03', 'canceling statement due to lock timeout'],
+    ['40P01', 'deadlock detected'],
+  ])('retains definite transactional cancellation %s without retrying', async (code, message) => {
+    rpc.mockResolvedValue({ data: null, error: { code, message } });
+    await expect(publishHorseVideoAtomically(input)).resolves.toEqual({
+      success: false, code, error: `atomic horse video publication failed: ${message}`,
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a connection-loss SQLSTATE unknown and preserves its diagnostic code', async () => {
+    rpc.mockResolvedValue({ data: null, error: { code: '08006', message: 'connection lost' } });
+    await expect(publishHorseVideoAtomically(input)).resolves.toMatchObject({
+      success: false, outcome: 'unknown', code: '08006',
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 
   it('does not call the database for a mismatched or non-YouTube identity', async () => {
