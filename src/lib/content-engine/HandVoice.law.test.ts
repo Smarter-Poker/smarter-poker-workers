@@ -422,6 +422,13 @@ describe('every proposed sentence keeps the same laws', () => {
 });
 
 describe('own-hand facts do not establish memory, intent or comparative strength',()=>{
+  it('does not turn an earlier all-in street into a completed-hand outcome street',()=>{
+    const f=facts('grind',{isWin:true,netBb:20,potBb:30,variant:'PLO',holeNotation:'AhKsQdJc',play:{showdown:true,allInStreet:'flop',stackInStreet:null,decisiveStreet:'flop'}});
+    expect(spokenLineMatches('It was decided on the flop.',f)).toBe(false);
+    const lines=rendered(f);
+    expect(lines.length).toBeGreaterThan(0);
+    for(const line of lines)expect(line.text).not.toMatch(/decided on the flop/i);
+  });
   it('does not call a large pot small because the player netted only a small part',()=>{
     const f=facts('grind',{isWin:true,netBb:20,potBb:220});
     expect(spokenLineMatches('Won a small pot with pocket aces.',f)).toBe(false);

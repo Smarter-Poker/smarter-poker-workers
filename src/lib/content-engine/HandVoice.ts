@@ -417,6 +417,7 @@ export function spokenLineMatches(text: string, facts: HandFacts): boolean {
   // A pot that went to showdown was not won or lost on the street the money
   // went in: it was settled after the board was dealt out.
   if (p.showdown && /\b(?:won|dropped|took down|wrapped that one up)\b[^.]*\b(?:preflop|on the flop|on the turn)\b/.test(t)) return false;
+  if (p.showdown && /\bdecided (?:preflop|on the flop|on the turn)\b/.test(t)) return false;
   if (/\b(?:board|runout)\b/.test(t) && p.runouts > 1) return false;
   if (/\brunout\b/.test(t) && !(p.allInStreet && p.allInStreet !== 'river' && p.showdown)) return false;
   if (/\bran it twice\b/.test(t) && p.runouts !== 2) return false;
@@ -483,7 +484,9 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
     // instead of relying on hidden metadata to call the sentence grounded.
     if (line.needs.length === 0) {
       if (spoken.holding) text += ` The hand was ${spoken.holding}.`;
-      else if (spoken.street) text += ` It was decided ${spoken.street}.`;
+      else if (spoken.street) text += !endedThere(f) && f.play.allInStreet
+        ? ` There was an all-in ${spoken.street}.`
+        : ` It was decided ${spoken.street}.`;
       else if (spoken.money) text += ` It was ${spoken.money}.`;
       else if (spoken.board) text += ` The board was ${spoken.board}.`;
       else if (spoken.runs) text += ` We ran it ${spoken.runs}.`;
