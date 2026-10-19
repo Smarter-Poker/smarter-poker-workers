@@ -325,7 +325,7 @@ const LINES: Record<string, Line[]> = {
     { t: 'Folded before the hand reached showdown.', needs: [] },
     { t: 'Let {holding} go {street}.', needs: ['holding', 'street'] },
     { t: 'Found the fold on {board}.', needs: ['board'] },
-    { t: 'Ended the hand with a fold.', needs: [] },
+    { t: 'I folded.', needs: [] },
     { t: 'Folded on the river.', needs: [], when: riverDecided },
     { t: '{holding} went into the muck {street}.', needs: ['holding', 'street'] },
     { t: 'My part in the hand ended when I folded {holding}.', needs: ['holding'] },
@@ -398,6 +398,7 @@ export function spokenLineMatches(text: string, facts: HandFacts): boolean {
   if (EMOJI.test(text) || DASHES.test(text)) return false;
   if (BACKSTORY.test(text) || FILLER_OPENER.test(text)) return false;
   if (UNSUPPORTED_EXPERIENCE.test(text) || UNVERIFIED_STRENGTH.test(text)) return false;
+  if (/\bended the hand with a fold\b|(?:^|[.!?]\s+)the hand ended when i folded/i.test(text)) return false;
 
   const t = text.toLowerCase();
   const p = facts.play;

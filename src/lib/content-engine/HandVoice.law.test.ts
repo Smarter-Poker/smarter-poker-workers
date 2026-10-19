@@ -422,6 +422,13 @@ describe('every proposed sentence keeps the same laws', () => {
 });
 
 describe('own-hand facts do not establish memory, intent or comparative strength',()=>{
+  it('does not claim that the whole hand stopped when this player folded',()=>{
+    const f=facts('big_fold');
+    expect(spokenLineMatches('Ended the hand with a fold.',f)).toBe(false);
+    expect(spokenLineMatches('The hand ended when I folded pocket aces.',f)).toBe(false);
+    expect(spokenLineMatches('My part in the hand ended when I folded pocket aces.',f)).toBe(true);
+    for(const line of rendered(f))expect(line.text).not.toMatch(/ended the hand with a fold/i);
+  });
   it('does not turn an earlier all-in street into a completed-hand outcome street',()=>{
     const f=facts('grind',{isWin:true,netBb:20,potBb:30,variant:'PLO',holeNotation:'AhKsQdJc',play:{showdown:true,allInStreet:'flop',stackInStreet:null,decisiveStreet:'flop'}});
     expect(spokenLineMatches('It was decided on the flop.',f)).toBe(false);
