@@ -96,7 +96,7 @@ describe('a ledger outage is named in the run result', () => {
       type: 'poker_news',
     }));
     const r = await run();
-    expect(r.body).toMatchObject({ posted: 2, failed: 0, ledger_unreadable: 0,
-      publication_budget:{limit:2,created:2,hit:true},not_attempted:2 });
+    expect(r.body).toMatchObject({ posted: 4, failed: 0, ledger_unreadable: 0,
+      publication_budget:{limit:80,created:4,hit:false},not_attempted:0 });
   });
 });

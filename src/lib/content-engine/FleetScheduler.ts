@@ -114,6 +114,28 @@ export function postingHour(profileId: string, weekday: number, isoWeekKey: stri
   // Skip the first and last hour of the window when it can spare them: the
   // "just woke up" hour posts too uniformly across the fleet.
   const usable = hours.length > 4 ? hours.slice(1, -1) : hours;
+  if(postingCadence(profileId)===7){
+    // Independent weekday hashes could place consecutive daily slots only
+    // 17h apart, so the unchanged 20h recent-post guard necessarily refused
+    // one even with infinite supply. Keep natural daily variation bounded.
+    // A wrapped awake window needs one numeric-hour segment: 23 -> 00 on
+    // consecutive civil days is a 1h gap, not a safe adjacent-hour nudge.
+    const segments:number[][]=[];
+    for(const hour of [...usable].sort((a,b)=>a-b)){
+      const segment=segments[segments.length-1];
+      if(!segment||hour!==segment[segment.length-1]!+1)segments.push([hour]);else segment.push(hour);
+    }
+    const dailyHours=segments.sort((a,b)=>b.length-a.length)[0]!;
+    const margin=dailyHours.length>=5?2:0;
+    const base=margin+fleetHash(profileId,'daily-hour')%Math.max(1,dailyHours.length-2*margin);
+    const sign=fleetHash(profileId,'daily-hour-direction')%2===0?1:-1;
+    // Sunday and Monday share zero: changing ISO weeks cannot compound a
+    // weekday jump with the existing -1..+1 weekly drift. Min civil gap22h.
+    const dayNudge=([0,0,1,0,-1,0,1][weekday]??0)*sign;
+    const weekNudge=(fleetHash(profileId,`nudge:${isoWeekKey}`)%3)-1;
+    const index=Math.min(dailyHours.length-1,Math.max(0,base+dayNudge+weekNudge));
+    return dailyHours[index]!;
+  }
   const base = fleetHash(profileId, `hour:${weekday}`) % usable.length;
   const nudge = (fleetHash(profileId, `nudge:${isoWeekKey}`) % 3) - 1;
   const idx = Math.min(usable.length - 1, Math.max(0, base + nudge));
