@@ -267,6 +267,9 @@ function actionsOf(row: RealRow): unknown[] {
 function reviewRow(row: RealRow, actions: unknown = actionsOf(row)): Row {
   return {
     id: row.id, played_at: row.playedAt, game_variant: row.variant, format: row.format, big_blind: row.bb,
+    // Historical action fixtures retain their real review id. Their hand
+    // UUID is synthetic test metadata, separate from that bigint review id.
+    hand_id: `00000000-0000-4000-8000-${String(row.id).padStart(12,'0')}`, review_status: 'auto_reviewed',
     hole_cards: cards(row.hole), board: cards(row.board), net_bb: row.net, pot_size: row.pot, is_win: row.win,
     leak_tags: row.tags, horse_user_id: HORSE, actions,
   };
@@ -274,9 +277,14 @@ function reviewRow(row: RealRow, actions: unknown = actionsOf(row)): Row {
 
 /** The real pickHandStory on one real row, through the fake client. */
 async function factsOf(row: RealRow, actions?: unknown): Promise<HandFacts | null> {
-  db.tables = { horse_hand_reviews: [reviewRow(row, actions)] };
+  const source=reviewRow(row,actions);
+  db.tables = { horse_hand_reviews: [source], hand_history: [{id:source.hand_id,ended_at:row.playedAt}] };
   db.failReads = new Set();
-  return pickHandStory(HORSE, { seed: 'law' });
+  // Reproduce the recorded hand at its historical time, keeping the live
+  // seven-day source guard intact rather than relying on a permissive fake.
+  const clock=vi.spyOn(Date,'now').mockReturnValue(Date.parse(row.playedAt)+60_000);
+  try { return await pickHandStory(HORSE, { seed: 'law' }); }
+  finally { clock.mockRestore(); }
 }
 
 const real = new Map<number, HandFacts>();

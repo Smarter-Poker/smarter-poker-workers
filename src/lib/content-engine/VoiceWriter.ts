@@ -45,7 +45,7 @@ import {
 import { areFriends, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
-import { pickHandStory, pickSessionStory } from './HandStory.js';
+import { pickHandStories, pickSessionStory } from './HandStory.js';
 import { lineFor, briefForSpokenHand } from './HandVoice.js';
 import { sessionLineFor, sessionGroup, briefForSpokenSession } from './SessionVoice.js';
 import { writeModelCaption } from './ModelWriter.js';
@@ -81,6 +81,8 @@ export interface WrittenText {
   briefWasStored?: boolean;
   /** Which separately-approved grounded mode produced this draft. */
   groundedKind?: 'hand' | 'session';
+  /** Review row used by atomic own-hand publication; never a semantic key. */
+  handReviewId?: string;
   /** Unstyled meaning for same-post semantic de-duplication. */
   semanticKey?: string;
   /**
@@ -321,9 +323,9 @@ export async function writeStory(
 /**
  * A post about the poker this horse actually played.
  *
- * Phase 3. Tried before any clip or article, because a hand is the only
- * source that cannot repeat and cannot be about nothing: two horses did not
- * play the same hand. Returns null when the horse has nothing worth telling
+ * Phase 3. Tried before clips or articles for source-grounded own play.
+ * Multiple horses can share a hand; its actual UUID owns source freshness.
+ * Returns null when the horse has nothing fresh worth telling
  * (a quiet week, or only trivial pots), and the caller falls back to the
  * shared media pools.
  *
@@ -346,8 +348,8 @@ export async function writeGrounded(
     const style = styleSheetFor(horse.profile_id);
 
     if (allowed?.hand === true) {
-      const hand = await pickHandStory(horse.profile_id);
-      if (hand) {
+      const hands = await pickHandStories(horse.profile_id);
+      for (const hand of hands) {
         // HandVoice (the Phase 3 replacement). The hand is SPOKEN, never
         // printed, and every claim about the action comes from the action
         // log (HandStory's `play`). It deliberately does NOT go through
@@ -380,6 +382,7 @@ export async function writeGrounded(
               stale: false,
               frameKey: spoken.key,
               groundedKind: 'hand',
+              handReviewId: hand.reviewId,
               semanticKey,
             };
           }

@@ -25,6 +25,7 @@ const db = vi.hoisted(() => ({
   tables: {} as Record<string, Row[]>,
   reads: [] as string[],
   writes: [] as Array<{ table: string; op: string; row: unknown }>,
+  rpcCalls: [] as Array<{name:string;args:Row}>,
 }));
 
 // rss-parser uses node:http rather than global fetch. Keep the unrelated news
@@ -42,7 +43,7 @@ vi.mock('../supabase.js', () => {
       get(_t, prop) {
         if (prop === 'then') {
           if (!wrote) db.reads.push(table);
-          const res = { data: wrote ? null : rows(), error: null };
+          const res = { data: wrote ? null : rows(), error: null, status:200 };
           return (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) => Promise.resolve(res).then(ok, bad);
         }
         if (prop === 'maybeSingle' || prop === 'single') {
@@ -52,8 +53,8 @@ vi.mock('../supabase.js', () => {
             return { data: rows()[0] ?? null, error: null };
           };
         }
-        if (prop === 'eq') return (k: string, v: unknown) => { filters.push((r) => !(k in r) || String(r[k]) === String(v)); return b; };
-        if (prop === 'in') return (k: string, vs: unknown[]) => { const set = new Set(vs.map(String)); filters.push((r) => !(k in r) || set.has(String(r[k]))); return b; };
+        if (prop === 'eq') return (k: string, v: unknown) => { filters.push((r) => String(r[k]) === String(v)); return b; };
+        if (prop === 'in') return (k: string, vs: unknown[]) => { const set = new Set(vs.map(String)); filters.push((r) => set.has(String(r[k]))); return b; };
         if (prop === 'like') return (_k: string, pattern: string) => { const pre = pattern.replace(/%$/, ''); filters.push((r) => String(r.phrase_norm ?? '').startsWith(pre)); return b; };
         if (prop === 'insert' || prop === 'upsert' || prop === 'update' || prop === 'delete') {
           return (row: unknown) => { wrote = true; db.writes.push({ table, op: String(prop), row }); return b; };
@@ -65,7 +66,22 @@ vi.mock('../supabase.js', () => {
   }
   return {
     DEFAULT_REQUEST_TIMEOUT_MS: 20_000,
-    getSupabase: () => ({ from: (t: string) => builder(t), rpc: async () => ({ data: null, error: null }) }),
+    getSupabase: () => ({ from: (t: string) => builder(t), rpc: async (name:string,args:Row) => {
+      db.rpcCalls.push({name,args});
+      if(name!=='publish_horse_grounded_hand')throw new Error(`Unexpected RPC ${name}`);
+      const review=(db.tables.horse_hand_reviews??[]).find(r=>String(r.id)===args.p_review_id&&r.horse_user_id===args.p_author_id);
+      if(!review||args.p_semantic_key!==`grounded:hand:${review.hand_id}`||typeof args.p_content!=='string'||typeof args.p_frame_key!=='string')throw new Error('Invalid own-hand publication payload');
+      const postId='33333333-3333-4333-8333-333333333333';
+      const post={id:postId,author_id:args.p_author_id,content:args.p_content,content_type:'text',origin_type:'horse',visibility:'public',audience_mode:'public',is_deleted:false,topic:'poker',topics:['poker','hand'],
+        metadata:{grounded:true,grounded_type:'hand',hand_review_id:args.p_review_id,hand_id:review.hand_id,
+          phrase_norm:args.p_phrase_norm,semantic_key:args.p_semantic_key,frame_key:args.p_frame_key,
+          publication_key:args.p_publication_key,publication_contract:'horse_grounded_hand_v1'}};
+      db.tables.social_posts=[post];
+      db.tables.horse_phrase_ledger=[...(db.tables.horse_phrase_ledger??[]),...[args.p_phrase_norm,args.p_semantic_key,args.p_frame_key].map(phrase_norm=>({phrase_norm,horse_id:args.p_author_id,post_id:postId,used_at:new Date().toISOString()}))];
+      const brief=args.p_brief as Row;
+      db.tables.post_briefs=[{...brief,post_id:postId,is_question:brief.isQuestion,built_from:brief.builtFrom}];
+      return {data:[{social_post_id:postId,created:true,reason:'published'}],error:null};
+    } }),
   };
 });
 
@@ -128,6 +144,8 @@ function actions(compact: string, horse: string): unknown[] {
 }
 const HAND: Row = {
   id: 573264,
+  hand_id: '22222222-2222-4222-8222-222222222222',
+  review_status: 'auto_reviewed',
   horse_user_id: HORSE.profile_id,
   played_at: `${DAY}T10:00:00Z`,
   game_variant: 'nlh',
@@ -169,9 +187,11 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(`${DAY}T12:00:00Z`));
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network is not part of this test'); }));
-    db.tables = { horse_hand_reviews: [HAND], horse_daily_nets: [SESSION] };
+    db.tables = { horse_hand_reviews: [{...HAND}], horse_daily_nets: [SESSION],
+      hand_history: [{id:HAND.hand_id,ended_at:`${DAY}T10:00:00Z`}] };
     db.reads = [];
     db.writes = [];
+    db.rpcCalls = [];
     _resetPostModes();
     vi.mocked(lineFor).mockClear();
     vi.mocked(sessionLineFor).mockClear();
@@ -195,15 +215,18 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(sessionLineFor).not.toHaveBeenCalled();
     expect(db.reads).not.toContain('horse_daily_nets');
     const [facts, seed] = vi.mocked(lineFor).mock.calls[0]!;
-    expect(String(facts.handId)).toBe('573264');
+    expect(String(facts.handId)).toBe('22222222-2222-4222-8222-222222222222');
     expect(facts.category).toBe('stackoff');
     expect(facts.play).toMatchObject({ showdown: true, stackInStreet: 'preflop', allInStreet: 'preflop', decisiveStreet: 'preflop', runouts: 1 });
-    expect(seed).toBe(`${HORSE.profile_id}:h:573264`);
+    expect(seed).toBe(`${HORSE.profile_id}:h:22222222-2222-4222-8222-222222222222`);
     const spoken = vi.mocked(lineFor).mock.results[0]!.value as { text: string; key: string };
 
-    const inserts = groundedInserts();
-    expect(inserts).toHaveLength(1);
-    const post = inserts[0]!.row as { author_id: string; content: string; metadata: Row; publication_key?: unknown };
+    expect(res).toMatchObject({created:true,postId:'33333333-3333-4333-8333-333333333333',publicationEvidence:{status:'public_persisted'}});
+    expect(groundedInserts()).toHaveLength(0);
+    expect(db.rpcCalls).toHaveLength(1);
+    expect(db.rpcCalls[0]).toMatchObject({name:'publish_horse_grounded_hand',args:{p_review_id:'573264',p_author_id:HORSE.profile_id,p_semantic_key:'grounded:hand:22222222-2222-4222-8222-222222222222'}});
+    expect(db.tables.social_posts).toHaveLength(1);
+    const post = db.tables.social_posts[0]! as { author_id: string; content: string; metadata: Row; publication_key?: unknown };
     expect(post.author_id).toBe(HORSE.profile_id);
     expect(post.content).toBe(spoken.text);
     expect(post.content).not.toMatch(NOTATION);
@@ -214,14 +237,12 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(post.content).not.toMatch(/\bon the flop\b|\bon the turn\b|\briver\b/i);
     expect(post.metadata).toMatchObject({ grounded: true, grounded_type: 'hand' });
     // Phase 8: the writer states the topic it knows; the database derives the rest.
-    expect(inserts[0]!.row).toMatchObject({ topic: 'poker', topics: ['poker', 'hand'] });
-    expect(post.metadata.grounding).toEqual(['hand:573264', 'category:stackoff', spoken.key]);
+    expect(post).toMatchObject({ topic: 'poker', topics: ['poker', 'hand'] });
+    expect(res.grounding).toEqual(['hand:22222222-2222-4222-8222-222222222222', 'category:stackoff', spoken.key]);
     expect('publication_key' in post).toBe(false);
 
     expect(spoken.key).toMatch(/^frame:voice:stackoff:\d+$/);
-    const ledgered = db.writes
-      .filter((w) => w.table === 'horse_phrase_ledger')
-      .map((w) => (w.row as { phrase_norm: string }).phrase_norm);
+    const ledgered = db.tables.horse_phrase_ledger!.map(row=>row.phrase_norm);
     expect(ledgered).toContain(spoken.key);
   });
 
@@ -231,19 +252,22 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     const firstKey = (vi.mocked(lineFor).mock.results[0]!.value as { key: string }).key;
 
     db.writes = [];
+    db.tables.social_posts=[];
+    db.tables.post_briefs=[];
     _resetPostModes();
     db.tables.horse_phrase_ledger = [{ phrase_norm: firstKey, used_at: `${DAY}T11:00:00Z` }];
     const res = await publishForHorse(HORSE, { skipGuard: true, slot: SLOT });
 
     expect(res.success).toBe(true);
-    const post = groundedInserts()[0]!.row as { metadata: { grounding: string[] } };
-    const secondKey = post.metadata.grounding[2]!;
+    expect(res.publicationEvidence?.status).toBe('public_persisted');
+    const secondKey = db.tables.social_posts[0]!.metadata && (db.tables.social_posts[0]!.metadata as Row).frame_key as string;
     expect(secondKey).toMatch(/^frame:voice:stackoff:\d+$/);
     expect(secondKey).not.toBe(firstKey);
   });
 
   it('does not reuse an exact grounded sentence anywhere in the active programme', async () => {
     vi.setSystemTime(new Date('2026-10-08T12:00:00Z'));
+    db.tables.horse_hand_reviews[0]!.played_at='2026-10-08T10:00:00Z';
     db.tables.horse_post_modes = modes(true, false);
     const first = await writeGrounded(HORSE as AuthorHorse, { hand: true, session: false });
     expect(first?.text).toBeTruthy();
@@ -260,9 +284,10 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
 
   it('does not retell one source hand through a different frame', async () => {
     vi.setSystemTime(new Date('2026-10-08T12:00:00Z'));
+    db.tables.horse_hand_reviews[0]!.played_at='2026-10-08T10:00:00Z';
     db.tables.horse_post_modes = modes(true, false);
     db.tables.horse_phrase_ledger = [{
-      phrase_norm: 'grounded:hand:573264',
+      phrase_norm: 'grounded:hand:22222222-2222-4222-8222-222222222222',
       horse_id: 'another-horse',
       used_at: '2026-09-30T12:00:00Z',
     }];

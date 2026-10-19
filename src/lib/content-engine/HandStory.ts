@@ -10,10 +10,9 @@
  * it was. In the seven days to 2026-09-06 that was 204,474 hands across all
  * 1,000 horses, and not one post had ever been derived from any of it.
  *
- * This is the content source that cannot run dry and cannot repeat: two
- * horses cannot have played the same hand, and a hand is specific by
- * construction. Phase 1 and 2 fought over 150 clips and a placeholder title;
- * this needs neither.
+ * Supply depends on actual recent completed play and fresh authored frames.
+ * Horses can share a hand, so its actual UUID, rather than one player's
+ * review row, owns the global source-story identity.
  *
  * WHAT IS TRUE HERE IS TRUE IN THE LEDGER. Every number a post can state -
  * the pot, the net, the stake, the board - is read from the row and passed
@@ -90,6 +89,8 @@ export interface HandPlay {
 
 export interface HandFacts {
   handId: string;
+  /** Source review row, distinct from the actual shared hand UUID. */
+  reviewId?: string;
   playedAt: string;
   variant: string;
   format: string;
@@ -369,7 +370,10 @@ function skip(reason: string): null {
 }
 
 interface ReviewRow {
-  id: string;
+  id: string | number;
+  hand_id: string;
+  review_status: string;
+  horse_user_id: string;
   played_at: string;
   game_variant: string | null;
   format: string | null;
@@ -406,39 +410,61 @@ export function stakeOf(format: string, bigBlind: number): string | undefined {
 }
 
 /**
- * The hand worth telling from this horse's recent play.
+ * A bounded ordered set of completed hands from this horse's recent play.
  *
  * Deterministic: the same horse on the same day picks the same hand, so a
- * retry after a failed publish does not produce a different story. Chosen
+ * retry with unchanged ledger state considers the same ordered sources. Chosen
  * from the most eventful candidates by size, then by the horse's own hash, so
  * two horses looking at similar weeks still pick differently.
  */
-export async function pickHandStory(
+export async function pickHandStories(
   horseId: string,
   opts: { days?: number; seed?: string; minAbsBb?: number } = {},
-): Promise<HandFacts | null> {
+): Promise<HandFacts[]> {
   const days = opts.days ?? 7;
   const minAbsBb = opts.minAbsBb ?? 25;
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
 
   const { data, error } = await getSupabase()
     .from('horse_hand_reviews')
-    .select('id, played_at, game_variant, format, big_blind, hole_cards, board, net_bb, pot_size, is_win, leak_tags')
+    .select('id, hand_id, horse_user_id, review_status, played_at, game_variant, format, big_blind, hole_cards, board, net_bb, pot_size, is_win, leak_tags')
     .eq('horse_user_id', horseId)
+    .eq('review_status', 'auto_reviewed')
     .gte('played_at', since)
     .order('played_at', { ascending: false })
     .limit(400);
 
   if (error) {
     console.warn('[hand-story] read failed:', error.message);
-    return skip('hand_read_failed');
+    skip('hand_read_failed');
+    return [];
   }
-  const rows = (data ?? []) as ReviewRow[];
-  if (!rows.length) return null;
+  if (!Array.isArray(data)) return [];
+  const rows = data as ReviewRow[];
+  if (!rows.length) return [];
 
   // Only hands that actually went somewhere. A 2bb pot is not a story.
-  const candidates = rows.filter((r) => Math.abs(num(r.net_bb)) >= minAbsBb && asCards(r.hole_cards).length >= 2);
-  if (!candidates.length) return null;
+  const now = Date.now();
+  const sourceNumber = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? finite(value) : null;
+  const validCards = (raw: unknown, counts: number[]) => Array.isArray(raw) && counts.includes(raw.length)
+    && raw.every(c => c && typeof c === 'object' && /^[2-9TJQKA]$/i.test(String(c.rank ?? ''))
+      && Object.hasOwn(SUIT_LETTER, String(c.suit ?? '').toLowerCase()));
+  const candidates = rows.filter(r => {
+    const played = Date.parse(r.played_at);
+    const net = sourceNumber(r.net_bb), blind = sourceNumber(r.big_blind), pot = sourceNumber(r.pot_size);
+    const hole = asCards(r.hole_cards), board = asCards(r.board);
+    return r.horse_user_id === horseId && r.review_status === 'auto_reviewed'
+      && typeof r.hand_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.hand_id)
+      && /^[1-9][0-9]{0,18}$/.test(String(r.id)) && BigInt(r.id) <= 9223372036854775807n
+      && (typeof r.id !== 'number' || Number.isSafeInteger(r.id))
+      && Number.isFinite(played) && played >= Date.parse(since) && played <= now
+      && net !== null && Math.abs(net) >= minAbsBb && blind !== null && blind > 0 && pot !== null && pot > 0
+      && typeof r.is_win === 'boolean' && r.is_win === (net > 0)
+      && validCards(r.hole_cards, [2,3,4,5,6]) && validCards(r.board, [0,3,4,5])
+      && new Set([...hole,...board].map(cardText)).size === hole.length + board.length
+      && (r.leak_tags === null || (Array.isArray(r.leak_tags) && r.leak_tags.every(tag=>typeof tag==='string')));
+  });
+  if (!candidates.length) return [];
 
   // Rank by how much happened, take the top slice, then let the horse's own
   // hash choose inside it.
@@ -448,21 +474,38 @@ export async function pickHandStory(
   const start = fleetHash(`${horseId}:${seed}`, 'handpick') % top.length;
   const ordered = [...top.slice(start), ...top.slice(0, start)];
 
+  // Review status is not proof of completion. Read only the hand UUID and
+  // terminal timestamp, never the history's opponents or private cards.
+  const { data: completed, error: completionError } = await getSupabase()
+    .from('hand_history').select('id, ended_at').in('id', [...new Set(ordered.map(r=>r.hand_id))]);
+  if (completionError || !Array.isArray(completed)) {
+    skip('hand_completion_unreadable');
+    return [];
+  }
+  const completedIds = new Set(completed.filter(r => typeof r.ended_at === 'string'
+    && Number.isFinite(Date.parse(r.ended_at)) && Date.parse(r.ended_at) <= now).map(r=>String(r.id).toLowerCase()));
+  const qualified = ordered.filter(row=>completedIds.has(row.hand_id.toLowerCase()));
+  if (!qualified.length) return [];
+
   // The action log, for the slice only: a log carries a table snapshot per
   // action, so reading it for all 400 rows would move megabytes per pick.
   const { data: logs, error: logError } = await getSupabase()
     .from('horse_hand_reviews')
     .select('id, actions')
-    .in('id', ordered.map((r) => r.id));
-  if (logError) {
-    console.warn('[hand-story] action read failed:', logError.message);
-    return skip('hand_actions_read_failed');
+    .in('id', qualified.map((r) => r.id));
+  if (logError || !Array.isArray(logs)) {
+    console.warn('[hand-story] action read failed:', logError?.message ?? 'malformed action response');
+    skip('hand_actions_read_failed');
+    return [];
   }
   const actionsById = new Map(
     ((logs ?? []) as Array<{ id: string | number; actions: unknown }>).map((l) => [String(l.id), l.actions]),
   );
 
-  for (const row of ordered) {
+  const facts: HandFacts[] = [];
+  const seenHands = new Set<string>();
+  for (const row of qualified) {
+    if (seenHands.has(row.hand_id.toLowerCase())) continue;
     const play = derivePlay(horseId, actionsById.get(String(row.id)));
     if (!play) {
       skip('hand_actions_unreadable');
@@ -475,9 +518,15 @@ export async function pickHandStory(
       skip('hand_actions_disagree');
       continue;
     }
-    return factsFrom(row, play);
+    facts.push(factsFrom(row, play));
+    seenHands.add(row.hand_id.toLowerCase());
   }
-  return null;
+  return facts;
+}
+
+/** Compatibility for consumers needing only the first qualified source. */
+export async function pickHandStory(horseId: string, opts: { days?: number; seed?: string; minAbsBb?: number } = {}): Promise<HandFacts | null> {
+  return (await pickHandStories(horseId, opts))[0] ?? null;
 }
 
 function factsFrom(row: ReviewRow, play: HandPlay): HandFacts {
@@ -491,7 +540,8 @@ function factsFrom(row: ReviewRow, play: HandPlay): HandFacts {
   const format = row.format ?? 'cash';
 
   return {
-    handId: row.id,
+    handId: row.hand_id.toLowerCase(),
+    reviewId: String(row.id),
     playedAt: row.played_at,
     variant: row.game_variant ?? 'nlh',
     format,
