@@ -79,6 +79,7 @@ import {freshNewsCaptionCandidates} from './NewsCandidateFreshness.js';
 import { orderedNewsSources, type NewsFeedCandidate } from './NewsSourceFallback.js';
 import { balancedVideoPriority, balancedVideoTypes, readRecentVideoContext, type RecentVideoContext } from './VideoFeedBalance.js';
 import { readHorseVideoPublicationEvidence, type PublicationEvidence } from './PublicationEvidence.js';
+import { publishHorseGroundedAtomically, readHorseGroundedPublicationEvidence, type HorseGroundedPublicationInput } from './HorseGroundedPublication.js';
 
 export interface FleetHorse {
   id: number | string;
@@ -126,6 +127,8 @@ export interface PublishResult {
   code?: string;
   /** Exact non-secret inputs for durable recovery of a failed video RPC. */
   publicationAttempt?: Omit<HorseVideoPublicationInput, 'metadata'> & { publicationKey: string };
+  /** Exact approved hand inputs retained after a failed or unknown transaction. */
+  groundedPublicationAttempt?: HorseGroundedPublicationInput;
   skipped?: PublishSkip;
   /** metadata.publication_key this attempt used or collided with. */
   publicationKey?: string;
@@ -1477,6 +1480,27 @@ async function postGrounded(horse: FleetHorse, publicationKey: string): Promise<
   }
   const groundedType = written.groundedKind ?? 'hand';
 
+  if (groundedType === 'hand') {
+    if (!handEnabled || !written.handReviewId || !written.semanticKey || !written.frameKey || !written.brief) {
+      return {...base,success:false,publicationKey,error:'Grounded hand is missing approved source identity or audit data'};
+    }
+    const input={authorId:horse.profile_id,reviewId:written.handReviewId,content:written.text,
+      phraseNorm:normalizePhrase(written.text),semanticKey:written.semanticKey,frameKey:written.frameKey,
+      publicationKey,brief:written.brief};
+    const published=await publishHorseGroundedAtomically(input);
+    if(!published.success){
+      if(published.reason==='duplicate_slot'||published.reason==='posted_recently')return {...base,success:false,publicationKey,skipped:published.reason};
+      if(published.reason)return {...base,success:false,publicationKey,skipped:'caption_exhausted',error:published.reason};
+      return {...base,success:false,publicationKey,groundedPublicationAttempt:input,error:published.error,code:published.code,outcome:published.outcome};
+    }
+    const publicationEvidence=await readHorseGroundedPublicationEvidence({...input,postId:published.postId!});
+    return {...base,success:true,postId:published.postId,created:published.created,publicationKey,publicationEvidence,
+      type:'grounded_hand',caption:written.text.slice(0,60),relevance:written.relevance,
+      grounding:written.grounding,drafts:written.attempts,belowFloor:false,briefSummary:summarise(written.brief)};
+  }
+  // This legacy path remains reachable only through explicit session approval.
+  if (!sessionEnabled || groundedType !== 'session') return {...base,success:false,publicationKey,skipped:'mode_disabled'};
+
   const { data: post, error } = await getSupabase()
     .from('social_posts')
     .insert({
@@ -1617,6 +1641,7 @@ export async function publishForHorse(
   if (groundedFirst) {
     const grounded = await postGrounded(horse, publicationKey);
     if (grounded.success) return grounded;
+    if (grounded.outcome === 'unknown' || grounded.groundedPublicationAttempt) return grounded;
     if (grounded.skipped && recordAttempt('grounded', grounded) === 'return') return grounded;
     else if (!grounded.skipped) attempts.push(`grounded: ${grounded.error}`);
   }
@@ -1662,6 +1687,7 @@ export async function publishForHorse(
   if (!groundedFirst) {
     const grounded = await postGrounded(horse, publicationKey);
     if (grounded.success) return grounded;
+    if (grounded.outcome === 'unknown' || grounded.groundedPublicationAttempt) return grounded;
     if (grounded.skipped && recordAttempt('grounded', grounded) === 'return') return grounded;
     else if (!grounded.skipped) attempts.push(`grounded: ${grounded.error}`);
   }

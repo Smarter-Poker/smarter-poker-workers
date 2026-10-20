@@ -134,6 +134,34 @@ function facts(
   };
 }
 
+describe('actual Omaha wording convergence regressions',()=>{
+  it('describes the own fold street without implying the whole hand ended there',()=>{
+    const f=facts('big_fold',{variant:'plo4',holeNotation:'',play:{decisiveStreet:'river',foldStreet:'river',showdown:false}});
+    for(let i=0;i<100;i++){
+      const out=lineFor(f,`actual-own-fold-${i}`);
+      if(out)expect(out.text).not.toMatch(/it was decided|hand ended/i);
+    }
+  });
+  it('does not append the same river fact to an already river-specific sentence',()=>{
+    const f=facts('river_aggression',{variant:'plo4',holeNotation:'',netBb:81.5,potBb:158});
+    for(let i=0;i<100;i++){
+      const out=lineFor(f,`actual-river-${i}`);
+      expect(out).not.toBeNull();
+      expect(out!.text.match(/\briver\b/gi)?.length??0).toBeLessThanOrEqual(1);
+      expect(out!.text).not.toMatch(/river[^.]*\. It was decided/i);
+    }
+  });
+  it('grounds Omaha losses in available board or action facts rather than painful-pot synonyms',()=>{
+    for(const category of ['cooler','bad_beat','tough_spot'] as const){
+      const f=facts(category,{variant:'plo4',holeNotation:'',netBb:-74,potBb:158});
+      for(let i=0;i<100;i++){
+        const out=lineFor(f,`actual-loss-${i}`);
+        if(out)expect(out.text).not.toMatch(/(?:cost me|loss came to|loss of|dropped) (?:a |that )?(?:painful|solid|brutal|big|good) pot/i);
+      }
+    }
+  });
+});
+
 function rendered(f: HandFacts): Array<{ text: string; key: string }> {
   const lines = new Map<string, { text: string; key: string }>();
   for (let i = 0; i < 500; i += 1) {
@@ -267,6 +295,9 @@ function actionsOf(row: RealRow): unknown[] {
 function reviewRow(row: RealRow, actions: unknown = actionsOf(row)): Row {
   return {
     id: row.id, played_at: row.playedAt, game_variant: row.variant, format: row.format, big_blind: row.bb,
+    // Historical action fixtures retain their real review id. Their hand
+    // UUID is synthetic test metadata, separate from that bigint review id.
+    hand_id: `00000000-0000-4000-8000-${String(row.id).padStart(12,'0')}`, review_status: 'auto_reviewed',
     hole_cards: cards(row.hole), board: cards(row.board), net_bb: row.net, pot_size: row.pot, is_win: row.win,
     leak_tags: row.tags, horse_user_id: HORSE, actions,
   };
@@ -274,9 +305,14 @@ function reviewRow(row: RealRow, actions: unknown = actionsOf(row)): Row {
 
 /** The real pickHandStory on one real row, through the fake client. */
 async function factsOf(row: RealRow, actions?: unknown): Promise<HandFacts | null> {
-  db.tables = { horse_hand_reviews: [reviewRow(row, actions)] };
+  const source=reviewRow(row,actions);
+  db.tables = { horse_hand_reviews: [source], hand_history: [{id:source.hand_id,ended_at:row.playedAt}] };
   db.failReads = new Set();
-  return pickHandStory(HORSE, { seed: 'law' });
+  // Reproduce the recorded hand at its historical time, keeping the live
+  // seven-day source guard intact rather than relying on a permissive fake.
+  const clock=vi.spyOn(Date,'now').mockReturnValue(Date.parse(row.playedAt)+60_000);
+  try { return await pickHandStory(HORSE, { seed: 'law' }); }
+  finally { clock.mockRestore(); }
 }
 
 const real = new Map<number, HandFacts>();
@@ -342,8 +378,8 @@ describe('every proposed sentence keeps the same laws', () => {
     facts('river_aggression'),
     facts('big_fold'),
     facts('stackoff', { isWin: true, netBb: 120 }),
-    facts('grind', { isWin: true, netBb: 12 }),
-    facts('grind', { isWin: false, netBb: -12 }),
+    facts('grind', { isWin: true, netBb: 12, potBb: 24 }),
+    facts('grind', { isWin: false, netBb: -12, potBb: 24 }),
   ];
 
   it('renders broad, category-specific variety', () => {
@@ -410,6 +446,59 @@ describe('every proposed sentence keeps the same laws', () => {
     const f = facts('big_win');
     expect(lineFor({ ...f, play: undefined as unknown as HandPlay }, 'seed')).toBeNull();
     expect(spokenLineMatches('Good pot with pocket aces. On to the next one.', { ...f, play: undefined as unknown as HandPlay })).toBe(false);
+  });
+});
+
+describe('own-hand facts do not establish memory, intent or comparative strength',()=>{
+  it('does not claim that the whole hand stopped when this player folded',()=>{
+    const f=facts('big_fold');
+    expect(spokenLineMatches('Ended the hand with a fold.',f)).toBe(false);
+    expect(spokenLineMatches('The hand ended when I folded pocket aces.',f)).toBe(false);
+    expect(spokenLineMatches('My part in the hand ended when I folded pocket aces.',f)).toBe(true);
+    for(const line of rendered(f))expect(line.text).not.toMatch(/ended the hand with a fold/i);
+  });
+  it('does not turn an earlier all-in street into a completed-hand outcome street',()=>{
+    const f=facts('grind',{isWin:true,netBb:20,potBb:30,variant:'PLO',holeNotation:'AhKsQdJc',play:{showdown:true,allInStreet:'flop',stackInStreet:null,decisiveStreet:'flop'}});
+    expect(spokenLineMatches('It was decided on the flop.',f)).toBe(false);
+    const lines=rendered(f);
+    expect(lines.length).toBeGreaterThan(0);
+    for(const line of lines)expect(line.text).not.toMatch(/decided on the flop/i);
+  });
+  it('does not call a large pot small because the player netted only a small part',()=>{
+    const f=facts('grind',{isWin:true,netBb:20,potBb:220});
+    expect(spokenLineMatches('Won a small pot with pocket aces.',f)).toBe(false);
+    expect(spokenLineMatches('Played a small pot with pocket aces.',{...f,potBb:0})).toBe(false);
+    expect(spokenLineMatches('Won a small pot with pocket aces.',{...f,potBb:30})).toBe(true);
+  });
+  it.each([
+    ['bad_beat','Some pots stay with you longer than they should. That was one.'],
+    ['tough_spot','Some hands you play and then think about for a while. This was one.'],
+    ['tough_spot','Going to look at that one again with pocket aces.'],
+    ['bad_beat','Still replaying that one with pocket aces.'],
+    ['river_aggression','Pressure was the plan on the last card. The plan held.'],
+    ['big_fold',"No trophy for that fold, but I'll remember it."],
+    ['tough_spot','Lost a stack-sized pot with pocket aces. That one goes in the review pile.'],
+    ['cooler','Had a strong hand and ran into a stronger one.'],
+    ['cooler','Pocket aces, second best, next hand.'],
+    ['cooler','Ran pocket aces into a better hand.'],
+    ['cooler','Got it all in on the river with a big hand and a bigger one showed up.'],
+    ['grind','Won a small one and kept the session moving.'],
+  ] as const)('rejects an unsupported %s claim at the finished-sentence boundary: %s',(category,text)=>{
+    const f=facts(category,{play: category==='cooler'?{allInStreet:'river',stackInStreet:'river'}:undefined});
+    expect(spokenLineMatches(text,f)).toBe(false);
+  });
+
+  it('renders every available frame with hand facts instead of mental states, habits or hand-strength guesses',()=>{
+    const unsupported=/\b(?:remember\w*|replay\w*|review|think(?:ing)?|thought|plan\w*|hope\w*|want\w*|felt|feel\w*|unavoidable|linger\w*|session|most of|every time|next hand|next one|onward|moving on|back to work|deep breath|second.best|stronger|better hand|big hand|bigger one|no complaints)\b/i;
+    for(const category of ['big_win','bad_beat','cooler','tough_spot','river_aggression','big_fold','stackoff','grind'] as const){
+      const f=facts(category,category==='grind'?{isWin:true,netBb:20}:{});
+      const lines=rendered(f);
+      expect(lines.length,category).toBeGreaterThan(0);
+      for(const line of lines){
+        expect(line.text,`${category}: ${line.text}`).not.toMatch(unsupported);
+        expect(line.text,`${category}: ${line.text}`).toMatch(/pocket aces|board|showdown|fold|let it go|muck|bet|river|pot|won|lost|chips|stack/i);
+      }
+    }
   });
 });
 

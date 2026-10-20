@@ -114,6 +114,28 @@ describe('turning the engine off stops a run in flight', () => {
 });
 
 describe('each publish names its slot, and skips are counted by reason', () => {
+  it('durably retains the exact grounded operation and stops before another horse after lost acknowledgment',async()=>{
+    m.switches=['on','on'];
+    const groundedPublicationAttempt={authorId:'pid-a',reviewId:'123',content:'I folded on the river.',
+      phraseNorm:'i folded on the river',semanticKey:'grounded:hand:22222222-2222-4222-8222-222222222222',
+      frameKey:'frame:voice:big_fold:1',publicationKey:'fleet:pid-a:slot-of-pid-a',
+      brief:{kind:'hand',domain:'poker'}};
+    m.publishForHorse.mockResolvedValueOnce({success:false,horse:'Horse a',profile_id:'pid-a',
+      publicationKey:groundedPublicationAttempt.publicationKey,outcome:'unknown',error:'lost ACK',
+      groundedPublicationAttempt:{...groundedPublicationAttempt,rawActions:['private opponent data'],
+        brief:{...groundedPublicationAttempt.brief,rawActions:['private opponent data']}},
+      internalMetadata:{secret:'must-not-be-copied'}});
+    const r=await run();
+    expect(r.status).toBe(503);
+    expect(r.body).toMatchObject({attempted:1,not_attempted:3,halted_on_unknown:true,unknown:1,
+      publication_failures:[{horse:'Horse a',profile_id:'pid-a',publicationKey:groundedPublicationAttempt.publicationKey,
+        outcome:'unknown',error:'lost ACK',groundedPublicationAttempt}]});
+    const failures=r.body.publication_failures as Array<Record<string,unknown>>;
+    expect(failures[0]!.groundedPublicationAttempt).toEqual(groundedPublicationAttempt);
+    expect(failures[0]).not.toHaveProperty('internalMetadata');
+    expect(m.publishForHorse).toHaveBeenCalledTimes(1);
+    expect(m.syncStyleSheets).not.toHaveBeenCalled();
+  });
   it.each([undefined, 'unknown'])('persists a bounded failed publication receipt with outcome %s', async (outcome) => {
     m.switches = ['on', 'on', 'off'];
     const publicationAttempt = {

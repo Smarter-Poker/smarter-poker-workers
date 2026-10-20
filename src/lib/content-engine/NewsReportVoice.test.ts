@@ -62,9 +62,9 @@ describe('source-bound news report voice', () => {
 });
 
 describe('additional literal sports proposition rendering', () => {
-  it('does not turn old roles or a reversed statistical role into new clause credit', () => {
+  it('credits the qualified strikeout but not unsupported or reversed roles', () => {
     expect(literalSportInventoryClauses({person:'', action:'sports_technical_context', identity:'basketball:dunk:actor:lebron james',subject:"LeBron James's dunk"})).toEqual([]);
-    expect(literalSportInventoryClauses({person:'', action:'sports_technical_context', identity:'baseball:strikeout:pitcher:chris sale:batter:bryce harper',subject:'Chris Sale striking out Bryce Harper'})).toEqual([]);
+    expect(literalSportInventoryClauses({person:'', action:'sports_technical_context', identity:'baseball:strikeout:pitcher:chris sale:batter:bryce harper',subject:'Chris Sale striking out Bryce Harper'})).toEqual(['Chris Sale struck out Bryce Harper']);
     const brief={...briefForAsset({kind:'video',title:'Cam Skattebo recorded 0 carries on 6 snaps',source:'Bleacher Report NBA',domainHint:'sports'}),people:[],teams:[],concepts:[],amounts:[],topic:undefined,keyPhrase:undefined};
     expect(relevanceOf('Cam Skattebo recorded 0 carries on 6 snaps',brief)).toBe(.5);
     expect(relevanceOf('Cam Skattebo recorded 6 carries on 0 snaps',brief)).toBe(0);

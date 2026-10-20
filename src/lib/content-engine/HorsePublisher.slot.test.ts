@@ -45,6 +45,17 @@ vi.mock('../supabase.js', () => ({
       db.rpcCalls.push({ name, args });
       if (name === 'publish_horse_video_reel') return db.rpcResult;
       if (name === 'publish_horse_news_post') return db.newsRpcResult;
+      if (name === 'publish_horse_grounded_hand') {
+        if (args.p_review_id !== '573264'
+          || args.p_semantic_key !== 'grounded:hand:22222222-2222-4222-8222-222222222222'
+          || args.p_frame_key !== 'frame:voice:big_fold:1'
+          || args.p_publication_key !== `fleet:${args.p_author_id}:2026-09-21T14`
+          || typeof args.p_content !== 'string' || typeof args.p_phrase_norm !== 'string'
+          || (args.p_brief as Record<string,unknown>)?.domain !== 'poker') {
+          throw new Error('Unexpected grounded hand publication payload');
+        }
+        return {data:[{social_post_id:null,created:false,reason:'duplicate_slot'}],error:null};
+      }
       if (name === 'record_youtube_embed_failure_verdict') {
         return {
           data: [{ video_id: args.p_video_id, verification_status: 'resolved', resolved: true }],
@@ -317,7 +328,12 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     {
       kind: 'grounded text',
       id: () => horseWhereGroundedFirstIs(true),
-      setup: () => undefined,
+      setup: () => voice.writeGrounded.mockResolvedValue({
+        text:'I folded on the turn.',groundedKind:'hand',handReviewId:'573264',
+        semanticKey:'grounded:hand:22222222-2222-4222-8222-222222222222',
+        frameKey:'frame:voice:big_fold:1',brief:{kind:'hand',domain:'poker'},
+        grounding:['hand:22222222-2222-4222-8222-222222222222'],relevance:1,attempts:1,
+      }),
       contentType: 'text',
     },
     {
@@ -371,15 +387,14 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
         expect(newsRpcs).toHaveLength(1);
         expect(newsRpcs[0]!.args.p_publication_key).toBe(`fleet:${id}:${SLOT}`);
       } else {
+        const groundedRpcs=db.rpcCalls.filter(x=>x.name==='publish_horse_grounded_hand');
         expect(rpcs).toHaveLength(0);
-        expect(posts).toHaveLength(1);
-        const row = posts[0]!.row;
-        expect(row.content_type).toBe(c.contentType);
-        expect((row.metadata as Record<string, unknown>).publication_key).toBe(`fleet:${id}:${SLOT}`);
-        // The column is reserved for the video library by a CHECK constraint.
-        expect(Object.prototype.hasOwnProperty.call(row, 'publication_key')).toBe(false);
-        // Phase 8: a news link states its topic; the database derives the rest.
-        if (c.contentType === 'link') expect(row).toMatchObject({ topic: 'poker', topics: ['poker', 'news'] });
+        expect(posts).toHaveLength(0);
+        expect(groundedRpcs).toHaveLength(1);
+        expect(groundedRpcs[0]!.args).toMatchObject({p_author_id:id,p_review_id:'573264',
+          p_publication_key:`fleet:${id}:${SLOT}`,p_content:'I folded on the turn.'});
+        expect(db.rpcCalls).toHaveLength(1);
+        expect(db.inserts).toHaveLength(0);
       }
       expect(ledger.recordPhrase).not.toHaveBeenCalled();
       expect(ledger.recordAssetUse).not.toHaveBeenCalled();
@@ -608,6 +623,10 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 
   it('falls through a configured 429 feed to another registered publisher without a producer retry', async () => {
     modes.grounded=false;modes.video=false;
+    // This fixture supplies a poker headline and two poker publishers. Pin
+    // the unrelated category draw so it tests feed failover, not a random
+    // sports-to-poker fallback consuming the one-shot publisher registry.
+    vi.spyOn(Math,'random').mockReturnValue(0.999);
     vi.mocked(newsSources).mockResolvedValueOnce([
       {id:'a',name:'Throttled',feed_url:'https://blocked.example/rss',fallback_urls:null},
       {id:'b',name:'Healthy',feed_url:'https://healthy.example/rss',fallback_urls:null},

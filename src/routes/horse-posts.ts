@@ -113,8 +113,8 @@ export async function horsePosts(c: Context) {
             slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
           });
           results.push(result);
-          // News/grounded insert success has no created flag; video replay
-          // explicitly carries false and never spends fresh-stock capacity.
+          // Atomic publication receipts distinguish creations from replays.
+          // Legacy acknowledged writes without a flag spend fresh capacity.
           if (result.success && result.created !== false) run.created += 1;
           // A lost acknowledgement may already have consumed stock. Admit
           // no further horse behind that unresolved authoritative operation.
@@ -182,13 +182,26 @@ export async function horsePosts(c: Context) {
       content_exhausted: skippedByReason.content_exhausted ?? 0,
       skipped_by_reason: skippedByReason,
       failed: failed.length,
-      // Keep the exact bounded video attempt for durable operator recovery.
+      // Keep the exact bounded publication attempt for durable operator recovery.
       // Select fields explicitly: arbitrary metadata never enters this receipt.
-      publication_failures: failed.filter(result => result.publicationAttempt).map(result => ({
+      publication_failures: failed.filter(result => result.publicationAttempt || result.groundedPublicationAttempt).map(result => ({
         horse: result.horse,
         profile_id: result.profile_id,
         publicationKey: result.publicationKey,
         publicationAttempt: result.publicationAttempt,
+        ...(result.groundedPublicationAttempt ? {groundedPublicationAttempt:{
+          authorId:result.groundedPublicationAttempt.authorId,
+          reviewId:result.groundedPublicationAttempt.reviewId,
+          content:result.groundedPublicationAttempt.content,
+          phraseNorm:result.groundedPublicationAttempt.phraseNorm,
+          semanticKey:result.groundedPublicationAttempt.semanticKey,
+          frameKey:result.groundedPublicationAttempt.frameKey,
+          publicationKey:result.groundedPublicationAttempt.publicationKey,
+          brief:Object.fromEntries(Object.entries(result.groundedPublicationAttempt.brief).filter(([field])=>[
+            'postId','kind','domain','sport','title','source','people','teams','concepts','amounts',
+            'keyPhrase','topic','tone','isQuestion','claim','confidence','builtFrom',
+          ].includes(field))),
+        }} : {}),
         code: result.code,
         outcome: result.outcome,
         error: result.error,
