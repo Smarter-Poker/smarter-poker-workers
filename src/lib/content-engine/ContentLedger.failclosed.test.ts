@@ -100,6 +100,40 @@ describe('ledger reads', () => {
     await expect(ledger.recentFrameKeys('hand', 'cooler')).rejects.toThrow(/ledger_unreadable/);
   });
 
+  it('reads the complete three-hour hand frame family across categories, excluding sessions and older use',async()=>{
+    const now=Date.now();
+    db.seed('horse_phrase_ledger',[
+      {phrase_norm:'frame:voice:cooler:7',used_at:new Date(now-1000).toISOString()},
+      {phrase_norm:'frame:voice:bad_beat:4',used_at:new Date(now-2*3600000).toISOString()},
+      {phrase_norm:'frame:sessionvoice:win:1',used_at:new Date(now-1000).toISOString()},
+      {phrase_norm:'frame:voice:river_aggression:1',used_at:new Date(now-3*3600000-1000).toISOString()},
+    ]);
+    const out=await ledger.recentHandVoiceFrameKeys();
+    expect([...out].sort()).toEqual(['frame:voice:bad_beat:4','frame:voice:cooler:7']);
+    expect(db.log.filter(op=>op.table==='horse_phrase_ledger'&&op.kind==='select')).toHaveLength(1);
+  });
+
+  it('does not interpret an unreadable or server-truncated hand frame family as fresh',async()=>{
+    ledgerDown();
+    await expect(ledger.recentHandVoiceFrameKeys()).rejects.toThrow(/ledger_unreadable/);
+    db=new FakeDb();state.client=db.client;
+    db.seed('horse_phrase_ledger',Array.from({length:1001},()=>({phrase_norm:'frame:voice:cooler:7',used_at:new Date().toISOString()})));
+    await expect(ledger.recentHandVoiceFrameKeys()).rejects.toThrow(/ledger_unreadable/);
+  });
+
+  it.each([
+    {data:[],error:null,count:null,status:200},
+    {data:[],error:null,count:1,status:200},
+    {data:[{phrase_norm:null}],error:null,count:1,status:200},
+    {data:[],error:null,count:0,status:503},
+  ])('fails closed on incomplete hand frame response %j',async response=>{
+    const builder:unknown=new Proxy({}, {get:(_target,property)=>property==='then'
+      ?(resolve:(value:unknown)=>unknown,reject:(error:unknown)=>unknown)=>Promise.resolve(response).then(resolve,reject)
+      :()=>builder});
+    state.client={from:()=>builder};
+    await expect(ledger.recentHandVoiceFrameKeys()).rejects.toThrow(/ledger_unreadable/);
+  });
+
   it('every failed read is counted', async () => {
     ledger._resetLedgerReadFailures();
     ledgerDown();

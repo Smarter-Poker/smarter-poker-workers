@@ -38,12 +38,13 @@ vi.mock('../supabase.js', () => {
   function builder(table: string): unknown {
     const filters: Array<(r: Row) => boolean> = [];
     let wrote = false;
+    let counted = false;
     const rows = (): Row[] => (db.tables[table] ?? []).filter((r) => filters.every((f) => f(r)));
     const b: unknown = new Proxy(function () {}, {
       get(_t, prop) {
         if (prop === 'then') {
           if (!wrote) db.reads.push(table);
-          const res = { data: wrote ? null : rows(), error: null, status:200 };
+          const res = { data: wrote ? null : rows(), error: null, status:200, count:counted?rows().length:null };
           return (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) => Promise.resolve(res).then(ok, bad);
         }
         if (prop === 'maybeSingle' || prop === 'single') {
@@ -56,6 +57,7 @@ vi.mock('../supabase.js', () => {
         if (prop === 'eq') return (k: string, v: unknown) => { filters.push((r) => String(r[k]) === String(v)); return b; };
         if (prop === 'in') return (k: string, vs: unknown[]) => { const set = new Set(vs.map(String)); filters.push((r) => set.has(String(r[k]))); return b; };
         if (prop === 'like') return (_k: string, pattern: string) => { const pre = pattern.replace(/%$/, ''); filters.push((r) => String(r.phrase_norm ?? '').startsWith(pre)); return b; };
+        if (prop === 'select') return (_columns: string,options?:{count?:string})=>{counted=options?.count==='exact';return b;};
         if (prop === 'insert' || prop === 'upsert' || prop === 'update' || prop === 'delete') {
           return (row: unknown) => { wrote = true; db.writes.push({ table, op: String(prop), row }); return b; };
         }

@@ -41,6 +41,7 @@ import {
   videoSemanticUseStatus,
   phraseUsedOnPost,
   recentFrameKeys,
+  recentHandVoiceFrameKeys,
 } from './ContentLedger.js';
 import { areFriends, tagCandidateFor, type FriendCandidate } from './FriendGraph.js';
 import { fleetHash } from './FleetScheduler.js';
@@ -349,6 +350,7 @@ export async function writeGrounded(
 
     if (allowed?.hand === true) {
       const hands = await pickHandStories(horse.profile_id);
+      const recentHandFrames=hands.length?await recentHandVoiceFrameKeys():new Set<string>();
       for (const hand of hands) {
         // HandVoice (the Phase 3 replacement). The hand is SPOKEN, never
         // printed, and every claim about the action comes from the action
@@ -360,7 +362,10 @@ export async function writeGrounded(
         // The frame ledger is shared with the rest of the fleet: a frame
         // another horse used in this category inside FRAME_GLOBAL_HOURS is
         // skipped, and an exhausted pool is silence.
-        const exclude = new Set(await recentFrameKeys('voice', hand.category));
+        // One complete cross-category read per writer invocation. Each source
+        // gets its own draft exclusions; rejecting a stale phrase for one hand
+        // must not consume another hand's otherwise unused frame.
+        const exclude = new Set(recentHandFrames);
         const seed = `${horse.profile_id}:h:${hand.handId}`;
         const semanticKey = `grounded:hand:${hand.handId}`;
         if (!(await groundedPhraseRecentlyUsed(semanticKey, horse.profile_id))) {

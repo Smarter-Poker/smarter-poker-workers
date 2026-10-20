@@ -370,6 +370,35 @@ const LINES: Record<string, Line[]> = {
   ],
 };
 
+/**
+ * Editorial equivalence, not another source identity or a new ledger key.
+ * Different frame IDs can tell the same fact in almost the same way. The
+ * observed river-bet/win and showdown/loss clusters did exactly that while
+ * every exact-frame freshness check passed. Keep their existing keys, but
+ * treat recent use of any member as use of that whole focus. Board, money or
+ * holding wording does not make another river-bet/win frame a new focus.
+ * The caller supplies the existing, bounded three-hour frame history across
+ * categories; this function neither reads a ledger nor extends that window.
+ */
+const EQUIVALENT_FOCUS_FRAMES: readonly (readonly string[])[] = [
+  [1,2,3,4,6,8,9,10,11,12].map(i=>`frame:voice:river_aggression:${i}`),
+  [0,7].map(i=>`frame:voice:river_aggression:${i}`), // aggression on earlier streets too
+  [
+    'frame:voice:bad_beat:4',
+    ...[1,2,5,7,9].map(i=>`frame:voice:cooler:${i}`),
+    ...[7,9].map(i=>`frame:voice:tough_spot:${i}`),
+  ],
+];
+
+/** Preserve unknown/exact keys and caller ownership; never mutate history. */
+export function equivalentVoiceFrameKeys(recent: ReadonlySet<string>): Set<string> {
+  const excluded=new Set(recent);
+  for(const group of EQUIVALENT_FOCUS_FRAMES){
+    if(group.some(key=>recent.has(key)))for(const key of group)excluded.add(key);
+  }
+  return excluded;
+}
+
 const RAW_CARD_RUN = /[AKQJT2-9][hcds][AKQJT2-9][hcds][AKQJT2-9][hcds]/i;
 const INLINE_BOARD = /([AKQJT2-9][hcds]\s+){4}[AKQJT2-9][hcds]/i;
 const BARE_BIG_BLINDS = /\b\d+(?:\.\d+)?bb\b/i;
@@ -470,6 +499,7 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
   const spoken = speak(f);
   const pool = LINES[f.category] ?? LINES.grind!;
   const start = fleetHash(seed, 'voice');
+  const excluded=exclude?equivalentVoiceFrameKeys(exclude):undefined;
   for (let i = 0; i < pool.length; i++) {
     const idx = (start + i) % pool.length;
     const line = pool[idx]!;
@@ -486,13 +516,14 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
     // instead of relying on hidden metadata to call the sentence grounded.
     if (line.needs.length === 0) {
       if (spoken.holding) text += ` The hand was ${spoken.holding}.`;
-      else if (spoken.street && !/\b(?:preflop|flop|turn|river|last card)\b/i.test(text)) text += !endedThere(f) && f.play.allInStreet
-        ? ` There was an all-in ${spoken.street}.`
-        : ` It was decided ${spoken.street}.`;
       else if (spoken.street && /\b(?:preflop|flop|turn|river|last card)\b/i.test(text)) { /* The base already states the source street. */ }
-      else if (spoken.money) text += ` It was ${spoken.money}.`;
-      else if (spoken.board) text += ` The board was ${spoken.board}.`;
+      else if (spoken.board && !/\b(?:board|runout)\b/i.test(text)) text += ` The board was ${spoken.board}.`;
+      else if (spoken.street && f.play.allInStreet && !/\b(?:all in|went in)\b/i.test(text)) text += ` There was an all-in ${spoken.street}.`;
       else if (spoken.runs) text += ` We ran it ${spoken.runs}.`;
+      // A showdown already establishes the terminal outcome. Appending
+      // "It was decided on the river" supplied a shared tail, not a distinct
+      // action or insight. No unsupported substitute and no money synonym
+      // rescue: without a usable holding/board/action, refuse this frame.
       else continue;
     }
     // A replacement can begin a new sentence inside the frame: for example,
@@ -503,7 +534,7 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
       `${lead}${letter.toUpperCase()}`,
     );
     const key = `frame:voice:${f.category}:${idx}`;
-    if (exclude?.has(key)) continue;
+    if (excluded?.has(key)) continue;
     if (!spokenLineMatches(text, f)) continue;
     return { text, key };
   }

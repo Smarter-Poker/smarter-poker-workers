@@ -17,6 +17,7 @@ vi.mock('./ContentLedger.js', () => ({
   videoSemanticUseStatus: vi.fn(async () => 'unused'),
   phraseUsedOnPost: vi.fn(async () => false),
   recentFrameKeys: vi.fn(async () => new Set()),
+  recentHandVoiceFrameKeys: vi.fn(async () => new Set()),
 }));
 
 import { writeCaption } from './VoiceWriter.js';
