@@ -622,7 +622,7 @@ export function relevanceOf(text: string, b: PostBrief): number {
       .map(token => words.includes(token) ? String(words.indexOf(token)+1) : token).join(' ');
     const normalizedText = ` ${normal(text)} `;
     if (normalizedText.includes(` ${normal(fact.subject)} `)
-      || [...literalNewsReportClauses(fact), ...literalSportInventoryClauses(fact)]
+      || [...literalNewsReportClauses(fact,b.title), ...literalSportInventoryClauses(fact)]
         .some(clause => normalizedText.includes(` ${normal(clause)} `))) score += 0.5;
   }
   for (const p of b.people) if (lc.includes(p.toLowerCase())) { score += 0.5; break; }

@@ -24,13 +24,30 @@ const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}`;
 
 /** Complete propositions for the closed news-report facts, never raw titles. */
-export function literalNewsReportClauses(fact: CaptionFact): string[] {
+export function literalNewsReportClauses(fact: CaptionFact, title = ''): string[] {
   if (fact.action !== 'news_report_context') return [];
   if (fact.identity?.startsWith('news:win:')) {
     const win = fact.subject.match(/^(.+)'s (.+) win$/);
     // A title at a festival establishes a win there, not necessarily its
     // overall championship. Do not promote an event result into a series win.
-    if (win) return [`${win[1]} recorded a win at ${win[2]}`, `${win[1]} won at ${win[2]}`];
+    if (win) {
+      const actor=win[1]!,event=win[2]!;
+      const source=title.replace(/[\u2018\u2019]/g,"'").replace(/\s+/g,' ').replace(/[.!]+$/,'').trim();
+      // Retain details that the already-qualified closed report actually
+      // supplies. These are not new freshness identities: an ordinal or an
+      // event number remains the same actor/event meaning in the ledger.
+      const ordinal='(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|[1-9][0-9]?(?:st|nd|rd|th))';
+      const trophy=source.match(new RegExp(`^${escape(actor)} (?:secures|scores) ${ordinal} PGT (title|trophy) at ${escape(event)}(?:, leads race for purple jacket)?$`,'i'));
+      if(trophy)return [`${actor} secured his ${trophy[1]!.toLowerCase()} PGT ${trophy[2]!.toLowerCase()} at ${event}`];
+      const numbered=source.match(new RegExp(`^${escape(actor)} wins ${escape(event)} event no\\. ([1-9][0-9]?)$`,'i'));
+      if(numbered)return [`${event} Event ${numbered[1]} went to ${actor}`];
+      const opening=source.match(new RegExp(`^${escape(actor)} opens 2026 ${escape(event)} with ${ordinal} PGT title$`,'i'));
+      if(opening)return [`${actor} earned his ${opening[1]!.toLowerCase()} PGT title at the 2026 ${event}`];
+      if(new RegExp(`^${escape(actor)} joins poker royalty with ${escape(event)} title$`,'i').test(source))return [`A ${event} title for ${actor}`];
+      if(new RegExp(`^${escape(actor)} takes home the ${escape(event)} title(?: \\(£[0-9,]+(?:\\.[0-9]+)?\\))?$`,'i').test(source))return [`The ${event} title went to ${actor}`];
+      if(event==='888LIVE London High Roller'&&new RegExp(`^London proves ${escape(actor)}'s (?:"Lucky Charm"|Lucky Charm) on his way to the 888LIVE High Roller title$`,'i').test(source))return [`${actor} won the 888LIVE High Roller title`];
+      return [`${actor} recorded a win at ${event}`, `${actor} won at ${event}`];
+    }
   }
   if (fact.identity?.startsWith('news:contract_extension:')) {
     const agreement = fact.subject.match(/^the (.+) agreement on a contract extension with (.+)$/);
@@ -60,7 +77,7 @@ export function literalSportInventoryClauses(fact: CaptionFact): string[] {
     [/^basketball:points_in_minutes:actor:jalen duren:points:\d+:minutes:\d+$/, /^(.+)'s (\d+) points in (\d+) minutes$/, m=>`${m[1]} scored ${m[2]} points in ${m[3]} minutes`],
     [/^basketball:steal:actor:paul george$/, /^(.+)'s steal$/, m=>`${m[1]} stole the ball`],
     [/^basketball:block:actor:scoot henderson:kind:chasedown$/, /^(.+)'s chasedown block$/, m=>`${m[1]} made a chasedown block`],
-    [/^basketball:dunk:actor:(?:caleb wilson|leonard miller)$/, /^(.+)'s dunk$/, m=>`${m[1]} dunked`],
+    [/^basketball:dunk:actor:(?:ace bailey|caleb wilson|leonard miller)$/, /^(.+)'s dunk$/, m=>`${m[1]} dunked`],
     [/^basketball:made_basket:actor:demar derozan$/, /^(.+)'s made basket$/, m=>`${m[1]} made a basket`],
     [/^basketball:go_ahead_shot:actor:keaton wagler:team:clippers$/, /^(.+)'s go-ahead shot for the Clippers$/, m=>`${m[1]} put the Clippers ahead with a shot`],
     [/^basketball:consecutive_and_ones:actor:darryn peterson:count:2$/, /^(.+)'s back-to-back and-one baskets$/, m=>`${m[1]} made back-to-back and-one baskets`],
@@ -70,8 +87,9 @@ export function literalSportInventoryClauses(fact: CaptionFact): string[] {
     [/^basketball:pass:actor:nikola jokic:kind:behind_back$/, /^(.+)'s behind-the-back pass$/, m=>`${m[1]} made a behind-the-back pass`],
     [/^hockey:pass:actor:brady tkachuk$/, /^(.+)'s pass$/, m=>`${m[1]} made a pass`],
     [/^hockey:overtime_winner:actor:auston matthews$/, /^(.+)' overtime winner$/, m=>`${m[1]} scored the overtime winner`],
+    [/^hockey:overtime_winner:actor:jj peterka:team:boston$/, /^(.+)'s overtime winner for Boston$/, m=>`${m[1]} scored the overtime winner for Boston`],
     [/^hockey:goal:actor:igor shesterkin:role:goalie$/, /^(.+)'s goalie goal$/, m=>`${m[1]} scored a goalie goal`],
-    [/^baseball:strikeout:pitcher:didier fuentes:batter:shohei ohtani$/, /^(.+) striking out (.+)$/, m=>`${m[1]} struck out ${m[2]}`],
+    [/^baseball:strikeout:pitcher:(?:didier fuentes:batter:shohei ohtani|chris sale:batter:bryce harper)$/, /^(.+) striking out (.+)$/, m=>`${m[1]} struck out ${m[2]}`],
     [/^baseball:strikeout:pitcher:abner uribe:runners_on:[1-3]$/, /^(.+)'s strikeout with ([1-3]) runners on$/, m=>`${m[1]} recorded a strikeout with ${m[2]} runners on`],
     [/^baseball:go_ahead:actor:(?:will smith|jake cronenworth):team:(?:dodgers|padres)$/, /^(.+) putting the (.+) ahead$/, m=>`${m[1]} put the ${m[2]} ahead`],
     [/^baseball:runs_batted_in:actor:jose ramirez:team:guardians:runs:1:inning:[1-9]$/, /^(.+) driving in one more run for the Guardians in inning ([1-9])$/, m=>`${m[1]} drove in one more run for the Guardians in inning ${m[2]}`],
@@ -404,7 +422,7 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // These closed report identities already establish a complete proposition.
   // Do not force a result, agreement or injury through a generic decision
   // focus: that adds no information and made unrelated reports converge.
-  const reportClauses = literalNewsReportClauses(fact);
+  const reportClauses = literalNewsReportClauses(fact,b.title);
   const reportClause = reportClauses[voiceChoice(style.profileId, `voice-report:${fact.identity}`, reportClauses.length || 1)];
   if (reportClause) {
     const text = `${reportClause}.`;

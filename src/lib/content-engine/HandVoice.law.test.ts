@@ -134,6 +134,34 @@ function facts(
   };
 }
 
+describe('actual Omaha wording convergence regressions',()=>{
+  it('describes the own fold street without implying the whole hand ended there',()=>{
+    const f=facts('big_fold',{variant:'plo4',holeNotation:'',play:{decisiveStreet:'river',foldStreet:'river',showdown:false}});
+    for(let i=0;i<100;i++){
+      const out=lineFor(f,`actual-own-fold-${i}`);
+      if(out)expect(out.text).not.toMatch(/it was decided|hand ended/i);
+    }
+  });
+  it('does not append the same river fact to an already river-specific sentence',()=>{
+    const f=facts('river_aggression',{variant:'plo4',holeNotation:'',netBb:81.5,potBb:158});
+    for(let i=0;i<100;i++){
+      const out=lineFor(f,`actual-river-${i}`);
+      expect(out).not.toBeNull();
+      expect(out!.text.match(/\briver\b/gi)?.length??0).toBeLessThanOrEqual(1);
+      expect(out!.text).not.toMatch(/river[^.]*\. It was decided/i);
+    }
+  });
+  it('grounds Omaha losses in available board or action facts rather than painful-pot synonyms',()=>{
+    for(const category of ['cooler','bad_beat','tough_spot'] as const){
+      const f=facts(category,{variant:'plo4',holeNotation:'',netBb:-74,potBb:158});
+      for(let i=0;i<100;i++){
+        const out=lineFor(f,`actual-loss-${i}`);
+        if(out)expect(out.text).not.toMatch(/(?:cost me|loss came to|loss of|dropped) (?:a |that )?(?:painful|solid|brutal|big|good) pot/i);
+      }
+    }
+  });
+});
+
 function rendered(f: HandFacts): Array<{ text: string; key: string }> {
   const lines = new Map<string, { text: string; key: string }>();
   for (let i = 0; i < 500; i += 1) {

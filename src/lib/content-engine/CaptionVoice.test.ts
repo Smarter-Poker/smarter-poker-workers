@@ -10,6 +10,46 @@ const ids = Array.from({ length: 1000 }, (_, i) => `00000000-0000-4000-8000-${St
 
 describe('source-bound individual caption voices', () => {
   it.each([
+    {id:'285055c6-96a7-4a60-9033-51f83f49dbcb',source:'NBA',title:'Ace Bailey rises up and destroys the rim!',clause:'Ace Bailey dunked.',key:'basketball dunk actor ace bailey'},
+    {id:'767bd910-5e57-4df5-9a06-9fad7cc51c15',source:'NHL',title:'JJ Peterka Wins It in OT for Boston! 🚨',clause:'JJ Peterka scored the overtime winner for Boston.',key:'hockey overtime winner actor jj peterka team boston'},
+    {id:'348341bd-a92b-40ee-b6dc-5961922315d0',source:'MLB',title:'Chris Sale strikes out Bryce Harper!',clause:'Chris Sale struck out Bryce Harper.',key:'baseball strikeout pitcher chris sale batter bryce harper'},
+  ])('replaces the actual 19:10 generic focus with its literal action: $title',row=>{
+    const b=briefForAsset({kind:'video',domainHint:'sports',source:row.source,title:row.title});
+    for(const id of [row.id,...ids.slice(0,24)])for(const variant of ['0','1','2','3','4','5']){
+      const raw=subjectCaption(b,styleSheetFor(id),variant)!;
+      expect(raw.text).toBe(row.clause);
+      expect(raw.semanticKey).toBe(`meaning:subject:${row.key}:sports_technical_context:literal_sequence`);
+      const out=composeCaption(b,styleSheetFor(id),variant);
+      expect(out.text).not.toMatch(/sequence of the play|my focus|before judging|details of the play|I watched/i);
+      expect(out.semanticKey).toBe(raw.semanticKey);
+      expect(out.relevance).toBeGreaterThanOrEqual(.3);
+    }
+  });
+  it('keeps seven actual news wins source-specific without manufacturing new meanings from wording',()=>{
+    const rows=[
+      {id:'81c5eb8a-3aeb-443d-a616-207527a939cf',title:'Adrian Mateos Secures Ninth PGT Title At Poker Masters, Leads Race For Purple Jacket',clause:'Adrian Mateos secured his ninth PGT title at Poker Masters.'},
+      {id:'2143ec37-02ed-4712-9642-a56f1945c379',title:'Vitalijs Zavorotnijs Wins Poker Masters Event No. 4',clause:'Poker Masters Event 4 went to Vitalijs Zavorotnijs.'},
+      {id:'dc5fe97a-c175-4ab1-b4e9-54d971cf8385',title:'Joey Weissman Secures Fifth PGT Trophy At Poker Masters',clause:'Joey Weissman secured his fifth PGT trophy at Poker Masters.'},
+      {id:'fea3b7af-c515-4773-a9e8-11ed5de7ba5f',title:'Grantas Naujokas Joins Poker Royalty With Kings of Tallinn Title',clause:'A Kings of Tallinn title for Grantas Naujokas.'},
+      {id:'62e945f7-c4ae-4462-bac8-64a992b1b688',title:'Marius Conan Takes Home the 888LIVE London Main Event Title (£91,170)',clause:'The 888LIVE London Main Event title went to Marius Conan.'},
+      {id:'1cdb67d7-27af-4709-817c-9270bd915249',title:'London Proves Bryan Taylor\'s "Lucky Charm" on His Way to the 888LIVE High Roller Title',clause:'Bryan Taylor won the 888LIVE High Roller title.'},
+      {id:'88e2d7d9-2c5a-41b0-a25d-c5643ba4ae67',title:'Myles Mullaly Opens 2026 Poker Masters With First PGT Title',clause:'Myles Mullaly earned his first PGT title at the 2026 Poker Masters.'},
+    ];
+    for(const row of rows){
+      const b=briefForAsset({kind:'link',domainHint:'poker',source:'PokerNews',title:row.title});
+      const fact=captionFact(b)!;
+      for(const variant of ['0','1','2','3','4','5']){
+        const raw=subjectCaption(b,styleSheetFor(row.id),variant)!;
+        expect(raw.text).toBe(row.clause);
+        expect(raw.semanticKey).toBe(`meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()}:news_report_context:report_context`);
+        const out=composeCaption(b,styleSheetFor(row.id),variant);
+        expect(out.text).not.toMatch(/recorded a win at|purple jacket winner|won the series|I watched|I played/i);
+        expect(out.semanticKey).toBe(raw.semanticKey);
+        expect(out.relevance,row.title).toBeGreaterThanOrEqual(.3);
+      }
+    }
+  });
+  it.each([
     {id:'060c946d-db8d-4d27-b1ec-a203435764f1',source:'NBA',title:'Keaton Wagler Drills the Go-Ahead Shot to Give the Clippers the lead',identity:'basketball go ahead shot actor keaton wagler team clippers',clause:'Keaton Wagler put the Clippers ahead with a shot.',rendered:/Keaton Wagler put the Clippers ahead with a shot/i},
     {id:'41dbdf32-aec5-450a-80c8-4d8d226c727b',source:'MLB',title:'José Ramírez drives in another for the Guardians in the 9th!',identity:'baseball runs batted in actor jose ramirez team guardians runs 1 inning 9',clause:'José Ramírez drove in one more run for the Guardians in inning 9.',rendered:/José Ramírez drove in one more run for the Guardians in inning (?:9|nine)/i},
   ])('states the actual 18:25 scoring report without generic verdict framing: $title',row=>{

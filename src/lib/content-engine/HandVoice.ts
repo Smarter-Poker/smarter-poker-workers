@@ -262,7 +262,7 @@ const LINES: Record<string, Line[]> = {
     { t: 'Dropped {money} with {holding}.', needs: ['money', 'holding'], when: notSmall },
     { t: '{holding} on {board}, and I lost the pot.', needs: ['holding', 'board'] },
     { t: 'Lost {money} at showdown with {holding}.', needs: ['money', 'holding'], when: all(showdown, notSmall) },
-    { t: 'The hand cost me {money}.', needs: ['money'], when: notSmall },
+    { t: 'My stack went in {street}, and I lost at showdown.', needs: ['street'], when: all(stackInThere, showdown) },
     { t: 'The pot went the other way at showdown.', needs: [], when: showdown },
     { t: 'Played {holding} and lost the pot.', needs: ['holding'] },
     { t: 'Went all the way to the river with {holding} and came up short.', needs: ['holding'], when: all(riverDecided, showdown) },
@@ -275,16 +275,16 @@ const LINES: Record<string, Line[]> = {
   ],
   cooler: [
     { t: 'Lost {money} with {holding} on {board}.', needs: ['money', 'holding', 'board'], when: notSmall },
-    { t: 'That hand cost me {money}.', needs: ['money'], when: notSmall },
+    { t: 'Reached showdown on {board} and lost the pot.', needs: ['board'], when: showdown },
     { t: 'Went to showdown and lost the pot.', needs: [], when: showdown },
     { t: '{holding} on {board}, and the result was a loss.', needs: ['holding', 'board'] },
     { t: 'The hand ended with {holding} and a loss.', needs: ['holding'] },
-    { t: 'Dropped {money} in that hand.', needs: ['money'], when: notSmall },
+    { t: 'Lost at showdown on {board}.', needs: ['board'], when: showdown },
     { t: '{holding}, with the pot going the other way.', needs: ['holding'] },
     { t: 'Played the hand through to a loss at showdown.', needs: [], when: showdown },
     { t: 'Lost the pot holding {holding}.', needs: ['holding'] },
     { t: 'Showed down {holding} and lost the hand.', needs: ['holding'], when: showdown },
-    { t: 'The loss came to {money}.', needs: ['money'], when: notSmall },
+    { t: 'The pot went the other way on {board}.', needs: ['board'] },
     { t: 'Got it all in {street} and lost at showdown.', needs: ['street'], when: all(allIn, showdown) },
   ],
   tough_spot: [
@@ -297,9 +297,9 @@ const LINES: Record<string, Line[]> = {
     { t: 'Dropped the pot with {holding}.', needs: ['holding'] },
     { t: 'Got it all in {street} and came out on the wrong side.', needs: ['street'], when: all(allIn, showdown) },
     { t: 'Went to the river with {holding} and came up short.', needs: ['holding'], when: all(riverDecided, showdown) },
-    { t: 'Lost the pot at the end of the hand.', needs: [] },
-    { t: 'The hand ended with a loss of {money}.', needs: ['money'], when: notSmall },
-    { t: 'That pot cost me {money}.', needs: ['money'], when: notSmall },
+    { t: 'The hand reached showdown on {board}. I lost the pot.', needs: ['board'], when: showdown },
+    { t: 'Lost the pot after an all-in {street}.', needs: ['street'], when: all(allIn, showdown) },
+    { t: 'The pot went the other way at showdown on {board}.', needs: ['board'], when: showdown },
     { t: 'Finished that hand with {holding} and a loss.', needs: ['holding'] },
     { t: 'Played a big pot with {holding} and lost it.', needs: ['holding'], when: notSmall },
   ],
@@ -322,10 +322,10 @@ const LINES: Record<string, Line[]> = {
     { t: 'Folded {holding} {street}.', needs: ['holding', 'street'] },
     { t: 'Let it go {street}.', needs: ['street'] },
     { t: 'Put {holding} in the muck.', needs: ['holding'] },
-    { t: 'Folded before the hand reached showdown.', needs: [] },
+    { t: 'My fold came {street}, before showdown.', needs: ['street'] },
     { t: 'Let {holding} go {street}.', needs: ['holding', 'street'] },
     { t: 'Found the fold on {board}.', needs: ['board'] },
-    { t: 'I folded.', needs: [] },
+    { t: 'I folded {street}.', needs: ['street'] },
     { t: 'Folded on the river.', needs: [], when: riverDecided },
     { t: '{holding} went into the muck {street}.', needs: ['holding', 'street'] },
     { t: 'My part in the hand ended when I folded {holding}.', needs: ['holding'] },
@@ -403,6 +403,7 @@ export function spokenLineMatches(text: string, facts: HandFacts): boolean {
   const t = text.toLowerCase();
   const p = facts.play;
   if (!p) return false;
+  if (p.foldStreet && /\bit was decided\b/i.test(text)) return false;
 
   // The result.
   if (/\b(?:won|collected|took it down|took down|came my way|dragged|picked up|paid off|got paid|came out ahead|went my way|got the result|it held|wrapped that one up)\b/.test(t) && !facts.isWin) return false;
@@ -485,9 +486,10 @@ export function lineFor(f: HandFacts, seed: string, exclude?: ReadonlySet<string
     // instead of relying on hidden metadata to call the sentence grounded.
     if (line.needs.length === 0) {
       if (spoken.holding) text += ` The hand was ${spoken.holding}.`;
-      else if (spoken.street) text += !endedThere(f) && f.play.allInStreet
+      else if (spoken.street && !/\b(?:preflop|flop|turn|river|last card)\b/i.test(text)) text += !endedThere(f) && f.play.allInStreet
         ? ` There was an all-in ${spoken.street}.`
         : ` It was decided ${spoken.street}.`;
+      else if (spoken.street && /\b(?:preflop|flop|turn|river|last card)\b/i.test(text)) { /* The base already states the source street. */ }
       else if (spoken.money) text += ` It was ${spoken.money}.`;
       else if (spoken.board) text += ` The board was ${spoken.board}.`;
       else if (spoken.runs) text += ` We ran it ${spoken.runs}.`;
