@@ -49,6 +49,7 @@ export type HandCategory =
   | 'grind';
 
 export type Street = 'preflop' | 'flop' | 'turn' | 'river';
+export type OwnHandAction = {street:Street;action:'check'|'call'|'bet'|'raise'|'fold'|'all_in'};
 
 /**
  * What the horse actually did in the hand, read from the action log
@@ -63,6 +64,8 @@ export type Street = 'preflop' | 'flop' | 'turn' | 'river';
  * from.
  */
 export interface HandPlay {
+  /** Complete bounded own decisions only; null means no narrative may use it. */
+  ownActions?: OwnHandAction[] | null;
   /** The hand reached a showdown with the horse still in it. */
   showdown: boolean;
   /**
@@ -217,6 +220,7 @@ const FOLD_TAGS = ['big_fold', 'big_bet_fold', 'bet_fold_line'];
 const STREETS: readonly Street[] = ['preflop', 'flop', 'turn', 'river'];
 const isStreet = (s: unknown): s is Street => typeof s === 'string' && (STREETS as readonly string[]).includes(s);
 const VOLUNTARY = new Set(['fold', 'check', 'call', 'bet', 'raise', 'all_in']);
+const OWN_NONDECISION = new Set(['sb', 'bb', 'ante', 'bomb_ante', 'post', 'return', 'discard']);
 
 interface ActionEntry {
   seat?: unknown;
@@ -274,11 +278,29 @@ export function derivePlay(horseId: string, actions: unknown): HandPlay | null {
   let allInStreet: Street | null = null;
   let runouts = 1;
   let lastBettingStreet: Street | null = null;
+  const ownActions:OwnHandAction[]=[];
+  let ownProjectionValid=true,ownProjectionEnded=false,ownStreet=-1;
 
   for (const raw of actions) {
     if (!raw || typeof raw !== 'object') return null;
     const a = raw as ActionEntry;
     const act = typeof a.action === 'string' ? a.action : '';
+    const who = typeof a.userId === 'string' ? a.userId : '';
+    // Retain only actual own voluntary decisions, never a table snapshot,
+    // opponent, amount, holding or inferred action. Overlong/incomplete or
+    // impossible ordering invalidates the WHOLE projection, not just a tail.
+    if(who===horseId&&isStreet(a.stage)&&!VOLUNTARY.has(act)&&!OWN_NONDECISION.has(act)&&!/^rit_board_\d+(?::|$)/.test(act))ownProjectionValid=false;
+    if(who===horseId&&VOLUNTARY.has(act)){
+      if(!isStreet(a.stage))ownProjectionValid=false;
+      else {
+        const index=STREETS.indexOf(a.stage);
+        if(ownProjectionEnded||index<ownStreet)ownProjectionValid=false;
+        ownStreet=index;
+        if(ownActions.length<8)ownActions.push({street:a.stage,action:act as OwnHandAction['action']});
+        else ownProjectionValid=false;
+        if(act==='fold'||act==='all_in')ownProjectionEnded=true;
+      }
+    }
     const rit = act.match(/^rit_board_(\d+)/);
     if (rit) {
       runouts = Math.max(runouts, Number(rit[1]));
@@ -286,7 +308,6 @@ export function derivePlay(horseId: string, actions: unknown): HandPlay | null {
     }
     if (!isStreet(a.stage)) continue;
     const street = a.stage;
-    const who = typeof a.userId === 'string' ? a.userId : '';
     if (!who) {
       // A decision nobody made is a log that cannot be read.
       if (VOLUNTARY.has(act)) return null;
@@ -348,6 +369,7 @@ export function derivePlay(horseId: string, actions: unknown): HandPlay | null {
   const live = [...players].filter((p) => !folded.has(p));
   const showdown = !foldStreet && live.includes(horseId) && live.length >= 2;
   return {
+    ownActions:ownProjectionValid?ownActions:null,
     showdown,
     stackInStreet,
     allInStreet,

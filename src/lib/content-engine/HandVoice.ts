@@ -489,6 +489,72 @@ export function spokenLineMatches(text: string, facts: HandFacts): boolean {
   return true;
 }
 
+const OWN_ACTION_WORDS = {check:'checked',call:'called',bet:'bet',raise:'raised',fold:'folded',all_in:'went all in'} as const;
+const ACTION_STREETS = ['preflop','flop','turn','river'] as const;
+
+/**
+ * A canonical literal own-decision story, not a result template with cards
+ * swapped in. Identical own actions MUST produce identical caption bytes:
+ * the existing atomic programme phrase reservation then owns focus reuse.
+ * No author wording, outcome, holding, board, amount or source ID can make
+ * the same action story appear fresh. An unusable full projection is silence.
+ */
+function canonicalOwnActionNarrative(f: HandFacts): string|null {
+  const actions=f?.play?.ownActions;
+  if(!Array.isArray(actions)||actions.length<2||actions.length>8)return null;
+  const groups:Array<{street:typeof ACTION_STREETS[number];verbs:string[]}>=[];
+  let previous=-1,ended=false;
+  for(const step of actions){
+    if(!step||typeof step!=='object'||!Object.hasOwn(OWN_ACTION_WORDS,step.action))return null;
+    const index=ACTION_STREETS.indexOf(step.street);
+    if(index<0||index<previous||ended)return null;
+    previous=index;
+    let group=groups.at(-1);
+    if(!group||group.street!==step.street){group={street:step.street,verbs:[]};groups.push(group);}
+    const word=OWN_ACTION_WORDS[step.action];
+    group.verbs.push(group.verbs.some(verb=>verb===word||verb===`${word} again`)?`${word} again`:word);
+    ended=step.action==='fold'||step.action==='all_in';
+  }
+  if(groups.length<2)return null;
+  const clauses=groups.map(({street,verbs})=>{
+    if(verbs.length===1){
+      const verb=verbs[0]!;
+      return street==='preflop'?`${verb} preflop`
+        :verb==='checked'||verb==='bet'?`${verb} the ${street}`:`${verb} on the ${street}`;
+    }
+    const ordered=verbs.join(', then ');
+    return `${ordered}${street==='preflop'?' preflop':` on the ${street}`}`;
+  });
+  if(groups.some(group=>group.verbs.length>1))return clauses.map(clause=>`I ${clause}.`).join(' ');
+  return `I ${clauses.length===2?clauses.join(' and '):`${clauses.slice(0,-1).join(', ')} and ${clauses.at(-1)}`}.`;
+}
+
+/** New narrative validation is exact; historical result guards stay intact. */
+export function ownActionLineMatches(text:string,f:HandFacts):boolean {
+  const canonical=canonicalOwnActionNarrative(f);
+  return canonical!==null&&text===canonical;
+}
+
+/**
+ * Production hand voice. Existing category frame IDs remain exact three-hour
+ * reservations, with their existing source predicates. The index is only a
+ * reservation slot, never an extra fact or a way to vary this canonical text.
+ * Legacy lineFor below remains available solely for historical reconstruction.
+ */
+export function ownActionLineFor(f:HandFacts,seed:string,exclude?:ReadonlySet<string>):{text:string;key:string}|null {
+  const text=canonicalOwnActionNarrative(f),pool=LINES[f?.category];
+  if(!text||!pool||!f.play)return null;
+  const start=fleetHash(seed,'voice');
+  for(let i=0;i<pool.length;i++){
+    const idx=(start+i)%pool.length,line=pool[idx]!;
+    if(line.when&&!line.when(f))continue;
+    const key=`frame:voice:${f.category}:${idx}`;
+    if(exclude?.has(key))continue;
+    return {text,key};
+  }
+  return null;
+}
+
 /**
  * One line about this hand, or null when nothing can be said without printing
  * a row or claiming something the action log does not show. Returning null is

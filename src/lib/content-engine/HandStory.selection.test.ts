@@ -32,7 +32,7 @@ vi.mock('../supabase.js',()=>({
 
 import {pickHandStory, pickHandStories} from './HandStory.js';
 import {writeGrounded, type AuthorHorse} from './VoiceWriter.js';
-import {lineFor} from './HandVoice.js';
+import {ownActionLineFor} from './HandVoice.js';
 import {normalizePhrase} from './ContentLedger.js';
 
 const HORSE='11111111-1111-4111-8111-111111111111';
@@ -46,6 +46,7 @@ const row=(id:string,handId:string):Row=>({
   board:[{rank:'K',suit:'clubs'},{rank:'7',suit:'hearts'},{rank:'2',suit:'diamonds'}],
   net_bb:80,pot_size:200,is_win:true,leak_tags:[],
   actions:[
+    {userId:HORSE,stage:'preflop',action:'raise',amount:6},
     {userId:HORSE,stage:'flop',action:'bet',amount:80},
     {userId:'private-opponent-uuid',stage:'flop',action:'fold',amount:0,privateCards:['Qs','Qd'],displayName:'Private Opponent'},
   ],
@@ -106,7 +107,7 @@ describe('completed own-hand selection and canonical freshness',()=>{
     const other=db.tables.horse_hand_reviews.find(review=>String(review.id)!==String(first!.handId)&&review.hand_id!==first!.handId)!;
     // Turn the other hand into a genuine fold: its category has a separate
     // authored frame pool, so occupied winning-hand frames cannot starve it.
-    other.is_win=false;other.net_bb=-80;other.actions=[{userId:HORSE,stage:'flop',action:'fold',amount:0}];
+    other.is_win=false;other.net_bb=-80;other.actions=[{userId:HORSE,stage:'preflop',action:'call',amount:6},{userId:HORSE,stage:'flop',action:'fold',amount:0}];
     db.tables.horse_phrase_ledger=Array.from({length:200},(_,i)=>ledger(`frame:voice:${first!.category}:${i}`));
     const out=await writeGrounded(author,{hand:true,session:false});
     expect(out?.text).toBeTruthy();
@@ -117,14 +118,14 @@ describe('completed own-hand selection and canonical freshness',()=>{
     const first=await pickHandStory(HORSE);
     const used=new Set<string>();const phrases:Row[]=[];
     for(let i=0;i<200;i++){
-      const spoken=lineFor(first!,`${HORSE}:h:${first!.handId}`,used);
+      const spoken=ownActionLineFor(first!,`${HORSE}:h:${first!.handId}`,used);
       if(!spoken)break;
       used.add(spoken.key);phrases.push(ledger(normalizePhrase(spoken.text)));
     }
     expect(phrases.length).toBeGreaterThan(0);
-    // Give the sibling a different holding so its grounded sentences differ.
+    // A genuinely different own-action story, never changed cards, owns freshness.
     for(const review of db.tables.horse_hand_reviews)if(String(review.id)!==String(first!.handId)&&review.hand_id!==first!.handId)
-      review.hole_cards=[{rank:'Q',suit:'hearts'},{rank:'Q',suit:'clubs'}];
+      review.actions=[{userId:HORSE,stage:'preflop',action:'call',amount:6},{userId:HORSE,stage:'flop',action:'bet',amount:80},{userId:'private-opponent-uuid',stage:'flop',action:'fold',amount:0}];
     db.tables.horse_phrase_ledger=phrases;
     const out=await writeGrounded(author,{hand:true,session:false});
     expect(out?.text).toBeTruthy();
@@ -132,16 +133,23 @@ describe('completed own-hand selection and canonical freshness',()=>{
     expect(db.frameReads).toBe(1);
   });
 
-  it('uses recent focus from another category instead of repeating a showdown loss',async()=>{
+  it('uses a genuine canonical own-action story without blanket cross-category frame starvation',async()=>{
     const review=row('9001',HAND_ONE);
     review.game_variant='plo4';review.is_win=false;review.net_bb=-80;review.leak_tags=['dominated_straight'];
-    review.actions=[{userId:HORSE,stage:'river',action:'check',amount:0},{userId:'private-opponent-uuid',stage:'river',action:'check',amount:0}];
+    review.actions=[{userId:HORSE,stage:'preflop',action:'call',amount:6},{userId:HORSE,stage:'river',action:'check',amount:0},{userId:'private-opponent-uuid',stage:'river',action:'check',amount:0}];
     db.tables.horse_hand_reviews=[review];
     db.tables.horse_phrase_ledger=[ledger('frame:voice:bad_beat:4')];
     const out=await writeGrounded(author,{hand:true,session:false});
     expect(out?.grounding).toContain('category:cooler');
-    expect(['frame:voice:cooler:1','frame:voice:cooler:2','frame:voice:cooler:5','frame:voice:cooler:7','frame:voice:cooler:9']).not.toContain(out?.frameKey);
-    expect(out?.text).toBeTruthy();expect(db.frameReads).toBe(1);
+    expect(out?.text).toBe('I called preflop and checked the river.');expect(db.frameReads).toBe(1);
+  });
+
+  it('refuses the same canonical action story globally despite different holdings and hand identities',async()=>{
+    const first=await writeGrounded(author,{hand:true,session:false});
+    expect(first?.text).toBe('I raised preflop and bet the flop.');
+    db.tables.horse_hand_reviews[1]!.hole_cards=[{rank:'Q',suit:'hearts'},{rank:'Q',suit:'clubs'}];
+    db.tables.horse_phrase_ledger=[ledger(normalizePhrase(first!.text))];
+    expect(await writeGrounded(author,{hand:true,session:false})).toBeNull();
   });
 
   it.each([null,1001])('abandons a hand draft if exact family count is missing or truncated: %s',async count=>{

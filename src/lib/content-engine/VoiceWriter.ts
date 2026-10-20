@@ -47,7 +47,7 @@ import { areFriends, tagCandidateFor, type FriendCandidate } from './FriendGraph
 import { fleetHash } from './FleetScheduler.js';
 import { getSupabase } from '../supabase.js';
 import { pickHandStories, pickSessionStory } from './HandStory.js';
-import { lineFor, briefForSpokenHand } from './HandVoice.js';
+import { ownActionLineFor, briefForSpokenHand } from './HandVoice.js';
 import { sessionLineFor, sessionGroup, briefForSpokenSession } from './SessionVoice.js';
 import { writeModelCaption } from './ModelWriter.js';
 import { captionVoiceProfile } from './CaptionVoice.js';
@@ -359,39 +359,37 @@ export async function writeGrounded(
         // "look" and "nah" in front of the rejected posts. The old
         // composeHandPost is not reachable from here.
         //
-        // The frame ledger is shared with the rest of the fleet: a frame
-        // another horse used in this category inside FRAME_GLOBAL_HOURS is
-        // skipped, and an exhausted pool is silence.
-        // One complete cross-category read per writer invocation. Each source
-        // gets its own draft exclusions; rejecting a stale phrase for one hand
-        // must not consume another hand's otherwise unused frame.
+        // Canonical own decisions, not a different holding or result synonym.
+        // The same ordered decisions produce EXACTLY the same caption under
+        // every author/frame: the existing atomic global phrase guard also
+        // reserves that focus. No legacy generic-voice fallback is allowed.
+        // One complete frame read per invocation; its existing three-hour
+        // exact-key guard remains independently enforced by the atomic RPC.
         const exclude = new Set(recentHandFrames);
         const seed = `${horse.profile_id}:h:${hand.handId}`;
         const semanticKey = `grounded:hand:${hand.handId}`;
-        if (!(await groundedPhraseRecentlyUsed(semanticKey, horse.profile_id))) {
-          for (let i = 0; i < MAX_DRAFTS; i++) {
-            const spoken = lineFor(hand, seed, exclude);
-            if (!spoken) break;
-            if (await groundedPhraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
-              exclude.add(spoken.key);
-              continue;
-            }
-            return {
-              text: spoken.text,
-              brief: briefForSpokenHand(hand),
-              style,
-              relevance: 1,
-              grounding: [`hand:${hand.handId}`, `category:${hand.category}`, spoken.key],
-              attempts: i + 1,
-              belowFloor: false,
-              stale: false,
-              frameKey: spoken.key,
-              groundedKind: 'hand',
-              handReviewId: hand.reviewId,
-              semanticKey,
-            };
-          }
+        if (await groundedPhraseRecentlyUsed(semanticKey, horse.profile_id)) continue;
+        const spoken = ownActionLineFor(hand, seed, exclude);
+        if (!spoken) continue;
+        if (await groundedPhraseRecentlyUsed(normalizePhrase(spoken.text), horse.profile_id)) {
+          // Another frame would yield the same canonical story. Try the next
+          // actual source, never six synonymous drafts of this one.
+          continue;
         }
+        return {
+          text: spoken.text,
+          brief: briefForSpokenHand(hand),
+          style,
+          relevance: 1,
+          grounding: [`hand:${hand.handId}`, `category:${hand.category}`, spoken.key],
+          attempts: 1,
+          belowFloor: false,
+          stale: false,
+          frameKey: spoken.key,
+          groundedKind: 'hand',
+          handReviewId: hand.reviewId,
+          semanticKey,
+        };
       }
     }
 
