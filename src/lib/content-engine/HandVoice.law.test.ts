@@ -229,7 +229,19 @@ describe('canonical literal own-action narratives, never generic result fallback
   it('preserves every same-street decision rather than summarizing away a raise/call',()=>{
     const actions:OwnHandAction[]=[{street:'preflop',action:'raise'},{street:'preflop',action:'call'},{street:'flop',action:'check'},{street:'turn',action:'bet'}];
     const f=facts('big_win',{play:{ownActions:actions}});
-    expect(ownActionLineFor(f,'source')?.text).toBe('I raised and then called preflop, checked the flop and bet the turn.');
+    expect(ownActionLineFor(f,'source')?.text).toBe('I raised, then called preflop. I checked the flop. I bet the turn.');
+  });
+  it('keeps long compound actual-shaped stories readable without dropping or varying decisions',()=>{
+    // Same shape as the finite actual-source qualification, not retained raw private history.
+    const actions:OwnHandAction[]=[{street:'preflop',action:'call'},{street:'flop',action:'check'},{street:'flop',action:'call'},{street:'turn',action:'bet'},{street:'turn',action:'all_in'}];
+    const expectedCompound='I called preflop. I checked, then called on the flop. I bet, then went all in on the turn.';
+    for(const category of ['bad_beat','big_win','tough_spot'] as const){
+      const f=facts(category,{play:{ownActions:actions}});
+      for(const seed of ['author-one','author-two']){
+        expect(ownActionLineFor(f,seed)?.text).toBe(expectedCompound);
+        expect(ownActionLineMatches(expectedCompound,f)).toBe(true);
+      }
+    }
   });
   it('renders the exact same focus bytes for two actual failed-post authors across cards, categories and results',()=>{
     // Horacio/Pike author seeds are actual. These action facts are synthetic

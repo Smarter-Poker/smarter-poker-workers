@@ -522,9 +522,10 @@ function canonicalOwnActionNarrative(f: HandFacts): string|null {
       return street==='preflop'?`${verb} preflop`
         :verb==='checked'||verb==='bet'?`${verb} the ${street}`:`${verb} on the ${street}`;
     }
-    const ordered=verbs.length===2?verbs.join(' and then '):`${verbs.slice(0,-1).join(', ')} and then ${verbs.at(-1)}`;
+    const ordered=verbs.join(', then ');
     return `${ordered}${street==='preflop'?' preflop':` on the ${street}`}`;
   });
+  if(groups.some(group=>group.verbs.length>1))return clauses.map(clause=>`I ${clause}.`).join(' ');
   return `I ${clauses.length===2?clauses.join(' and '):`${clauses.slice(0,-1).join(', ')} and ${clauses.at(-1)}`}.`;
 }
 
