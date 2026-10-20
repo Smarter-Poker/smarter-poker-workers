@@ -17,7 +17,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import type { HandFacts, HandCategory, HandPlay, Street } from './HandStory.js';
+import type { HandFacts, HandCategory, HandPlay, Street, OwnHandAction } from './HandStory.js';
 import { categorise, derivePlay, pickHandStory, storySkips } from './HandStory.js';
 import {
   lineFor,
@@ -27,6 +27,8 @@ import {
   sayStreet,
   spokenLineMatches,
   equivalentVoiceFrameKeys,
+  ownActionLineFor,
+  ownActionLineMatches,
 } from './HandVoice.js';
 
 type Row = Record<string, unknown>;
@@ -204,6 +206,103 @@ describe('actual Omaha wording convergence regressions',()=>{
         if(out)expect(out.text).not.toMatch(/(?:cost me|loss came to|loss of|dropped) (?:a |that )?(?:painful|solid|brutal|big|good) pot/i);
       }
     }
+  });
+});
+
+describe('canonical literal own-action narratives, never generic result fallback',()=>{
+  const own:OwnHandAction[]=[{street:'preflop',action:'raise'},{street:'flop',action:'check'},{street:'turn',action:'call'}];
+  const expected='I raised preflop, checked the flop and called on the turn.';
+  const narrativeFacts=(category:HandCategory='bad_beat')=>facts(category,{play:{ownActions:own}});
+  it('extracts only complete ordered own decisions, discarding private opponent/card/amount fields',()=>{
+    const raw=[
+      {userId:'owned-horse',stage:'preflop',action:'raise',amount:12,privateCards:['As','Ah']},
+      {userId:'private-opponent',stage:'preflop',action:'call',amount:12,displayName:'Private Person'},
+      {userId:'owned-horse',stage:'flop',action:'check',publicNode:{seats:[{userId:'private-opponent',holeCards:['Qs','Qh']}] }},
+      {userId:'private-opponent',stage:'turn',action:'bet',amount:20},
+      {userId:'owned-horse',stage:'turn',action:'call',amount:20},
+    ];
+    const play=derivePlay('owned-horse',raw)!;
+    expect(play.ownActions).toEqual(own);
+    expect(JSON.stringify(play.ownActions)).not.toMatch(/owned-horse|private-opponent|Private Person|As|Ah|Qs|Qh|amount|publicNode|userId/);
+    expect(derivePlay('different-horse',raw)).toBeNull();
+  });
+  it('preserves every same-street decision rather than summarizing away a raise/call',()=>{
+    const actions:OwnHandAction[]=[{street:'preflop',action:'raise'},{street:'preflop',action:'call'},{street:'flop',action:'check'},{street:'turn',action:'bet'}];
+    const f=facts('big_win',{play:{ownActions:actions}});
+    expect(ownActionLineFor(f,'source')?.text).toBe('I raised and then called preflop, checked the flop and bet the turn.');
+  });
+  it('renders the exact same focus bytes for two actual failed-post authors across cards, categories and results',()=>{
+    // Horacio/Pike author seeds are actual. These action facts are synthetic
+    // test projections, NOT an assertion about their unretained raw histories.
+    const first=narrativeFacts('bad_beat');
+    const second=facts('tough_spot',{holeNotation:'JTs',netBb:-80,potBb:160,play:{ownActions:own}});
+    const win=facts('big_win',{holeNotation:'KK',netBb:180,potBb:400,play:{ownActions:own}});
+    for(const [f,seed]of [[first,'Horacio'],[second,'Pike'],[win,'other-author']]as const){
+      const out=ownActionLineFor(f,seed)!;
+      expect(out.text).toBe(expected);
+      expect(ownActionLineMatches(out.text,f)).toBe(true);
+      expect(out.text).not.toMatch(/pot|won|lost|kings|jack|stack|board|[0-9]/i);
+    }
+  });
+  it('does not vary caption bytes when different existing frame slots are selected',()=>{
+    const f=narrativeFacts();
+    const first=ownActionLineFor(f,'author-one')!;
+    const exclude=new Set([first.key]);
+    const next=ownActionLineFor(f,'author-two',exclude)!;
+    expect(next.key).not.toBe(first.key);expect(next.text).toBe(first.text);
+    expect([...exclude]).toEqual([first.key]);
+    expect(next.key).toMatch(/^frame:voice:bad_beat:[0-9]{1,2}$/);
+  });
+  it('distinguishes a real call from a real raise, not a card or money adjective',()=>{
+    const f=narrativeFacts();
+    const changed=facts('bad_beat',{play:{ownActions:[...own.slice(0,2),{street:'turn',action:'raise'}]}});
+    expect(ownActionLineFor(changed,'same-author')?.text).toBe('I raised preflop, checked the flop and raised on the turn.');
+    expect(ownActionLineFor(changed,'same-author')?.text).not.toBe(ownActionLineFor(f,'same-author')?.text);
+    expect(ownActionLineMatches(expected,changed)).toBe(false);
+  });
+  it.each([undefined,null,[],[{street:'preflop',action:'raise'}],[{street:'preflop',action:'raise'},{street:'preflop',action:'call'}]].map(actions=>({actions})))('refuses absent, partial or one-street projection %j',({actions})=>{
+    const f=facts('big_win',{play:{ownActions:actions as OwnHandAction[]|null|undefined}});
+    expect(ownActionLineFor(f,'no-generic-fallback')).toBeNull();
+    expect(ownActionLineMatches('Won a pot with pocket aces.',f)).toBe(false);
+  });
+  it('refuses over-cap extraction as a whole and never emits its first eight actions',()=>{
+    const eight=[...Array.from({length:4},()=>({userId:'owner',stage:'preflop',action:'call'})),...Array.from({length:4},()=>({userId:'owner',stage:'flop',action:'call'}))];
+    expect(derivePlay('owner',eight)?.ownActions).toHaveLength(8);
+    const over=derivePlay('owner',[...eight,{userId:'owner',stage:'turn',action:'check'}]);
+    expect(over?.ownActions).toBeNull();
+    expect(ownActionLineFor(facts('grind',{play:over!}),'over-cap')).toBeNull();
+  });
+  it.each([
+    [{stage:'turn',action:'check'},{stage:'flop',action:'call'}],
+    [{stage:'preflop',action:'all_in'},{stage:'flop',action:'check'}],
+    [{stage:'preflop',action:'fold'},{stage:'flop',action:'check'}],
+    [{stage:'unknown',action:'raise'},{stage:'flop',action:'check'},{stage:'turn',action:'call'}],
+  ].map(steps=>({steps})))('refuses invalid source chronology or decisions after terminal own action %j',({steps})=>{
+    const play=derivePlay('owner',steps.map(step=>({...step,userId:'owner'})));
+    expect(play?.ownActions??null).toBeNull();
+    expect(ownActionLineFor(facts('big_win',{play:play??{...PLAY,ownActions:null}}),'bad-source')).toBeNull();
+  });
+  it('refuses unknown own decisions without dropping them from an otherwise usable projection',()=>{
+    const raw=[{userId:'owner',stage:'preflop',action:'raise'},{userId:'owner',stage:'flop',action:'unknown_decision'},{userId:'owner',stage:'turn',action:'call'}];
+    expect(derivePlay('owner',raw)?.ownActions).toBeNull();
+    const opponentUnknown=raw.map(row=>row.action==='unknown_decision'?{...row,userId:'opponent'}:row);
+    expect(derivePlay('owner',opponentUnknown)?.ownActions).toEqual([{street:'preflop',action:'raise'},{street:'turn',action:'call'}]);
+  });
+  it('checks projection validity again and accepts only exact canonical text',()=>{
+    for(const actions of [
+      [{street:'turn',action:'call'},{street:'flop',action:'check'}],
+      [{street:'preflop',action:'fold'},{street:'flop',action:'check'}],
+      [{street:'preflop',action:'raise'},{street:'river',action:'invented'}],
+      Array.from({length:9},(_,i)=>({street:i?'flop':'preflop',action:'check'})),
+    ])expect(ownActionLineFor(facts('big_win',{play:{ownActions:actions as OwnHandAction[]}}),'invalid')).toBeNull();
+    const f=narrativeFacts();
+    expect(ownActionLineMatches(expected,f)).toBe(true);
+    for(const extra of [' I won the pot.',' The hand was pocket kings.',' I watched that happen.'])expect(ownActionLineMatches(expected+extra,f)).toBe(false);
+  });
+  it('returns silence on exact frame exhaustion and never falls back to an old result sentence',()=>{
+    const f=narrativeFacts();
+    const exhausted=new Set(Array.from({length:100},(_,i)=>`frame:voice:bad_beat:${i}`));
+    expect(ownActionLineFor(f,'exhausted',exhausted)).toBeNull();
   });
 });
 

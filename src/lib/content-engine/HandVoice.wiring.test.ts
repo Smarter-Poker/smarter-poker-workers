@@ -4,7 +4,7 @@
  * These tests go through publishForHorse, the function the fleet routes call,
  * with only the database stubbed. They prove that
  *  - with grounded_hand approved, the row that reaches social_posts is the
- *    line HandVoice.lineFor produced: no card notation, no "bb", no
+ *    line HandVoice.ownActionLineFor produced: no card notation, no "bb", no
  *    StyleSheet opener or closer, and the old composeHandPost is never run;
  *  - with grounded_session approved, the row is SessionVoice's line and the
  *    old composeSessionPost is never run;
@@ -89,7 +89,7 @@ vi.mock('../supabase.js', () => {
 
 vi.mock('./HandVoice.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('./HandVoice.js')>();
-  return { ...real, lineFor: vi.fn(real.lineFor) };
+  return { ...real, ownActionLineFor: vi.fn(real.ownActionLineFor),lineFor:vi.fn(real.lineFor) };
 });
 vi.mock('./SessionVoice.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('./SessionVoice.js')>();
@@ -102,7 +102,7 @@ vi.mock('./GroundedComposer.js', async (importOriginal) => {
 
 import { publishForHorse, type FleetHorse } from './HorsePublisher.js';
 import { writeGrounded, type AuthorHorse } from './VoiceWriter.js';
-import { lineFor } from './HandVoice.js';
+import { ownActionLineFor,lineFor as legacyLineFor } from './HandVoice.js';
 import { sessionLineFor } from './SessionVoice.js';
 import { composeHandPost, composeSessionPost } from './GroundedComposer.js';
 import { fleetHash } from './FleetScheduler.js';
@@ -123,10 +123,9 @@ const HORSE = groundedFirstHorse();
 // these tests are about which voice speaks, so the slot is fixed here.
 const SLOT = '2026-09-21T12';
 
-// A real settled hand (horse_hand_reviews 573264): pocket aces moved in
-// preflop over an opponent's all-in, got called, won 143.57bb. The action
-// log is the production one compacted to the fields derivePlay reads.
-const LOG = 'P:ante:1:H:::1;P:ante:1:o1:::1;P:ante:1:o2:::1;P:ante:1:o3:::1;P:sb:1:o4:::;P:ante:1:o4:::1;P:bb:2:o5:::;P:ante:1:o5:::1;P:raise:5:H:2:261.65:;P:call:5:o1:5:212.1:;P:fold:0:o2:5:189.55:;P:raise:19:o3:5:740.79:;P:call:18:o4:19:222.1:;P:fold:0:o5:19:168.95:;P:raise:58:H:19:256.65:;P:fold:0:o1:58:207.1:;P:all_in:740.79:o3:58:721.79:;P:fold:0:o4:740.79:204.1:;P:all_in:261.65:H:740.79:203.65:;P:return:479.14:o3:::';
+// Synthetic connected fixture: own preflop raise then a flop all-in.
+// Two genuine streets are required by the canonical action narrative.
+const LOG = 'P:raise:5:H:2:261.65:;P:call:5:o1:5:212.1:;F:all_in:256.65:H:0:256.65:;F:call:256.65:o1:256.65:300:';
 const STAGE: Record<string, string> = { P: 'preflop', F: 'flop', T: 'turn', R: 'river', X: 'other' };
 function actions(compact: string, horse: string): unknown[] {
   return compact.split(';').map((tok) => {
@@ -195,7 +194,8 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     db.writes = [];
     db.rpcCalls = [];
     _resetPostModes();
-    vi.mocked(lineFor).mockClear();
+    vi.mocked(ownActionLineFor).mockClear();
+    vi.mocked(legacyLineFor).mockClear();
     vi.mocked(sessionLineFor).mockClear();
     vi.mocked(composeHandPost).mockClear();
     vi.mocked(composeSessionPost).mockClear();
@@ -211,17 +211,17 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
 
     expect(res.success).toBe(true);
     expect(res.type).toBe('grounded_hand');
-    expect(lineFor).toHaveBeenCalledTimes(1);
+    expect(ownActionLineFor).toHaveBeenCalledTimes(1);
     expect(composeHandPost).not.toHaveBeenCalled();
     expect(composeSessionPost).not.toHaveBeenCalled();
     expect(sessionLineFor).not.toHaveBeenCalled();
     expect(db.reads).not.toContain('horse_daily_nets');
-    const [facts, seed] = vi.mocked(lineFor).mock.calls[0]!;
+    const [facts, seed] = vi.mocked(ownActionLineFor).mock.calls[0]!;
     expect(String(facts.handId)).toBe('22222222-2222-4222-8222-222222222222');
     expect(facts.category).toBe('stackoff');
-    expect(facts.play).toMatchObject({ showdown: true, stackInStreet: 'preflop', allInStreet: 'preflop', decisiveStreet: 'preflop', runouts: 1 });
+    expect(facts.play).toMatchObject({ showdown: true, stackInStreet: 'flop', allInStreet: 'flop', decisiveStreet: 'flop', runouts: 1 });
     expect(seed).toBe(`${HORSE.profile_id}:h:22222222-2222-4222-8222-222222222222`);
-    const spoken = vi.mocked(lineFor).mock.results[0]!.value as { text: string; key: string };
+    const spoken = vi.mocked(ownActionLineFor).mock.results[0]!.value as { text: string; key: string };
 
     expect(res).toMatchObject({created:true,postId:'33333333-3333-4333-8333-333333333333',publicationEvidence:{status:'public_persisted'}});
     expect(groundedInserts()).toHaveLength(0);
@@ -236,7 +236,8 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     expect(post.content).not.toMatch(/\d/);
     expect(post.content).not.toContain('—');
     expect(post.content).not.toContain('–');
-    expect(post.content).not.toMatch(/\bon the flop\b|\bon the turn\b|\briver\b/i);
+    expect(post.content).toBe('I raised preflop and went all in on the flop.');
+    expect(legacyLineFor).not.toHaveBeenCalled();
     expect(post.metadata).toMatchObject({ grounded: true, grounded_type: 'hand' });
     // Phase 8: the writer states the topic it knows; the database derives the rest.
     expect(post).toMatchObject({ topic: 'poker', topics: ['poker', 'hand'] });
@@ -251,7 +252,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
   it('a frame the fleet used in this category inside the window is skipped', async () => {
     db.tables.horse_post_modes = modes(true, false);
     await publishForHorse(HORSE, { skipGuard: true, slot: SLOT });
-    const firstKey = (vi.mocked(lineFor).mock.results[0]!.value as { key: string }).key;
+    const firstKey = (vi.mocked(ownActionLineFor).mock.results[0]!.value as { key: string }).key;
 
     db.writes = [];
     db.tables.social_posts=[];
@@ -280,8 +281,8 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     }];
 
     const second = await writeGrounded(HORSE as AuthorHorse, { hand: true, session: false });
-    expect(second?.text).toBeTruthy();
-    expect(second!.text).not.toBe(first!.text);
+    expect(second).toBeNull();
+    expect(legacyLineFor).not.toHaveBeenCalled();
   });
 
   it('does not retell one source hand through a different frame', async () => {
@@ -304,7 +305,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
 
     expect(res.success).toBe(true);
     expect(res.type).toBe('grounded_session');
-    expect(lineFor).not.toHaveBeenCalled();
+    expect(ownActionLineFor).not.toHaveBeenCalled();
     expect(db.reads).not.toContain('horse_hand_reviews');
     expect(db.reads).toContain('horse_daily_nets');
     expect(sessionLineFor).toHaveBeenCalledTimes(1);
@@ -341,7 +342,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     db.tables.horse_post_modes = modes(false, false);
     const res = await publishForHorse(HORSE, { skipGuard: true, slot: SLOT });
 
-    expect(lineFor).not.toHaveBeenCalled();
+    expect(ownActionLineFor).not.toHaveBeenCalled();
     expect(sessionLineFor).not.toHaveBeenCalled();
     expect(composeHandPost).not.toHaveBeenCalled();
     expect(composeSessionPost).not.toHaveBeenCalled();
@@ -355,7 +356,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
   it('approving sessions does not approve hands, and approving hands does not approve sessions', async () => {
     db.tables.horse_post_modes = modes(false, true);
     await publishForHorse(HORSE, { skipGuard: true, slot: SLOT });
-    expect(lineFor).not.toHaveBeenCalled();
+    expect(ownActionLineFor).not.toHaveBeenCalled();
     expect(db.reads).not.toContain('horse_hand_reviews');
 
     db.reads = [];
@@ -380,7 +381,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
   it('writeGrounded without the gate decision fails closed', async () => {
     const out = await writeGrounded({ profile_id: HORSE.profile_id, name: 'x' } as unknown as AuthorHorse);
     expect(out).toBeNull();
-    expect(lineFor).not.toHaveBeenCalled();
+    expect(ownActionLineFor).not.toHaveBeenCalled();
     expect(sessionLineFor).not.toHaveBeenCalled();
     expect(db.reads).not.toContain('horse_hand_reviews');
     expect(db.reads).not.toContain('horse_daily_nets');
@@ -389,7 +390,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
   it('writeGrounded takes only an explicit true as approval', async () => {
     const horse = { profile_id: HORSE.profile_id, name: 'x' } as unknown as AuthorHorse;
     expect(await writeGrounded(horse, { hand: 1 as unknown as boolean, session: 'yes' as unknown as boolean })).toBeNull();
-    expect(lineFor).not.toHaveBeenCalled();
+    expect(ownActionLineFor).not.toHaveBeenCalled();
     expect(sessionLineFor).not.toHaveBeenCalled();
     expect(db.reads).toEqual([]);
   });
@@ -398,7 +399,7 @@ describe('the publisher speaks grounded posts through HandVoice and SessionVoice
     db.tables.horse_hand_reviews = [{ ...HAND, actions: null }];
     const out = await writeGrounded({ profile_id: HORSE.profile_id, name: 'x' } as unknown as AuthorHorse, { hand: true, session: false });
     expect(out).toBeNull();
-    expect(lineFor).not.toHaveBeenCalled();
+    expect(ownActionLineFor).not.toHaveBeenCalled();
     expect(composeHandPost).not.toHaveBeenCalled();
   });
 });
