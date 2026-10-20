@@ -26,6 +26,7 @@ import {
   sayMoney,
   sayStreet,
   spokenLineMatches,
+  equivalentVoiceFrameKeys,
 } from './HandVoice.js';
 
 type Row = Record<string, unknown>;
@@ -135,6 +136,50 @@ function facts(
 }
 
 describe('actual Omaha wording convergence regressions',()=>{
+  it('expands actual persisted focus keys across categories without salting or mutating history',()=>{
+    const recent=new Set(['frame:voice:river_aggression:1','frame:voice:cooler:7','unrelated:exact:key']);
+    const excluded=equivalentVoiceFrameKeys(recent);
+    // Actual Andrew -> Fable/Seth and Lucinda -> Lyric frame identities.
+    for(const key of ['frame:voice:river_aggression:6','frame:voice:river_aggression:10','frame:voice:cooler:2','frame:voice:bad_beat:4','frame:voice:tough_spot:9'])expect(excluded.has(key)).toBe(true);
+    expect(excluded.has('unrelated:exact:key')).toBe(true);
+    expect(excluded.has('frame:voice:river_aggression:0')).toBe(false); // distinct earlier-street aggression
+    expect(excluded.has('frame:voice:river_aggression:5')).toBe(false); // actual opponent-fold result
+    expect([...recent]).toEqual(['frame:voice:river_aggression:1','frame:voice:cooler:7','unrelated:exact:key']);
+    const crossCategory=equivalentVoiceFrameKeys(new Set(['frame:voice:bad_beat:4']));
+    expect(crossCategory.has('frame:voice:cooler:7')).toBe(true);
+    expect(crossCategory.has('frame:voice:tough_spot:7')).toBe(true);
+  });
+  // These are the real author/hand seeds and frame keys from 2026-10-20
+  // 19:10. Card/action fixtures below are explicitly synthetic, not retained
+  // raw private hands or a claim to replay their historical source selection.
+  it('does not let Fable and Seth repeat Andrew\'s river-bet focus through different frame IDs',()=>{
+    const recent=new Set(['frame:voice:river_aggression:1']); // Andrew Hunter
+    const rows=[
+      {seed:'a6cd08f3-d81f-4d69-a4bb-42e869393a9d:h:6ab39666-d5f8-49f9-af14-1cfad18208c4',variant:'plo4'},
+      {seed:'2143ec37-02ed-4712-9642-a56f1945c379:h:425789ac-7470-4152-9d07-226091b9e889',variant:'nlh'},
+    ];
+    const repeated=new Set([1,2,3,4,6,8,9,10,11,12].map(i=>`frame:voice:river_aggression:${i}`));
+    for(const row of rows){
+      const f=facts('river_aggression',{variant:row.variant});
+      const out=lineFor(f,row.seed,recent);
+      if(out){expect(repeated.has(out.key)).toBe(false);expect(spokenLineMatches(out.text,f)).toBe(true);}
+    }
+    expect([...recent]).toEqual(['frame:voice:river_aggression:1']);
+  });
+  it('does not let Lyric repeat Lucinda\'s showdown-loss focus through another frame',()=>{
+    const f=facts('cooler',{variant:'plo4',holeNotation:''});
+    const out=lineFor(f,'fea3b7af-c515-4773-a9e8-11ed5de7ba5f:h:d2803353-cc90-4ed1-8731-d1f37a27f373',new Set(['frame:voice:cooler:7']));
+    if(out){expect(['frame:voice:cooler:1','frame:voice:cooler:2','frame:voice:cooler:5','frame:voice:cooler:7','frame:voice:cooler:9']).not.toContain(out.key);expect(spokenLineMatches(out.text,f)).toBe(true);}
+  });
+  it('does not append an all-purpose decided-on-river tail to showdown losses',()=>{
+    for(const category of ['cooler','bad_beat','tough_spot'] as const){
+      const f=facts(category,{variant:'plo4',holeNotation:''});
+      for(let i=0;i<30;i++){
+        const out=lineFor(f,`loss-tail-${i}`);
+        if(out)expect(out.text).not.toMatch(/it was decided/i);
+      }
+    }
+  });
   it('describes the own fold street without implying the whole hand ended there',()=>{
     const f=facts('big_fold',{variant:'plo4',holeNotation:'',play:{decisiveStreet:'river',foldStreet:'river',showdown:false}});
     for(let i=0;i<100;i++){

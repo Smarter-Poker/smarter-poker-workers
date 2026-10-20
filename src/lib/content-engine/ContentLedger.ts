@@ -130,6 +130,37 @@ export async function recentFrameKeys(family: string, group: string): Promise<Se
   return new Set((data ?? []).map((r) => String((r as { phrase_norm: string }).phrase_norm)));
 }
 
+/**
+ * One complete, bounded view of the existing hand-voice frame window across
+ * categories. Equivalent wording can cross cooler/bad_beat/tough_spot, so a
+ * category-local read cannot protect that focus. Exact count is mandatory:
+ * an incomplete PostgREST page is UNKNOWN, never a fresh empty frame set.
+ * Sessions keep their separate family and unchanged read path above.
+ */
+export async function recentHandVoiceFrameKeys(): Promise<Set<string>> {
+  const cap=1000;
+  const since=new Date(Date.now()-FRAME_GLOBAL_HOURS*3_600_000).toISOString();
+  try {
+    const {data,error,count,status}=await getSupabase()
+      .from('horse_phrase_ledger')
+      .select('phrase_norm',{count:'exact'})
+      .like('phrase_norm','frame:voice:%')
+      .gte('used_at',since)
+      .order('used_at',{ascending:false})
+      .limit(cap);
+    if(error||status>=400)throw new Error(error?.message??`frame query status ${status}`);
+    if(!Array.isArray(data)||!Number.isSafeInteger(count)||count===null||count<0
+      ||count>cap||data.length!==count
+      ||data.some(row=>typeof row?.phrase_norm!=='string'||!row.phrase_norm.startsWith('frame:voice:'))){
+      throw new Error('hand voice frame window missing, malformed or truncated');
+    }
+    return new Set(data.map(row=>row.phrase_norm));
+  } catch(error) {
+    noteReadFailure('frame',error instanceof Error?error.message:String(error));
+    throw new LedgerUnreadableError('complete hand voice frame window unavailable');
+  }
+}
+
 const YT_PATTERNS = [
   /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
   /youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/,

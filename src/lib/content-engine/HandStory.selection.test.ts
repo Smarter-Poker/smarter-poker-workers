@@ -1,13 +1,13 @@
 import {beforeEach, afterEach, describe, expect, it, vi} from 'vitest';
 
 type Row = Record<string, unknown>;
-const db=vi.hoisted(()=>({tables:{} as Record<string,Row[]>,reads:[] as Array<{table:string;select:string}>,failSelect:''}));
+const db=vi.hoisted(()=>({tables:{} as Record<string,Row[]>,reads:[] as Array<{table:string;select:string}>,failSelect:'',frameReads:0,frameCountOverride:undefined as number|null|undefined}));
 vi.mock('../supabase.js',()=>({
   getSupabase:()=>({from:(table:string)=>{
     const predicates:Array<(row:Row)=>boolean>=[];
-    let columns='*',limit=Infinity,order='';
+    let columns='*',limit=Infinity,order='',counted=false;
     const query:Record<string,unknown>={
-      select:(value:string)=>{columns=value;return query;},
+      select:(value:string,options?:{count?:string})=>{columns=value;counted=options?.count==='exact';return query;},
       eq:(key:string,value:unknown)=>{predicates.push(row=>String(row[key])===String(value));return query;},
       in:(key:string,values:unknown[])=>{predicates.push(row=>values.map(String).includes(String(row[key])));return query;},
       gte:(key:string,value:string)=>{predicates.push(row=>String(row[key])>=value);return query;},
@@ -16,12 +16,14 @@ vi.mock('../supabase.js',()=>({
       limit:(value:number)=>{limit=value;return query;},
       then:(resolve:(value:unknown)=>unknown,reject:(error:unknown)=>unknown)=>{
         db.reads.push({table,select:columns});
+        if(table==='horse_phrase_ledger'&&counted)db.frameReads++;
         if(db.failSelect&&columns===db.failSelect)return Promise.resolve({data:null,error:{message:'unreadable source'}}).then(resolve,reject);
         let rows=(db.tables[table]??[]).filter(row=>predicates.every(p=>p(row)));
+        const count=rows.length;
         if(order)rows=[...rows].sort((a,b)=>String(b[order]).localeCompare(String(a[order])));
         rows=rows.slice(0,limit);
         const selected=columns==='*'?rows:rows.map(row=>Object.fromEntries(columns.split(',').map(key=>[key.trim(),row[key.trim()]])));
-        return Promise.resolve({data:selected,error:null}).then(resolve,reject);
+        return Promise.resolve({data:selected,error:null,status:200,count:counted?(db.frameCountOverride===undefined?count:db.frameCountOverride):null}).then(resolve,reject);
       },
     };
     return query;
@@ -55,7 +57,7 @@ describe('completed own-hand selection and canonical freshness',()=>{
     vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date('2026-10-19T12:00:00Z'));
     db.tables={horse_hand_reviews:[row('9001',HAND_ONE),row('9002',HAND_TWO)],hand_history:[
       {id:HAND_ONE,ended_at:'2026-10-19T10:00:00Z'},{id:HAND_TWO,ended_at:'2026-10-19T10:00:00Z'},
-    ]};db.reads=[];db.failSelect='';
+    ]};db.reads=[];db.failSelect='';db.frameReads=0;db.frameCountOverride=undefined;
   });
   afterEach(()=>vi.useRealTimers());
 
@@ -96,6 +98,7 @@ describe('completed own-hand selection and canonical freshness',()=>{
     expect(out?.semanticKey).not.toBe(`grounded:hand:${first!.handId}`);
     expect(out?.semanticKey).toMatch(/^grounded:hand:[0-9a-f-]{36}$/);
     expect(db.reads.filter(read=>read.table==='horse_hand_reviews'&&read.select.includes('actions'))).toHaveLength(1);
+    expect(db.frameReads).toBe(1);
   });
 
   it('tries another category when all frames for the first hand are occupied',async()=>{
@@ -126,6 +129,35 @@ describe('completed own-hand selection and canonical freshness',()=>{
     const out=await writeGrounded(author,{hand:true,session:false});
     expect(out?.text).toBeTruthy();
     expect(phrases.map(p=>p.phrase_norm)).not.toContain(normalizePhrase(out!.text));
+    expect(db.frameReads).toBe(1);
+  });
+
+  it('uses recent focus from another category instead of repeating a showdown loss',async()=>{
+    const review=row('9001',HAND_ONE);
+    review.game_variant='plo4';review.is_win=false;review.net_bb=-80;review.leak_tags=['dominated_straight'];
+    review.actions=[{userId:HORSE,stage:'river',action:'check',amount:0},{userId:'private-opponent-uuid',stage:'river',action:'check',amount:0}];
+    db.tables.horse_hand_reviews=[review];
+    db.tables.horse_phrase_ledger=[ledger('frame:voice:bad_beat:4')];
+    const out=await writeGrounded(author,{hand:true,session:false});
+    expect(out?.grounding).toContain('category:cooler');
+    expect(['frame:voice:cooler:1','frame:voice:cooler:2','frame:voice:cooler:5','frame:voice:cooler:7','frame:voice:cooler:9']).not.toContain(out?.frameKey);
+    expect(out?.text).toBeTruthy();expect(db.frameReads).toBe(1);
+  });
+
+  it.each([null,1001])('abandons a hand draft if exact family count is missing or truncated: %s',async count=>{
+    db.frameCountOverride=count;
+    expect(await writeGrounded(author,{hand:true,session:false})).toBeNull();
+    expect(db.frameReads).toBe(1);
+  });
+  it('does not query hand frames when there are no source candidates',async()=>{
+    db.tables.horse_hand_reviews=[];
+    expect(await writeGrounded(author,{hand:true,session:false})).toBeNull();
+    expect(db.frameReads).toBe(0);
+  });
+  it('abandons the hand draft on a frame family read error',async()=>{
+    db.failSelect='phrase_norm';
+    expect(await writeGrounded(author,{hand:true,session:false})).toBeNull();
+    expect(db.frameReads).toBe(1);
   });
 
   it.each([
