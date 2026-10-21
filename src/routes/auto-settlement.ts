@@ -31,6 +31,18 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import {
+  OwnerOperationalNoticeRefused,
+  insertOperationalNotices,
+  isOwnerAccount,
+  splitOwnerCopy,
+} from '../lib/ownerOperationalRouting.js';
+import {
+  SettlementAlerts,
+  errorEvidence,
+  problemNoticeMarker,
+  type SettlementProblemEvidence,
+} from '../lib/unionSettlementAlerts.js';
 
 const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000';
 
@@ -79,6 +91,8 @@ interface Results {
   union_pnl: Array<Record<string, unknown>>;
   /** Broken union governance invariants, if any (added 2026-08-19). */
   governance: Array<Record<string, unknown>>;
+  /** Production Alerts events this run recorded for the owner account's copies. */
+  operational_alerts?: Array<Record<string, unknown>>;
   errors: Array<Record<string, unknown>>;
   duration_ms?: number;
   fatal_error?: string;
@@ -186,50 +200,116 @@ async function sendSettlementMessages(
  * response — which goes to the Open Claw dispatcher and is read by nobody. A
  * settlement that silently declines to pay is indistinguishable from one that
  * paid, which defeats the point of having a guard at all.
+ *
+ * These notices are operational (a job fault, a parked settlement, a live rule
+ * break). The owner account's copy is never a personal notification - the push
+ * mirror would put it on that account's phone. It is queued on `alerts` and
+ * recorded in public.operational_alert_events, addressed to the
+ * production-alerts fleet (lib/unionSettlementAlerts.ts). Every other
+ * recipient, the union's own owner and admins, gets the notification this
+ * function always sent, with the settlement problem marker added to its data
+ * (component, alertname, severity), which is how the database classifier tells
+ * it from a business statement. insertOperationalNotices refuses any batch that
+ * addresses the owner account, so this sender cannot put operational content
+ * in that account's inbox even if the split below regresses. Such a refusal
+ * is never swallowed: it fails the run (HTTP 500, retryable: false once money
+ * moved), the owner account's copy still goes to the store, and the other
+ * recipients still get the notice, written without the owner row. `split` is
+ * splitOwnerCopy; a test stands a regressed one in to prove that.
  */
-async function notifyUnionSettlementProblem(
+export async function notifyUnionSettlementProblem(
   supabase: SupabaseClient,
+  alerts: SettlementAlerts,
   unionId: string,
   unionName: string | null,
+  evidence: SettlementProblemEvidence,
   title: string,
   message: string,
   data: Record<string, unknown>,
+  split: typeof splitOwnerCopy = splitOwnerCopy,
 ): Promise<void> {
+  const recipients = new Set<string>();
+  let recipientsKnown = true;
   try {
-    const recipients = new Set<string>();
-
-    const { data: unionRow } = await supabase
+    const { data: unionRow, error: unionErr } = await supabase
       .from('unions')
       .select('owner_id')
       .eq('id', unionId)
       .maybeSingle();
+    if (unionErr) recipientsKnown = false;
     if ((unionRow as any)?.owner_id) recipients.add((unionRow as any).owner_id);
 
-    const { data: admins } = await supabase
+    const { data: admins, error: adminsErr } = await supabase
       .from('union_admins')
       .select('user_id')
       .eq('union_id', unionId);
+    if (adminsErr) recipientsKnown = false;
     for (const a of admins ?? []) {
       if ((a as any)?.user_id) recipients.add((a as any).user_id);
     }
-
-    if (recipients.size === 0) return;
-
-    await supabase.from('notifications').insert(
-      [...recipients].map((uid) => ({
-        user_id: uid,
-        type: 'settlement',
-        title,
-        message,
-        data: { union_id: unionId, union_name: unionName, ...data },
-        read: false,
-      })),
-    );
   } catch (err) {
+    // As before, a lookup that throws sends no personal notice at all.
+    recipientsKnown = false;
+    recipients.clear();
     console.warn(
       '[auto-settlement] union settlement alert failed:',
       err instanceof Error ? err.message : err,
     );
+  }
+
+  const routed = split(recipients);
+  let ownerCopy = routed.ownerCopy;
+  let notified = 0;
+  const marker = problemNoticeMarker(evidence.kind);
+  const notices = (userIds: string[]) => userIds.map((uid) => ({
+    user_id: uid,
+    type: 'settlement',
+    title,
+    message,
+    data: { union_id: unionId, union_name: unionName, ...data },
+    read: false as const,
+  }));
+  if (routed.personal.length > 0) {
+    try {
+      let written: { inserted: number; error: string | null };
+      try {
+        written = await insertOperationalNotices(supabase, marker, notices(routed.personal));
+      } catch (err) {
+        if (!(err instanceof OwnerOperationalNoticeRefused)) throw err;
+        // The split let the owner account through, and the guard refused the
+        // whole batch before any write, so nothing reached that account. That
+        // regression fails the run; the owner account's copy still goes to the
+        // store, and the other recipients get the notice without the owner row.
+        alerts.routingFailed(`${evidence.kind} notice for union ${unionId}: ${err.message}`);
+        ownerCopy = true;
+        written = await insertOperationalNotices(
+          supabase,
+          marker,
+          notices(routed.personal.filter((uid) => !isOwnerAccount(uid))),
+        );
+      }
+      notified = written.inserted;
+      // The database refused the other recipients' rows: logged, as it always
+      // was, and the store copy below carries other_recipients_notified.
+      if (written.error) console.warn('[auto-settlement] union settlement alert failed:', written.error);
+    } catch (err) {
+      // Any other throw is a failed step of this run, never swallowed; the
+      // owner account's copy below still goes to the store.
+      alerts.routingFailed(`${evidence.kind} notice for union ${unionId}: `
+        + `${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // An operational fault never vanishes because its recipients could not be
+  // read: it goes to the fleet's store, never to a phone.
+  if (ownerCopy || !recipientsKnown) {
+    alerts.ownerCopy({
+      unionId,
+      unionName,
+      evidence,
+      recipientsUnknown: !recipientsKnown,
+      otherRecipientsNotified: notified,
+    });
   }
 }
 
@@ -249,6 +329,18 @@ export async function autoSettlement(c: Context) {
     governance: [],
     errors: [],
   };
+  // The owner account's copies of this run's problem notices, and their
+  // recoveries. Queued while the run settles; recorded after its last money call.
+  const alerts = new SettlementAlerts(supabase, startTime);
+  // The alert phase, on every path that returns normally: true when a step failed.
+  const runAlertsPhase = async (): Promise<boolean> => {
+    await alerts.flush();
+    results.operational_alerts = alerts.outcomes;
+    for (const failure of alerts.failures) {
+      results.errors.push({ phase: 'operational_alerts', error: failure });
+    }
+    return alerts.failures.length > 0;
+  };
 
 
   try {
@@ -263,11 +355,19 @@ export async function autoSettlement(c: Context) {
     const clubs = (clubsData ?? []) as Club[];
 
     if (clubs.length === 0) {
+      // Nothing settles, so nothing moves money. The alert phase still runs:
+      // it is the net for problem notices from any sender, and it proves the
+      // recoveries of windows settled elsewhere. Neither the P&L phase nor the
+      // governance checks run on this path: a P&L incident closes here only on
+      // settled rows written by another path, and a rule incident cannot
+      // recover here; the fleet closes them, or a later run does.
+      const alertsFailed = await runAlertsPhase();
       return c.json({
         success: true,
-        message: 'No clubs with auto-settlement enabled',
+        message: 'No clubs with auto-settlement enabled'
+          + (alertsFailed ? `. ${alerts.failures.length} Production Alerts step(s) failed; nothing was settled.` : ''),
         results,
-      });
+      }, alertsFailed ? 500 : 200);
     }
 
     const now = new Date();
@@ -898,8 +998,14 @@ export async function autoSettlement(c: Context) {
             });
             await notifyUnionSettlementProblem(
               supabase,
+              alerts,
               (u as any).id,
               (u as any).name,
+              {
+                kind: 'pnl_needs_review',
+                reason: res.reason ?? null,
+                settlement_id: res.settlement_id ?? null,
+              },
               'Weekly player P&L needs review',
               `This week's club/union player win-loss settlement was NOT paid. `
                 + `Reason: ${res.reason ?? 'unknown'}. `
@@ -925,8 +1031,10 @@ export async function autoSettlement(c: Context) {
           });
           await notifyUnionSettlementProblem(
             supabase,
+            alerts,
             (u as any).id,
             (u as any).name,
+            { kind: 'pnl_failed', error: errorEvidence(unionErr) },
             'Weekly player P&L failed',
             `This week's club/union player win-loss settlement did not run: ${msg}. `
               + `No chips were moved.`,
@@ -967,6 +1075,7 @@ export async function autoSettlement(c: Context) {
       const { data: conservation, error: consErr } = await supabase.rpc(
         'fn_settlement_conservation_check',
       );
+      const checksComplete = !consErr;
       if (consErr) {
         results.errors.push({
           phase: 'union_governance_check',
@@ -1002,12 +1111,35 @@ export async function autoSettlement(c: Context) {
       // Only page a human for critical breaks — a warning is a nudge, a
       // critical is the hard rule itself being violated in live data.
       if (critical.length > 0) {
-        const { data: unionRows } = await supabase.from('unions').select('id, name');
+        // Invariant names and counts only: a violation's detail text can name a
+        // player wallet and its balance, which never goes into an alert payload.
+        const evidence: SettlementProblemEvidence = {
+          kind: 'rule_violation',
+          violations: critical.map((v) => ({
+            invariant: v.invariant,
+            severity: v.severity,
+            offenders: Number(v.offenders),
+          })),
+        };
+        const { data: unionRows, error: unionsErr } = await supabase
+          .from('unions')
+          .select('id, name');
+        if (unionsErr) {
+          alerts.ownerCopy({
+            unionId: 'unknown',
+            unionName: null,
+            evidence,
+            recipientsUnknown: true,
+            otherRecipientsNotified: 0,
+          });
+        }
         for (const u of unionRows ?? []) {
           await notifyUnionSettlementProblem(
             supabase,
+            alerts,
             (u as any).id,
             (u as any).name,
+            evidence,
             'Union rule violation detected',
             critical
               .map((v) => `${v.invariant}: ${v.detail} (${v.offenders} affected)`)
@@ -1016,6 +1148,9 @@ export async function autoSettlement(c: Context) {
           );
         }
       }
+      // Only a complete run of both checks proves which invariants are no
+      // longer broken; each one it no longer reports as critical recovers.
+      if (checksComplete) alerts.rulesChecked(critical.map((v) => v.invariant));
     } catch (govErr) {
       results.errors.push({
         phase: 'union_governance_check',
@@ -1023,14 +1158,32 @@ export async function autoSettlement(c: Context) {
       });
     }
 
+    // === PRODUCTION ALERTS ===
+    // After the last money call: the owner account's copies of this run's
+    // problem notices, their recoveries, and the check that none remains in
+    // that account's personal inbox. A write that fails is never replaced by a
+    // personal notification; it fails the run (HTTP 500). That run's copy is
+    // then lost: the 500 in the dispatcher's log is its only trace, nothing
+    // pages, and the next run records the condition only if it still holds.
+    results.phase = 'operational_alerts';
+    const alertsFailed = await runAlertsPhase();
+
     results.phase = 'complete';
     results.duration_ms = Date.now() - startTime;
 
     return c.json({
       success: true,
-      message: `Auto-settlement complete. ${results.clubs_processed} clubs processed, ${results.invoices_generated} invoices generated.`,
+      // The money phases already ran, and a re-run would settle the periods
+      // this run just opened. Before the message, so the dispatcher's
+      // 200-character log line carries it. 500, not 503: this estate treats
+      // 503 as retryable (World Hub supabaseRetry RETRYABLE_HTTP).
+      ...(alertsFailed ? { retryable: false } : {}),
+      message: `Auto-settlement complete. ${results.clubs_processed} clubs processed, ${results.invoices_generated} invoices generated.`
+        + (alertsFailed
+          ? ` ${alerts.failures.length} Production Alerts step(s) failed; the settlement itself completed and must not be re-run.`
+          : ''),
       results,
-    });
+    }, alertsFailed ? 500 : 200);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn('[auto-settlement] fatal:', msg);
