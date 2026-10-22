@@ -13,11 +13,17 @@ const ACTORS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ['Joey Weissman', ['Joey Weissman']], ['Nicholas Palma', ['Nicholas Palma', 'Nick Palma']],
   ['Myles Mullaly', ['Myles Mullaly']], ['Robert Gianquitti', ['Robert Gianquitti']],
   ['Brandon Wilson', ['Brandon Wilson']], ['Bryan Taylor', ['Bryan Taylor']],
+  ['Keith Lehr', ['Keith Lehr']], ['Jeremy Ausmus', ['Jeremy Ausmus']],
+  ['Justin Vaysman', ['Justin Vaysman']], ['Ivelin Kolev', ['Ivelin Kolev']],
+  ['Shawn Murphy', ['Shawn Murphy']], ['Sam Chartier', ['Sam Chartier']],
+  ['Umut Ozturk', ['Umut Ozturk']],
 ];
 const EVENTS = [
   'PokerNews Online Championship', 'Kings of Tallinn', 'Victorian Poker Championship',
   '888LIVE London Main Event', 'Poker Masters', 'WSOP Circuit Pompano Beach Main Event',
   'Super High Roller Bowl XI', '888LIVE London High Roller',
+  'WPT Prime Cyprus Champions', 'RGPS Houston $600 Main Event',
+  'MSPT Canadian Poker Championship',
 ] as const;
 const ordinal = '(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|[1-9][0-9]?(?:st|nd|rd|th))';
 const money = '(?:\\d+|\\d{1,3}(?:,\\d{3})+)(?:\\.\\d+)?';
@@ -37,6 +43,13 @@ const WIN_RULES = ACTORS.flatMap(([actor, aliases]) => EVENTS.map(event => {
     `${name} joins poker royalty with ${tournament} title`,
     `${name} back in the winner's circle at ${tournament}`,
     `${name} wins ${tournament} title after three money bubbles`,
+    `${name} captures ${tournament} event no\\. [1-9][0-9]? title`,
+    `${name} wins ${tournament} event #[1-9][0-9]? for ${ordinal} PGT title`,
+    `${name} locks up ${ordinal} PGT trophy at (?:2026 )?${tournament}`,
+    `${name} comes back from (?:0\\.25|[1-9][0-9]?) big blinds to win a ${tournament} title`,
+    `${name} mounts chip-and-a-chair comeback to win ${ordinal} PGT title at ${tournament}`,
+    `${name} dominates day [1-9] to win ${tournament} for \\$${money}`,
+    `${name} wins ${tournament} at Playground for largest-ever score on home soil`,
   ];
   if (event === '888LIVE London High Roller') patterns.push(`London proves ${name}'s (?:"Lucky Charm"|Lucky Charm) on his way to the 888LIVE High Roller title`);
   return {
@@ -58,6 +71,8 @@ export function newsResultFact(b: PostBrief, title: string): CaptionFact | null 
     // deliberately merges separate wins when a headline omits detail.
     const win = WIN_RULES.find(rule => rule.pattern.test(title));
     if (win) return report(win.identity, win.subject);
+    if (/^Umut Ozturk Conquers FireKeepers For Second MSPT Main Event Title Of 2026$/i.test(title))
+      return report('news:win:actor:umut ozturk:event:mspt firekeepers main event', "Umut Ozturk's MSPT FireKeepers Main Event win");
   }
   if (b.domain === 'sports') {
     // Only source-established team/role/surname bindings. These are report
