@@ -1,7 +1,19 @@
 /**
  * GET/POST /cron/anti-cheat-multi-account
  *
- * Multi-account detector v2 (2026-10-22). Replaces multi_account_ip_match_v1.
+ * Multi-account detector v3 (2026-10-22). Replaces v2 and multi_account_ip_match_v1.
+ *
+ * v3 adds what an IP address cannot tell: the same app/browser INSTALL on two
+ * accounts (anti_cheat_device_sightings, reported by the client), and whether
+ * the two accounts were actually DEALT INTO the same hands (hand_history),
+ * instead of merely connecting to the same table. Verdicts:
+ *   critical  same device and the same hands
+ *   high      same device, or same household address and the same hands
+ *             while both were on it
+ *   medium    2+ distinct household addresses shared
+ * After detection, one stale published shared-address list (Apple Private
+ * Relay, AWS, Google Cloud, Cloudflare, GitHub Actions, Azure) is refreshed,
+ * so those addresses never count as a household (lib/sharedIpRanges.ts).
  *
  * Why v1 was retired. v1 flagged every pair of accounts that opened an engine
  * socket from the same IP inside 24 hours. That is "two people logged in from
@@ -12,17 +24,16 @@
  * never flag SmarterPokerOfficial or any admin account; only flag real
  * multiple accounts, not multiple log-ins.
  *
- * The rules live in public.detect_multi_account_v2(p_since, p_until):
+ * The rules live in public.detect_multi_account_v3(p_since, p_until):
  *   - Never-flag accounts are removed before any matching: admin/staff/owner
  *     accounts (SmarterPokerOfficial is role 'god'), synthetic PostDeploy
  *     accounts, and anti_cheat_exemptions (KingFish, Danimal). They neither
- *     get flagged nor cause anyone else to be flagged.
- *   - Shared-infrastructure IPs are ignored: private, carrier NAT, iCloud
- *     Private Relay, cloud datacenters (public.anti_cheat_shared_ip_ranges),
- *     and any IP used by 6+ accounts in the window (a venue, a carrier NAT).
- *   - A pair is reported only when the two accounts connected to the SAME
- *     TABLE from the same IP within 3 hours (high), or share 2+ distinct
- *     household IPs (medium). One shared IP on its own is never a flag.
+ *     get flagged nor cause anyone else to be flagged, and a device any of
+ *     them ever used is a staff device that flags nobody.
+ *   - Shared-infrastructure IPs are ignored: private, carrier NAT, published
+ *     relay and cloud lists (public.anti_cheat_shared_ip_ranges), and any IP
+ *     used by 6+ accounts in the window (a venue, a carrier NAT).
+ *   - One shared address on its own is never a flag.
  * The anti_cheat_flags insert trigger is a second wall: it drops any flag on
  * a staff account and any multi-account flag on a synthetic account.
  *
@@ -36,8 +47,9 @@
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 import { resolveScanWindow, ScanWindowError, dedupeSinceFor } from '../lib/scanWindow.js';
+import { refreshOneStaleSource, type RefreshOutcome } from '../lib/sharedIpRanges.js';
 
-const DETECTOR = 'multi_account_v2';
+const DETECTOR = 'multi_account_v3';
 const SCAN_WINDOW_HOURS = 24 * 14; // 2+ shared household IPs needs more than a day of history
 const FLAG_DEDUPE_HOURS = 24 * 7; // the same pair is not re-flagged for a week
 
@@ -51,10 +63,13 @@ interface ScanResult {
 interface PairRow {
   user_a: string;
   user_b: string;
+  severity: 'medium' | 'high' | 'critical';
+  evidence: string[];
+  shared_devices: number;
   shared_ips: number;
-  same_table: boolean;
-  severity: 'medium' | 'high';
   ips: string[];
+  shared_hands: number;
+  hand_numbers: Array<number | string>;
 }
 
 export async function antiCheatMultiAccount(c: Context) {
@@ -81,14 +96,14 @@ export async function antiCheatMultiAccount(c: Context) {
 
   // No fallback to raw audit rows: a detector that cannot apply its rules
   // reports an error instead of flagging on a weaker signal.
-  const { data, error: rpcErr } = await supabase.rpc('detect_multi_account_v2', {
+  const { data, error: rpcErr } = await supabase.rpc('detect_multi_account_v3', {
     p_since: since,
     p_until: until,
   } as Record<string, unknown>);
 
   if (rpcErr) {
     return c.json(
-      { ok: false, detector: DETECTOR, error: `detect_multi_account_v2: ${rpcErr.message}` },
+      { ok: false, detector: DETECTOR, error: `detect_multi_account_v3: ${rpcErr.message}` },
       500,
     );
   }
@@ -129,10 +144,13 @@ export async function antiCheatMultiAccount(c: Context) {
           severity: p.severity,
           reason: JSON.stringify({
             detector: DETECTOR,
-            evidence: p.same_table ? 'same_table_same_ip' : 'multiple_shared_household_ips',
+            evidence: p.evidence,
             other_user_ids: [otherId],
+            shared_devices: p.shared_devices,
             shared_ips: p.shared_ips,
             ips: p.ips,
+            shared_hands: p.shared_hands,
+            hand_numbers: (p.hand_numbers ?? []).map(Number),
             window_hours: SCAN_WINDOW_HOURS,
           }),
           status: 'open',
@@ -149,8 +167,14 @@ export async function antiCheatMultiAccount(c: Context) {
     }
   }
 
+  // Keep the published shared-address lists current: at most one source per
+  // run, after detection, never failing the run.
+  let sharedIpRefresh: RefreshOutcome = { source: null, skipped: 'dry run' };
+  if (!scanWindow.dryRun) sharedIpRefresh = await refreshOneStaleSource(supabase);
+
   return c.json({
     ok: result.errors.length === 0,
+    shared_ip_refresh: sharedIpRefresh,
     detector: DETECTOR,
     started_at: startedAt,
     completed_at: new Date().toISOString(),
