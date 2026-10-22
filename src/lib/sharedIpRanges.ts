@@ -169,9 +169,10 @@ export async function refreshOneStaleSource(
       .filter(({ at }) => now.getTime() - at >= REFRESH_EVERY_MS)
       .filter(({ s }) => now.getTime() - (lastFailure.get(s.source) ?? 0) >= RETRY_AFTER_FAILURE_MS)
       .sort((a, b) => a.at - b.at);
-    if (due.length === 0) return { source: null, skipped: 'all sources fresh' };
+    const next = due[0];
+    if (!next) return { source: null, skipped: 'all sources fresh' };
 
-    const { s } = due[0];
+    const s = next.s;
     const outcome = await refreshSource(supabase, s, fetchText);
     if (outcome.error) lastFailure.set(s.source, now.getTime());
     else lastFailure.delete(s.source);

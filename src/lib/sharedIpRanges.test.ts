@@ -82,7 +82,7 @@ describe('refreshOneStaleSource', () => {
     });
     expect(out.source).toBe('b'); // never refreshed is older than a week ago
     expect(rpc).toHaveBeenCalledTimes(1);
-    expect(rpc.mock.calls[0][1]).toMatchObject({ p_source: 'b', p_first: true });
+    expect(rpc.mock.calls[0]?.[1]).toMatchObject({ p_source: 'b', p_first: true });
   });
 
   it('does nothing when every source is fresh', async () => {
