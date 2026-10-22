@@ -6,6 +6,12 @@ import {briefForAsset} from './PostBrief.js';
 const profiles = Array.from({length:1000},(_,i)=>styleSheetFor(`00000000-0000-4000-8000-${String(i).padStart(12,'0')}`));
 const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu;
 describe('conversational caption rendering',()=>{
+  it('preserves literal numbered-event labels even in a words-numeral voice',()=>{
+    const style={...profiles[0]!,numerals:'words' as const,opener:'none' as const,closer:'none' as const,casing:'sentence' as const};
+    const text=render(['Poker Masters Event #7, Event 8 and Day 2'],style,'event-labels');
+    expect(text).toContain('Event #7');expect(text).toContain('Event 8');expect(text).toContain('Day 2');
+    expect(text).not.toMatch(/#seven|Event eight|Day two/);
+  });
   it('keeps a name suffix inside its sentence while capitalizing the next real sentence',()=>{
     const style={...profiles[0]!,opener:'none' as const,closer:'none' as const,casing:'sentence' as const,punctuation:'full' as const};
     const text=render(['Darius Acuff Jr. made his first NBA basket. what a debut?'],style,'suffix');

@@ -283,8 +283,14 @@ export function render(sentences: string[], s: StyleSheet, seed: string, opts: R
     // which is not a hand any player could read.
     parts = parts.map((p) =>
       p.replace(
-        /(^|[^\dA-Za-z/$.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
-        (_m, pre: string, n: string) => `${pre}${NUMBER_WORDS[n] ?? n}`,
+        /(^|[^\dA-Za-z/$#.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
+        (_m, pre: string, n: string, offset: number, sentence: string) => {
+          // Numbered event/day/game identifiers are source labels, not a
+          // stylistic quantity. Preserve their bytes just like score/card
+          // tokens, including labels that do not contain a hash sign.
+          const label=sentence.slice(0,offset+pre.length);
+          return `${pre}${/\b(?:event|day|game|round|level|no\.)\s*$/i.test(label)?n:NUMBER_WORDS[n]??n}`;
+        },
       ),
     );
   }
