@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   parseAppleEgressCsv,
   refreshOneStaleSource,
   toIpv4Cidr,
   REFRESH_EVERY_MS,
+  __resetSharedIpFailuresForTests,
   type SharedIpSource,
 } from './sharedIpRanges.js';
 
@@ -53,6 +54,24 @@ const src = (name: string, list: string[], min = 1): SharedIpSource => ({
 });
 
 describe('refreshOneStaleSource', () => {
+  beforeEach(() => __resetSharedIpFailuresForTests());
+
+  it('a failing source does not starve the next one', async () => {
+    const { client, rpc } = fakeSupabase([]);
+    const failing: SharedIpSource = {
+      source: 'f',
+      label: 'f',
+      minRanges: 1,
+      load: async () => {
+        throw new Error('down');
+      },
+    };
+    const sources = [failing, src('g', ['9.9.9.0/24'])];
+    expect((await refreshOneStaleSource(client, { now, sources })).source).toBe('f');
+    expect((await refreshOneStaleSource(client, { now, sources })).source).toBe('g');
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes the stalest due source only, in one replace', async () => {
     const { client, rpc } = fakeSupabase([
       { source: 'a', refreshed_at: new Date(now.getTime() - REFRESH_EVERY_MS - 1000).toISOString() },

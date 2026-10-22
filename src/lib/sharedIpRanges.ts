@@ -16,6 +16,14 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 export const REFRESH_EVERY_MS = 7 * 24 * 60 * 60 * 1000;
 const CHUNK = 5000;
+/** A source that just failed waits this long, so it cannot starve the others. */
+export const RETRY_AFTER_FAILURE_MS = 6 * 60 * 60 * 1000;
+const lastFailure = new Map<string, number>();
+
+/** Test seam. */
+export function __resetSharedIpFailuresForTests(): void {
+  lastFailure.clear();
+}
 const FETCH_TIMEOUT_MS = 30_000;
 const IPV4_CIDR = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/(\d{1,2}))?$/;
 
@@ -159,10 +167,26 @@ export async function refreshOneStaleSource(
     const due = sources
       .map((s) => ({ s, at: last.get(s.source) ?? 0 }))
       .filter(({ at }) => now.getTime() - at >= REFRESH_EVERY_MS)
+      .filter(({ s }) => now.getTime() - (lastFailure.get(s.source) ?? 0) >= RETRY_AFTER_FAILURE_MS)
       .sort((a, b) => a.at - b.at);
     if (due.length === 0) return { source: null, skipped: 'all sources fresh' };
 
     const { s } = due[0];
+    const outcome = await refreshSource(supabase, s, fetchText);
+    if (outcome.error) lastFailure.set(s.source, now.getTime());
+    else lastFailure.delete(s.source);
+    return outcome;
+  } catch (err) {
+    return { source: null, error: (err as Error).message };
+  }
+}
+
+async function refreshSource(
+  supabase: SupabaseClient,
+  s: SharedIpSource,
+  fetchText: (url: string) => Promise<string>,
+): Promise<RefreshOutcome> {
+  try {
     let cidrs: string[];
     try {
       cidrs = await s.load(fetchText);
@@ -197,6 +221,6 @@ export async function refreshOneStaleSource(
     }
     return { source: s.source, ranges: total };
   } catch (err) {
-    return { source: null, error: (err as Error).message };
+    return { source: s.source, error: (err as Error).message };
   }
 }
