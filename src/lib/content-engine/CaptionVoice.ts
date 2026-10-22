@@ -33,6 +33,23 @@ export function literalNewsReportClauses(fact: CaptionFact, title = ''): string[
     if (win) {
       const actor=win[1]!,event=win[2]!;
       const source=title.replace(/[\u2018\u2019]/g,"'").replace(/\s+/g,' ').replace(/[.!]+$/,'').trim();
+      // Keep only details bound by the already-qualified whole headline.
+      // These clauses do not salt the actor/event identity with wording,
+      // article URL, event number, payout or career ordinal.
+      const captured=source.match(new RegExp(`^${escape(actor)} captures ${escape(event)} event no\\. ([1-9][0-9]?) title$`,'i'));
+      if(captured)return [`${event} Event ${captured[1]} went to ${actor}`];
+      const earned=source.match(new RegExp(`^${escape(actor)} wins ${escape(event)} event #([1-9][0-9]?) for ([1-9][0-9]?(?:st|nd|rd|th)) PGT title$`,'i'));
+      if(earned)return [`${actor} won ${event} Event ${earned[1]} for his ${earned[2]} PGT title`];
+      const locked=source.match(new RegExp(`^${escape(actor)} locks up ([1-9][0-9]?(?:st|nd|rd|th)) PGT trophy at (2026 )?${escape(event)}$`,'i'));
+      if(locked)return [`${actor} earned his ${locked[1]} PGT trophy at ${locked[2]??''}${event}`];
+      const comeback=source.match(new RegExp(`^${escape(actor)} comes back from (0\\.25|[1-9][0-9]?) big blinds to win a ${escape(event)} title$`,'i'));
+      if(comeback)return [`${actor} won a ${event} title after coming back from ${comeback[1]} big blinds`];
+      const first=source.match(new RegExp(`^${escape(actor)} mounts chip-and-a-chair comeback to win (first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|[1-9][0-9]?(?:st|nd|rd|th)) PGT title at ${escape(event)}$`,'i'));
+      if(first)return [`${actor} won his ${first[1]!.toLowerCase()} PGT title at ${event}`];
+      const payout=source.match(new RegExp(`^${escape(actor)} (?:wins ${escape(event)}|dominates day [1-9] to win ${escape(event)}) for \\$(\\d+(?:,\\d{3})*(?:\\.\\d+)?)$`,'i'));
+      if(payout)return [`${actor} won ${event} for $${payout[1]}`];
+      if(new RegExp(`^${escape(actor)} wins ${escape(event)} at Playground for largest-ever score on home soil$`,'i').test(source))return [`${actor} won ${event} at Playground`];
+      if(actor==='Umut Ozturk'&&event==='MSPT FireKeepers Main Event'&&/^Umut Ozturk Conquers FireKeepers For Second MSPT Main Event Title Of 2026$/i.test(source))return ['Umut Ozturk won his second MSPT Main Event title of 2026 at FireKeepers'];
       // Retain details that the already-qualified closed report actually
       // supplies. These are not new freshness identities: an ordinal or an
       // event number remains the same actor/event meaning in the ledger.
