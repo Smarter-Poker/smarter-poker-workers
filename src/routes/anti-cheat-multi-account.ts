@@ -1,40 +1,45 @@
 /**
  * GET/POST /cron/anti-cheat-multi-account
  *
- * Phase X7.4 (Master Gap Ledger 2026-04-28) — closes P0-E1 + PB-BETTER-2.
+ * Multi-account detector v2 (2026-10-22). Replaces multi_account_ip_match_v1.
  *
- * Cadence: every 30 minutes. Open Claw fires this scoped to recent traffic
- * windows; the handler short-circuits when no new sign-ins occurred since
- * last scan.
+ * Why v1 was retired. v1 flagged every pair of accounts that opened an engine
+ * socket from the same IP inside 24 hours. That is "two people logged in from
+ * the same place", not "one person running two accounts". In practice it
+ * flagged SmarterPokerOfficial and the other admin accounts, the synthetic
+ * PostDeploy smoke accounts, players behind iCloud Private Relay and cloud
+ * egress addresses, and re-flagged the same people every day. Dan, 2026-10-22:
+ * never flag SmarterPokerOfficial or any admin account; only flag real
+ * multiple accounts, not multiple log-ins.
  *
- * Detector goal: surface user_id pairs that share infrastructure within a
- * suspicious window. PokerBros doesn't run this; we do. Per Tier-E v1
- * contract: FLAG-ONLY. No auto-block. Each hit writes one row to
- * anti_cheat_flags(player_id, flag_type='multi_account', severity, reason,
- * status='open'). Admin disposition happens through the dashboard
- * (/api/club-arena/anti-cheat).
+ * The rules live in public.detect_multi_account_v2(p_since, p_until):
+ *   - Never-flag accounts are removed before any matching: admin/staff/owner
+ *     accounts (SmarterPokerOfficial is role 'god'), synthetic PostDeploy
+ *     accounts, and anti_cheat_exemptions (KingFish, Danimal). They neither
+ *     get flagged nor cause anyone else to be flagged.
+ *   - Shared-infrastructure IPs are ignored: private, carrier NAT, iCloud
+ *     Private Relay, cloud datacenters (public.anti_cheat_shared_ip_ranges),
+ *     and any IP used by 6+ accounts in the window (a venue, a carrier NAT).
+ *   - A pair is reported only when the two accounts connected to the SAME
+ *     TABLE from the same IP within 3 hours (high), or share 2+ distinct
+ *     household IPs (medium). One shared IP on its own is never a flag.
+ * The anti_cheat_flags insert trigger is a second wall: it drops any flag on
+ * a staff account and any multi-account flag on a synthetic account.
  *
- * Signal: same IP address (auth.sessions.ip) used by 2+ distinct user_ids
- * in a 24h window. Severity:
- *   - low    = 2 accounts on same IP, no overlap in actual play time
- *   - medium = 2 accounts on same IP, overlapping play sessions
- *   - high   = 3+ accounts on same IP
- *   - critical = 3+ accounts + chip transfers between them in same window
- *     (chip_dump detector handles the cross-flag escalation later)
+ * Horses: identity filtering here is about staff and synthetic smoke
+ * accounts only. Horses go through every rule exactly as humans do
+ * (CLAUDE.md 10.5).
  *
- * False-positive notes: roommates / family members / shared computers
- * legitimately overlap. The flag-only contract means an admin reviews
- * every hit before action; a future v1.1 will tune the auto-block threshold
- * from real-flag-rate data per Tier-E decision Q4.
- *
+ * FLAG-ONLY. No auto-block. Admin disposition happens in the dashboard.
  * Auth: /cron/* middleware chain.
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
 import { resolveScanWindow, ScanWindowError, dedupeSinceFor } from '../lib/scanWindow.js';
 
-const SCAN_WINDOW_HOURS = 24;
-const FLAG_DEDUPE_HOURS = 24; // don't re-flag the same (player, flag_type) within this window
+const DETECTOR = 'multi_account_v2';
+const SCAN_WINDOW_HOURS = 24 * 14; // 2+ shared household IPs needs more than a day of history
+const FLAG_DEDUPE_HOURS = 24 * 7; // the same pair is not re-flagged for a week
 
 interface ScanResult {
   pairs_scanned: number;
@@ -43,9 +48,13 @@ interface ScanResult {
   errors: string[];
 }
 
-interface IpGroup {
-  ip: string;
-  user_ids: string[];
+interface PairRow {
+  user_a: string;
+  user_b: string;
+  shared_ips: number;
+  same_table: boolean;
+  severity: 'medium' | 'high';
+  ips: string[];
 }
 
 export async function antiCheatMultiAccount(c: Context) {
@@ -70,66 +79,39 @@ export async function antiCheatMultiAccount(c: Context) {
     errors: [],
   };
 
-  // 1. Pull recent sessions grouped by IP. auth.sessions.ip is the source of
-  //    truth; fall back to action_audit_logs.ip_address if unavailable.
-  // detect_multi_account_ips(p_since) has no upper bound, so it can only ever
-  // answer "since X, up to now". For an explicit historical window we skip it
-  // and use the action_audit_logs path below, which honours both bounds. The
-  // default (non-overridden) call is unchanged.
-  const rpcUsable = !scanWindow.overridden;
-  const { data: ipGroups, error: queryErr } = rpcUsable
-    ? await supabase.rpc('detect_multi_account_ips', {
-        p_since: since,
-      } as Record<string, unknown>)
-    : { data: null, error: null };
+  // No fallback to raw audit rows: a detector that cannot apply its rules
+  // reports an error instead of flagging on a weaker signal.
+  const { data, error: rpcErr } = await supabase.rpc('detect_multi_account_v2', {
+    p_since: since,
+    p_until: until,
+  } as Record<string, unknown>);
 
-  // If the RPC doesn't exist yet, or an explicit window bypassed it, fall back
-  // to a query against action_audit_logs.
-  let groups: IpGroup[] = [];
-  if (queryErr || !ipGroups) {
-    const { data: rows } = await supabase
-      .from('action_audit_logs')
-      .select('ip_address, user_id')
-      .gte('created_at', since)
-      .lt('created_at', until)
-      .not('ip_address', 'is', null)
-      .not('user_id', 'is', null)
-      .limit(50_000);
-
-    const byIp = new Map<string, Set<string>>();
-    for (const r of (rows ?? []) as Array<{ ip_address: string; user_id: string }>) {
-      if (!r.ip_address || !r.user_id) continue;
-      const set = byIp.get(r.ip_address) ?? new Set();
-      set.add(r.user_id);
-      byIp.set(r.ip_address, set);
-    }
-    for (const [ip, ids] of byIp) {
-      if (ids.size >= 2) groups.push({ ip, user_ids: Array.from(ids) });
-    }
-  } else {
-    groups = ipGroups as IpGroup[];
+  if (rpcErr) {
+    return c.json(
+      { ok: false, detector: DETECTOR, error: `detect_multi_account_v2: ${rpcErr.message}` },
+      500,
+    );
   }
 
-  result.pairs_scanned = groups.length;
+  const pairs = (data ?? []) as PairRow[];
+  result.pairs_scanned = pairs.length;
 
-  // 2. For each group, check dedupe + write flag rows.
-  for (const g of groups) {
-    if (g.user_ids.length < 2) continue;
-    const accountCount = g.user_ids.length;
-    const severity =
-      accountCount >= 3 ? 'high' : accountCount >= 2 ? 'medium' : 'low';
-
-    for (const playerId of g.user_ids) {
+  for (const p of pairs) {
+    for (const [playerId, otherId] of [
+      [p.user_a, p.user_b],
+      [p.user_b, p.user_a],
+    ] as const) {
       try {
-        // Dedupe: skip if a multi_account flag for this player already
-        // exists within the dedupe window at status='open'.
+        // Dedupe on the pair, not just the player: an open or already
+        // reviewed flag for this same pair inside the window is enough.
         const { data: existing } = await supabase
           .from('anti_cheat_flags')
           .select('id')
           .eq('player_id', playerId)
           .eq('flag_type', 'multi_account')
-          .eq('status', 'open')
+          .in('status', ['open', 'reviewed', 'dismissed'])
           .gte('flagged_at', dedupeSince)
+          .like('reason', `%${otherId}%`)
           .limit(1);
 
         if (existing && existing.length > 0) {
@@ -137,7 +119,6 @@ export async function antiCheatMultiAccount(c: Context) {
           continue;
         }
 
-        const otherIds = g.user_ids.filter((id) => id !== playerId);
         if (scanWindow.dryRun) {
           result.flags_written += 1;
           continue;
@@ -145,12 +126,13 @@ export async function antiCheatMultiAccount(c: Context) {
         const { error: insErr } = await supabase.from('anti_cheat_flags').insert({
           player_id: playerId,
           flag_type: 'multi_account',
-          severity,
+          severity: p.severity,
           reason: JSON.stringify({
-            detector: 'multi_account_ip_match_v1',
-            ip: g.ip,
-            account_count: accountCount,
-            other_user_ids: otherIds,
+            detector: DETECTOR,
+            evidence: p.same_table ? 'same_table_same_ip' : 'multiple_shared_household_ips',
+            other_user_ids: [otherId],
+            shared_ips: p.shared_ips,
+            ips: p.ips,
             window_hours: SCAN_WINDOW_HOURS,
           }),
           status: 'open',
@@ -169,6 +151,7 @@ export async function antiCheatMultiAccount(c: Context) {
 
   return c.json({
     ok: result.errors.length === 0,
+    detector: DETECTOR,
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     window_hours: SCAN_WINDOW_HOURS,
