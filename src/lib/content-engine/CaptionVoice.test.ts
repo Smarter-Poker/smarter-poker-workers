@@ -498,13 +498,14 @@ describe('source-bound individual caption voices', () => {
     }
   });
 
-  it('does not stitch the same selected angle into a question and a repeated statement', () => {
+  it('states literal all-in context once without inventing discussion, preserving the reuse key', () => {
     const b=brief('Navigating A Chaos 5-Way All-In');
     const kane=styleSheetFor('2de39d61-a269-451a-9e7c-37fc1aa25ad7');
     const out=composeCaption(b,kane);
     expect(out.text).not.toContain('?');
     expect(out.text.toLowerCase().match(/all[- ]in/g)).toHaveLength(1);
-    expect(out.text).toContain('hands still available');
+    expect(out.text).toMatch(/^The 5-way all-in\.?$/);
+    expect(out.text).not.toMatch(/hands still available|curious|I'd|opposing/i);
     expect(out.semanticKey).toBe('meaning:subject:all in players 5:all_in_context:ranges');
     for(const captionSyntax of [6,10]){
       const row=subjectCaption(b,{...kane,length:'medium',captionSyntax})!;
