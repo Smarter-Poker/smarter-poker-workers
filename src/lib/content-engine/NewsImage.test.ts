@@ -76,6 +76,42 @@ describe('exact public CardPlayer story metadata', () => {
   });
 });
 
+describe('exact Upswing article artwork instead of RSS membership advertising',()=>{
+  const link='https://upswingpoker.com/single-board-bomb-pots-the-complete-nlh-strategy-guide/';
+  const banner='https://upswingpoker.com/wp-content/uploads/2025/11/600x407-On-page-banner-Main-Members.png';
+  const image='https://upswingpoker.com/wp-content/uploads/2026/09/1200x630-1.jpg';
+  const html=(canonical=link,art=image)=>`<meta property="og:url" content="${canonical}"><meta property="og:image" content="${art}">`;
+  it('rejects the measured RSS membership banner as story artwork',()=>{
+    expect(extractArticleImageUrl({'content:encoded':`<img src="${banner}">`})).toBeNull();
+  });
+  it('uses exact canonical article OG metadata after rejecting supplied advertising',async()=>{
+    const fetcher=vi.fn(async()=>new Response(html(),{headers:{'content-type':'text/html'}}));
+    vi.stubGlobal('fetch',fetcher);
+    expect(await resolveArticleImageUrl({link:`${link}?utm_source=rss`,'content:encoded':`<img src="${banner}">`})).toBe(image);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(link);
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({redirect:'error'});
+  });
+  it.each(['mismatch','banner','oversize','refused','not_html','redirect'])('refuses %s instead of substituting inline art',async mode=>{
+    vi.stubGlobal('fetch',vi.fn(async()=>{
+      if(mode==='redirect')throw new TypeError('redirect refused');
+      return new Response(mode==='oversize'?' '.repeat(524289):`${html(mode==='mismatch'?`${link}wrong/`:link,mode==='banner'?banner:image)}<img src="https://cdn.example/unrelated.jpg">`,{status:mode==='refused'?429:200,headers:{'content-type':mode==='not_html'?'application/json':'text/html'}});
+    }));
+    expect(await resolveArticleImageUrl({link})).toBeNull();
+  });
+  it('refuses lookalike origin, nested paths, credentials and insecure or custom-port fetches',async()=>{
+    const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);
+    for(const url of [link.replace('.com/','.com.evil.test/'),link.replace('.com/','.com/account/'),link.replace('https:','http:'),link.replace('.com/','.com:8443/'),link.replace('https://','https://user:pass@')]){
+      expect(await resolveArticleImageUrl({link:url})).toBeNull();
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('deduplicates concurrent first-party resolution for the exact article',async()=>{
+    const fetcher=vi.fn(async()=>new Response(html(),{headers:{'content-type':'text/html'}}));vi.stubGlobal('fetch',fetcher);
+    expect(await Promise.all([resolveArticleImageUrl({link}),resolveArticleImageUrl({link})])).toEqual([image,image]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('bounded first-party story art resolution', () => {
   it('resolves ESPN fantasy stories through the exact numeric article identity, not a generic share logo', async () => {
     const fetcher=vi.fn(async ()=>new Response(JSON.stringify({headlines:[{id:'50189270',images:[{url:'https://a.espncdn.com/photo/2026/1015/r1731149_1296x729_16-9.jpg'}]}]}),{status:200}));

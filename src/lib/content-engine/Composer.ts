@@ -708,6 +708,10 @@ export function composeCaption(
   // may ground an article caption; never fall through to video take pools.
   const fact = captionFact(b);
   if (b.kind === 'link' && !fact) return { text: '', relevance: 0, grounding: [] };
+  // A pot amount or participant count alone is not a distinct all-in story.
+  // Preserve historical fact/key extraction for receipts, but fail closed at
+  // shared eligibility rather than publishing repeated quantity-only focus.
+  if (fact?.action === 'all_in_context') return { text: '', relevance: 0, grounding: [] };
   // Source brands are not sport identity: an NBA-labelled source can carry
   // a baseball report. Only the established typed fact selects a sport.
   const emojiTopic: CaptionEmojiTopic | undefined = b.domain === 'poker' ? 'poker'

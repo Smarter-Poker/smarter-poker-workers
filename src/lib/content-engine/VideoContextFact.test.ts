@@ -170,6 +170,10 @@ describe('literal video context facts',()=>{
   expect(pokerVideoContextFact(title)?.identity).toBe(identity);
   expect(captionFact(brief(title))?.identity).toBe(identity);
   const out=composeCaption(brief(title),style);
+  if (identity.startsWith('all_in:')) {
+    expect(out).toEqual({text:'',relevance:0,grounding:[]});
+    return;
+  }
   expect(out.text).not.toBe('');
   expect(out.relevance).toBeGreaterThanOrEqual(.3);
   expect(out.grounding).toContain(`context:${identity}`);

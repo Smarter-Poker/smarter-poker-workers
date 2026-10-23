@@ -21,7 +21,9 @@ vi.mock('../supabase.js',()=>({getSupabase:()=>({from:(table:string)=>{
 import { freshVideoCaptionCandidates, videoCandidateMeanings, VIDEO_FRESHNESS_KEY_CHUNK } from './VideoCandidateFreshness.js';
 import type { SupplyClip } from './ClipSupply.js';
 const profile='00000000-0000-4000-8000-000000000001';
-const clip=(index:number,title='Navigating a five-way all-in'):SupplyClip=>({id:String(index),video_id:`Factual000${index}`,
+// Keep the freshness fixture renderable after quantity-only all-ins became
+// a safe refusal; ledger failures must still exercise actual SELECTs.
+const clip=(index:number,title='Pocket aces in a five-way pot'):SupplyClip=>({id:String(index),video_id:`Factual000${index}`,
   source_url:`https://www.youtube.com/watch?v=Factual000${index}`,source:'PokerGO',title,category:'poker',oembed_ok:true,duration_seconds:60});
 beforeEach(()=>{db.used.clear();db.error=false;db.truncated=false;db.malformed=false;db.reads=[];db.failures=[];db.persistent=null;});
 describe('bounded semantic screening before video selection',()=>{
