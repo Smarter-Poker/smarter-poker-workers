@@ -498,21 +498,17 @@ describe('source-bound individual caption voices', () => {
     }
   });
 
-  it('states literal all-in context once without inventing discussion, preserving the reuse key', () => {
+  it('refuses quantity-only all-in publication while preserving historical fact keys', () => {
     const b=brief('Navigating A Chaos 5-Way All-In');
     const kane=styleSheetFor('2de39d61-a269-451a-9e7c-37fc1aa25ad7');
     const out=composeCaption(b,kane);
-    expect(out.text).not.toContain('?');
-    expect(out.text.toLowerCase().match(/all[- ]in/g)).toHaveLength(1);
-    expect(out.text).toMatch(/^The 5-way all-in\.?$/);
-    expect(out.text).not.toMatch(/hands still available|curious|I'd|opposing/i);
-    expect(out.semanticKey).toBe('meaning:subject:all in players 5:all_in_context:ranges');
+    expect(out).toEqual({text:'',relevance:0,grounding:[]});
     for(const captionSyntax of [6,10]){
       const row=subjectCaption(b,{...kane,length:'medium',captionSyntax})!;
       expect(row.text).not.toContain('?');
       expect(row.text.toLowerCase().match(/all[- ]in/g)).toHaveLength(1);
-      expect(row.grounding).toEqual(out.grounding);
-      expect(row.semanticKey).toBe(out.semanticKey);
+      expect(row.grounding.length).toBeGreaterThan(0);
+      expect(row.semanticKey).toBe('meaning:subject:all in players 5:all_in_context:ranges');
     }
   });
 

@@ -28,6 +28,9 @@ export function safeArticleImageUrl(value: unknown): string | null {
   // ESPN's default share card contains no story photograph and its filename
   // omits "logo". It must not masquerade as article-specific artwork.
   return GENERIC_ARTWORK.test(decoded)
+    // Observed in three different Upswing RSS stories: this identical
+    // membership promotion is publisher chrome, not any article's artwork.
+    || /on[-_]page[-_]banner[-_]main[-_]members/i.test(decoded)
     || /(?:^|\/)espn(?:[-_](?:combiner|default|share|og))?\.(?:png|jpe?g|webp)$/i.test(url.pathname)
     || /\/i\/espn\/espn_logos\//i.test(url.pathname)
     || /\/combiner\/i\?/.test(safe) && /(?:logo|espn_default)/i.test(url.search)
@@ -49,11 +52,14 @@ export async function resolveArticleImageUrl(item: Record<string, unknown>): Pro
   const cardPlayer = url.protocol === 'https:' && !url.port
     && url.hostname === 'www.cardplayer.com'
     && /^\/poker-news\/\d+-[a-z0-9-]+\/?$/i.test(url.pathname);
-  if (!id && !cardPlayer) return null;
-  const cacheKey = id ? `espn:${id}` : `cardplayer:${url.pathname}`;
+  const upswing = url.protocol === 'https:' && !url.port
+    && url.hostname === 'upswingpoker.com'
+    && /^\/[a-z0-9][a-z0-9-]{2,159}\/?$/i.test(url.pathname);
+  if (!id && !cardPlayer && !upswing) return null;
+  const cacheKey = id ? `espn:${id}` : `${url.hostname}:${url.pathname}`;
   const cached = storyImageCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.pending;
-  const entry = { expires: Date.now() + 6000, pending: id ? fetchStoryImage(id) : fetchCardPlayerImage(url) };
+  const entry = { expires: Date.now() + 6000, pending: id ? fetchStoryImage(id) : fetchPublicArticleImage(url) };
   storyImageCache.set(cacheKey, entry);
   if (storyImageCache.size > 256) storyImageCache.delete(storyImageCache.keys().next().value!);
   const result = await entry.pending;
@@ -68,10 +74,11 @@ function htmlAttribute(tag: string, name: string): string | null {
   return value?.replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;/g, "'") ?? null;
 }
 
-/** Only CardPlayer's public story route, exact canonical identity, no redirects. */
-async function fetchCardPlayerImage(url: URL): Promise<string | null> {
+/** Fixed qualified public story origins, exact canonical identity, no redirects. */
+async function fetchPublicArticleImage(url: URL): Promise<string | null> {
   try {
-    const target = new URL(url.pathname, 'https://www.cardplayer.com');
+    const target = new URL(url.pathname, url.hostname === 'upswingpoker.com'
+      ? 'https://upswingpoker.com' : 'https://www.cardplayer.com');
     const response = await fetch(target.href, {
       headers: { Accept: 'text/html' }, redirect: 'error', signal: AbortSignal.timeout(5000),
     });

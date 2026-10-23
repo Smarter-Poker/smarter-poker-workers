@@ -670,16 +670,14 @@ describe('live caption failures cannot recur', () => {
     }
   });
 
-  it('uses a poker take instead of a generic wrapper when a concept is known', () => {
+  it('refuses an all-in quantity frame rather than a generic wrapper or invented take', () => {
     const brief = briefForAsset({
       kind: 'video',
       title: '$300 ALL IN with QUEENS',
       source: 'PokerGO',
     });
     for (const id of fleetIds(80)) {
-      const text = composeCaption(brief, styleSheetFor(id)).text;
-      expect(text).not.toMatch(/made me stop and think|worth discussing|study list today|hand I am looking at/i);
-      expect(relevanceOf(text, brief)).toBeGreaterThanOrEqual(RELEVANCE_FLOOR);
+      expect(composeCaption(brief, styleSheetFor(id))).toEqual({text:'',relevance:0,grounding:[]});
     }
   });
 
