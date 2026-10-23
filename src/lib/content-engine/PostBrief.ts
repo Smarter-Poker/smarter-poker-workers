@@ -300,6 +300,8 @@ const PHRASE_STOP = new Set([
 export function cleanTitle(raw: string | null | undefined): string {
   if (!raw) return '';
   return raw
+    // Normalize source typography before typed pipe clauses are filtered.
+    .replace(/[\u2018\u2019]/g, "'")
     // Emoji and pictographs, including the surrogate ranges YouTube titles use.
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{2B00}-\u{2BFF}]/gu, ' ')
     .replace(/#\w+/g, (tag,offset,text:string) => /^#\d+$/.test(tag)&&/\bevent\s*$/i.test(text.slice(0,offset))?tag:' ')

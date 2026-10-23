@@ -13,6 +13,21 @@ const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').t
 export function newsTitleFact(b: PostBrief): CaptionFact | null {
   if (b.kind !== 'link' || b.isQuestion) return null;
   const title = b.title.replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').replace(/[.!]+$/, '').trim();
+  // Finite actual RSS report bindings. Publisher variants share one fact
+  // identity; omitted dates or prices are never inferred from another story.
+  if (b.domain === 'poker') {
+    const reports: ReadonlyArray<readonly [RegExp,string,string]> = [
+      [/^Save the Dates: 2027 Irish Poker Open Runs March 18-29 in Dublin$/i,'news:schedule:irish poker open:2027','the 2027 Irish Poker Open running March 18-29 in Dublin'],
+      [/^Ignore the hangover: 2027 Irish Poker Open starts the day after St\. Patrick's Day$/i,'news:schedule:irish poker open:2027',"the 2027 Irish Poker Open starting the day after St. Patrick's Day"],
+      [/^Kick 2027 Off In Style at PokerStars Open Campione; New €1,250 Main Event Buy-In$/i,'news:buyin:pokerstars open campione:2027','the €1,250 Main Event buy-in for PokerStars Open Campione in 2027'],
+      [/^PokerStars cuts Campione Main Event buy-in for 2027 return$/i,'news:buyin:pokerstars open campione:2027','the Main Event buy-in cut for the 2027 PokerStars Campione return'],
+      [/^Four-year chase ends in gold: Frankie Cucchiara wins first WSOP bracelet$/i,'news:bracelet:actor:frankie cucchiara:first',"Frankie Cucchiara's first WSOP bracelet"],
+      [/^Negreanu denied at Poker Masters as Nick Seward wins \$412K and first PGT title$/i,'news:win:actor:nick seward:event:poker masters',"Nick Seward's $412K win and first PGT title at Poker Masters"],
+      [/^WSOP slashes Paradise rake across 12 events following criticism$/i,'news:rake:wsop paradise:12 events','the WSOP Paradise rake reduction across 12 events'],
+    ];
+    const report = reports.find(([pattern]) => pattern.test(title));
+    if (report) return {person:'',action:'news_report_context',identity:report[1],subject:report[2]};
+  }
   // Closed retained report grammars: an evaluation is not a diagnosis, a
   // trade analysis is not a prediction, and a cooler is not proof of a call.
   if (b.domain === 'sports' && /^No\. 1 pick Dybantsa to have ankle checked after leaving preseason finale$/i.test(title))
