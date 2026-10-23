@@ -288,22 +288,45 @@ export async function platformCandidateClips(
     : 'id, video_id, source_url, source, title, category, sport_type';
   const freshness = domain === 'poker' ? 'published_at' : 'created_at';
 
-  let query = getSupabase()
-    .from(table)
-    .select(select)
-    .order(freshness, { ascending: false, nullsFirst: false })
-    .limit(boundedLimit);
-  if (domain === 'poker') {
-    query = query.eq('is_active', true).not('oembed_ok', 'is', false);
+  // A newest-only cap was filled by vague short titles while existing,
+  // source-groundable clips from the same approved registry were crowded
+  // out. Reserve half of this SAME bounded read for measured rich providers;
+  // the global half retains every other source's opportunity. These are
+  // candidate preferences, not a rights/source/freshness eligibility waiver.
+  const globalLimit = boundedLimit === 1 ? 1 : Math.floor(boundedLimit / 2);
+  const richLimit = boundedLimit - globalLimit;
+  const richSources = domain === 'poker'
+    ? ['PokerGO', 'Bart Hanson', 'Mariano', 'GTO Wizard', 'Phil Galfond', 'PokerStars']
+    : ['NBA', 'MLB'];
+  const read = async (take: number, sources?: string[]) => {
+    let query = getSupabase().from(table).select(select)
+      .order(freshness, { ascending: false, nullsFirst: false }).limit(take);
+    if (sources) query = query.in('source', sources);
+    if (domain === 'poker') query = query.eq('is_active', true).not('oembed_ok', 'is', false);
+    try {
+      return await query;
+    } catch (error) {
+      return { data: null, error: { message: error instanceof Error ? error.message : String(error) } };
+    }
+  };
+  const clips: SupplyClip[] = [];
+  const seen = new Set<string>();
+  for (const [take, sources] of [[globalLimit, undefined], [richLimit, richSources]] as const) {
+    if (!take) continue;
+    const { data, error } = await read(take, sources);
+    if (error) return { status: 'unknown', error: `${table} platform pool unreadable: ${error.message}` };
+    if (!Array.isArray(data)) return { status: 'unknown', error: `${table} platform pool unreadable: missing rows` };
+    for (const clip of normalise(data, domain)) {
+      // Global-newest representation wins duplicate canonical YouTube ids.
+      // Invalid/empty ids stay candidates for the existing eligibility gate,
+      // but cannot collapse unrelated rows into one empty identity here.
+      const identity = /^[A-Za-z0-9_-]{11}$/.test(clip.video_id) ? clip.video_id : `row:${clip.id}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      clips.push(clip);
+    }
   }
-  const { data, error } = await query;
-  if (error) {
-    return {
-      status: 'unknown',
-      error: `${table} platform pool unreadable: ${error.message}`,
-    };
-  }
-  return { status: 'ok', clips: await withClipDurations(normalise(data, domain)) };
+  return { status: 'ok', clips: await withClipDurations(clips) };
 }
 
 function normalise(rows: unknown, domain: 'poker' | 'sports'): SupplyClip[] {

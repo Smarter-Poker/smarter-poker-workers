@@ -12,6 +12,8 @@ export {captionHolding} from './CaptionHolding.js';
 import { pokerVideoContextFact, pokerVideoQuestionFact } from './VideoContextFact.js';
 import { newsTitleFact } from './NewsTitleFact.js';
 import {sportsVideoFact} from './SportsVideoFact.js';
+import {strategyTopicFact} from './StrategyTopicFact.js';
+import {typedSportsActionFact} from './TypedSportsActionFact.js';
 
 export interface CaptionFact {
   person: string;
@@ -26,6 +28,7 @@ const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}
 /** Complete propositions for the closed news-report facts, never raw titles. */
 export function literalNewsReportClauses(fact: CaptionFact, title = ''): string[] {
   if (fact.action !== 'news_report_context') return [];
+  if (fact.identity?.startsWith('poker_strategy:')) return [fact.subject];
   // Closed, source-qualified report subjects; never a raw-title fallback.
   const reports: Record<string, Record<string,string>> = {
     'news:schedule:irish poker open:2027': {
@@ -94,6 +97,7 @@ export function literalNewsReportClauses(fact: CaptionFact, title = ''): string[
 /** Only the newly source-bound inventory roles; legacy identities stay put. */
 export function literalSportInventoryClauses(fact: CaptionFact): string[] {
   if (fact.action !== 'sports_technical_context' || !fact.identity) return [];
+  if (fact.identity.startsWith('typed_sports_action:')) return [fact.subject];
   const id = fact.identity;
   const s = fact.subject;
   const rules: Array<[RegExp, RegExp, (m: RegExpMatchArray) => string]> = [
@@ -137,6 +141,12 @@ export function literalSportInventoryClauses(fact: CaptionFact): string[] {
 
 /** Conservative actor/action binding, not entity presence mistaken for agency. */
 export function captionFact(b: PostBrief): CaptionFact | null {
+  // Previously published facts retain their exact namespaces. New typed
+  // source coverage cannot rename a legacy meaning to make it fresh again.
+  return legacyCaptionFact(b) ?? strategyTopicFact(b) ?? typedSportsActionFact(b);
+}
+
+function legacyCaptionFact(b: PostBrief): CaptionFact | null {
   if (b.kind !== 'video' && b.kind !== 'link') return null;
   if (b.kind === 'video' && b.domain === 'poker') {
     const question = pokerVideoQuestionFact(b.title, b.source);
@@ -437,10 +447,14 @@ export function captionVoiceProfile(style: StyleSheet) {
 }
 
 function literalVideoContextCaption(fact: CaptionFact) {
-  if (fact.action !== 'stakes_context' && fact.action !== 'poker_event_context') return null;
+  const keys:Partial<Record<CaptionFact['action'],string>>={
+    stakes_context:'effective_stacks',poker_event_context:'event_stage',
+    all_in_context:'ranges',pot_context:'structure',aces_cracked_context:'runout',
+  };
+  const key=keys[fact.action];
+  if (!key) return null;
   const subject = fact.subject;
   const text = `${subject.charAt(0).toUpperCase()}${subject.slice(1)}.`;
-  const key = fact.action === 'stakes_context' ? 'effective_stacks' : 'event_stage';
   return {
     text, subject: fact.subject, reference: 'that context', statement: text,
     semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:${key}`,
