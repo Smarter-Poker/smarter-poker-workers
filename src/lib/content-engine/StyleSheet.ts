@@ -283,7 +283,7 @@ export function render(sentences: string[], s: StyleSheet, seed: string, opts: R
     // which is not a hand any player could read.
     parts = parts.map((p) =>
       p.replace(
-        /(^|[^\dA-Za-z/$#.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
+        /(^|[^\dA-Za-z/$€£#.:\-])(\d{1,2})(?![\dA-Za-z/.:\-])/g,
         (_m, pre: string, n: string, offset: number, sentence: string) => {
           // Numbered event/day/game identifiers are source labels, not a
           // stylistic quantity. Preserve their bytes just like score/card
