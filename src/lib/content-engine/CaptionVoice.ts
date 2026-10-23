@@ -436,6 +436,18 @@ export function captionVoiceProfile(style: StyleSheet) {
   };
 }
 
+function literalVideoContextCaption(fact: CaptionFact) {
+  if (fact.action !== 'stakes_context' && fact.action !== 'poker_event_context') return null;
+  const subject = fact.subject;
+  const text = `${subject.charAt(0).toUpperCase()}${subject.slice(1)}.`;
+  const key = fact.action === 'stakes_context' ? 'effective_stacks' : 'event_stage';
+  return {
+    text, subject: fact.subject, reference: 'that context', statement: text,
+    semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:${key}`,
+    grounding: [`context:${fact.identity}`, `title_action:${fact.action}`, `angle:${key}`],
+  };
+}
+
 /** Habits belong to the horse; the bounded retry changes angle, not identity. */
 export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   const sourceFact = captionFact(b);
@@ -468,16 +480,8 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
   // A stakes label or event stage supplies context, not an observed hand or
   // analytical finding. State that context without fabricated discussion
   // prompts. Keep historical semantic angles so wording cannot reset reuse.
-  if (fact.action === 'stakes_context' || fact.action === 'poker_event_context') {
-    const subject = fact.subject;
-    const text = `${subject.charAt(0).toUpperCase()}${subject.slice(1)}.`;
-    const key = fact.action === 'stakes_context' ? 'effective_stacks' : 'event_stage';
-    return {
-      text, subject: fact.subject, reference: 'that context', statement: text,
-      semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:${key}`,
-      grounding: [`context:${fact.identity}`, `title_action:${fact.action}`, `angle:${key}`],
-    };
-  }
+  const literalContext = literalVideoContextCaption(fact);
+  if (literalContext) return literalContext;
   // A generic decision might be a check or a bet. Price questions are only
   // supported once the title actually establishes a call/fold decision.
   const angles = family === 'river_decision' && fact.action === 'river_decision'
