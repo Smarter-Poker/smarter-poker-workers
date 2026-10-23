@@ -120,7 +120,7 @@ describe('source-bound individual caption voices', () => {
       }
     }
   });
-  it('separates the actual consecutive event focuses without changing event freshness', () => {
+  it('states actual consecutive event labels without invented focuses or changed freshness', () => {
     const fixtures=[
       {id:'4f7f8abb-ba34-464c-9ecb-0ab7a972a978',title:'Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman',identity:'poker event poker masters year 2026 event 5 stage final table',focus:/stack distribution/i},
       {id:'bb698b9a-2861-4ad4-a051-bba7b7ec4e85',title:'Super High Roller Bowl $100,000 Pot-Limit Omaha | Day 1',identity:'poker event super high roller bowl variant plo stage day 1',focus:/registration format/i},
@@ -130,17 +130,17 @@ describe('source-bound individual caption voices', () => {
     for(const row of fixtures)for(const variant of ['0','1','2','3','4','5']){
       const b=briefForAsset({kind:'video',domainHint:'poker',source:'PokerGO',title:row.title});
       const out=composeCaption(b,styleSheetFor(row.id),variant);
-      expect(out.text).toMatch(row.focus);
+      expect(out.text).toMatch(/2026 Poker Masters Event #(?:1|3|5) final table|Super High Roller Bowl Pot-Limit Omaha Day 1/i);
       expect(out.text).not.toMatch(/way the hands develop|action through the session|choices from hand to hand|\b(?:outcome|result)\b/i);
       expect(out.semanticKey).toBe(`meaning:subject:${row.identity}:poker_event_context:event_stage`);
       expect(out.relevance).toBeGreaterThanOrEqual(.3);
     }
   });
-  it('asks the actual Jerome player-count question as a quantity rather than details of a number', () => {
+  it('keeps Jerome stakes literal instead of inventing a player-count question', () => {
     const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $10/$25 No Limit Hold'em Cash Game | TCHLIVE Dallas"});
     for(const variant of ['0','1','2','3','4','5']){
       const out=composeCaption(b,styleSheetFor('0ea03648-b12d-4ae7-ba65-aeaff4fcea34'),variant);
-      expect(out.text).toMatch(/how many players/i);
+      expect(out.text).not.toMatch(/how many players|table position|buy-in structure/i);
       expect(out.text).not.toMatch(/details of|number of players.*matter/i);
       expect(out.text).toContain('$10/$25');
       expect(out.semanticKey).toBe('meaning:subject:stakes 10 25 unit dollars:stakes_context:effective_stacks');
@@ -157,7 +157,7 @@ describe('source-bound individual caption voices', () => {
       expect(captionQuality(out.text,{subject:out.subject}).pass).toBe(true);
     }
   });
-  it('gives the actual Fiona, Holly and Estelle stakes posts different analytical considerations', () => {
+  it('keeps Fiona, Holly and Estelle stakes literal without invented analytical considerations', () => {
     const fixtures=[
       {id:'4c417026-97b3-476e-ac35-18d4455a592d',title:"LIVE POKER | $5/$10 No-Limit Hold'em Cash Game | TCH Social Austin",source:'TCH Live',stakes:'5 10',focus:/betting sequence/i},
       {id:'c05b9dcf-8a6f-41c7-ab80-0e84228d3ff4',title:'Rampage, Britney, Blank Check Ben & Big Mike HIGH STAKES $50/100 - Commentary by Raver',source:'Hustler Casino Live',stakes:'50 100',focus:/table position/i},
@@ -166,7 +166,7 @@ describe('source-bound individual caption voices', () => {
     for(const row of fixtures)for(const variant of ['0','1','2','3','4','5']){
       const b=briefForAsset({kind:'video',domainHint:'poker',source:row.source,title:row.title});
       const out=composeCaption(b,styleSheetFor(row.id),variant);
-      expect(out.text).toMatch(row.focus);
+      expect(out.text).toMatch(/\$(?:5\/\$10|50\/\$100|1\/\$2) stakes/i);
       expect(out.text).not.toMatch(/effective stacks|stack depth|\b(?:outcome|result)\b/i);
       expect(out.semanticKey).toBe(`meaning:subject:stakes ${row.stakes} unit dollars:stakes_context:effective_stacks`);
       expect(out.relevance).toBeGreaterThanOrEqual(.3);
@@ -179,7 +179,7 @@ describe('source-bound individual caption voices', () => {
       expect(out.text).not.toBe('');
       expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises a question/i);
       expect(out.text).toContain('$2/$5');
-      expect(out.text).toMatch(/stack depth in big blinds|buy-in structure/);
+      expect(out.text).not.toMatch(/stack depth in big blinds|buy-in structure/);
       expect(out.semanticKey).toBe('meaning:subject:stakes 2 5 unit dollars:stakes_context:effective_stacks');
       expect(out.relevance).toBeGreaterThanOrEqual(.3);
     }
@@ -199,12 +199,12 @@ describe('source-bound individual caption voices', () => {
         const out=subjectCaption(b,{...profile,length,captionSyntax})!;
         expect(out.text).not.toMatch(/\b(?:outcome|result)\b|stakes raises|stakes is where|aces raises/i);
         expect(out.subject).toBe(fixture.subject);
-        expect(out.text).toContain(fixture.subject);
+        expect(out.text.toLowerCase()).toContain(fixture.subject.toLowerCase());
         expect(captionQuality(out.text,{subject:out.subject}).pass).toBe(true);
       }
     }
   });
-  it('uses distinct stakes considerations across voices without asserting unknown play or changing freshness', () => {
+  it('keeps identical stakes meanings literal across voices without asserting unknown play or changing freshness', () => {
     const b=briefForAsset({kind:'video',domainHint:'poker',source:'TCH Live',title:"LIVE POKER | $5/$10 No-Limit Hold'em Cash Game | TCH Social Austin"});
     const focuses=new Set<string>();
     for(const id of ids){
@@ -214,16 +214,10 @@ describe('source-bound individual caption voices', () => {
       expect(out.text).not.toBe('');
       expect(out.semanticKey).toBe('meaning:subject:stakes 5 10 unit dollars:stakes_context:effective_stacks');
       expect(out.text).not.toMatch(/\b(?:outcome|result)\b|I (?:watched|played|won)|in the stakes/i);
-      const focus=raw.text.match(/the (?:effective stacks|table position|number of players in the hand|betting sequence|possible opposing ranges|bet sizes relative to the pot|table format|buy-in structure)/);
-      if(focus) focuses.add(focus[0]);
-      else {
-        // Quantity-aware wording asks the count directly rather than
-        // repeating its noun label in a generic question template.
-        expect(raw.text).toMatch(/how many players/i);
-        focuses.add('the number of players in the hand');
-      }
+      expect(raw.text).toBe('The $5/$10 stakes.');
+      focuses.add(raw.text);
     }
-    expect(focuses).toEqual(new Set(['the effective stacks','the table position','the number of players in the hand','the betting sequence','the possible opposing ranges','the bet sizes relative to the pot','the table format','the buy-in structure']));
+    expect(focuses).toEqual(new Set(['The $5/$10 stakes.']));
   });
   it('separates the actual consecutive Rays scoring focuses instead of repeating earlier pitches', () => {
     // A shared pre-swing focus pool regresses these real consecutive authors,

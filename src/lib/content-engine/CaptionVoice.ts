@@ -26,6 +26,22 @@ const possessive = (value: string) => `${value}${/s$/i.test(value) ? "'" : "'s"}
 /** Complete propositions for the closed news-report facts, never raw titles. */
 export function literalNewsReportClauses(fact: CaptionFact, title = ''): string[] {
   if (fact.action !== 'news_report_context') return [];
+  // Closed, source-qualified report subjects; never a raw-title fallback.
+  const reports: Record<string, Record<string,string>> = {
+    'news:schedule:irish poker open:2027': {
+      'the 2027 Irish Poker Open running March 18-29 in Dublin': 'The 2027 Irish Poker Open runs March 18-29 in Dublin',
+      "the 2027 Irish Poker Open starting the day after St. Patrick's Day": "The 2027 Irish Poker Open starts the day after St. Patrick's Day",
+    },
+    'news:buyin:pokerstars open campione:2027': {
+      'the €1,250 Main Event buy-in for PokerStars Open Campione in 2027': 'The 2027 PokerStars Open Campione Main Event buy-in is €1,250',
+      'the Main Event buy-in cut for the 2027 PokerStars Campione return': 'PokerStars cut the Campione Main Event buy-in for its 2027 return',
+    },
+    'news:bracelet:actor:frankie cucchiara:first': {"Frankie Cucchiara's first WSOP bracelet": 'Frankie Cucchiara won his first WSOP bracelet'},
+    'news:win:actor:nick seward:event:poker masters': {"Nick Seward's $412K win and first PGT title at Poker Masters": 'Nick Seward won $412K and his first PGT title at Poker Masters'},
+    'news:rake:wsop paradise:12 events': {'the WSOP Paradise rake reduction across 12 events': 'WSOP reduced Paradise rake across 12 events'},
+  };
+  const report = reports[fact.identity ?? '']?.[fact.subject];
+  if(report)return [report];
   if (fact.identity?.startsWith('news:win:')) {
     const win = fact.subject.match(/^(.+)'s (.+) win$/);
     // A title at a festival establishes a win there, not necessarily its
@@ -447,6 +463,19 @@ export function subjectCaption(b: PostBrief, style: StyleSheet, variant = '0') {
       text, subject: fact.subject, reference: 'that report', statement: text,
       semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:report_context`,
       grounding: [`context:${fact.identity}`, `title_action:${fact.action}`, 'angle:report_context'],
+    };
+  }
+  // A stakes label or event stage supplies context, not an observed hand or
+  // analytical finding. State that context without fabricated discussion
+  // prompts. Keep historical semantic angles so wording cannot reset reuse.
+  if (fact.action === 'stakes_context' || fact.action === 'poker_event_context') {
+    const subject = fact.subject;
+    const text = `${subject.charAt(0).toUpperCase()}${subject.slice(1)}.`;
+    const key = fact.action === 'stakes_context' ? 'effective_stacks' : 'event_stage';
+    return {
+      text, subject: fact.subject, reference: 'that context', statement: text,
+      semanticKey: `meaning:subject:${fact.identity!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}:${fact.action}:${key}`,
+      grounding: [`context:${fact.identity}`, `title_action:${fact.action}`, `angle:${key}`],
     };
   }
   // A generic decision might be a check or a bet. Price questions are only
