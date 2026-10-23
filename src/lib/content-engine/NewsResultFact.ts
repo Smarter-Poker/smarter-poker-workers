@@ -17,6 +17,7 @@ const ACTORS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ['Justin Vaysman', ['Justin Vaysman']], ['Ivelin Kolev', ['Ivelin Kolev']],
   ['Shawn Murphy', ['Shawn Murphy']], ['Sam Chartier', ['Sam Chartier']],
   ['Umut Ozturk', ['Umut Ozturk']],
+  ['Peng Huang', ['Peng Huang']],
 ];
 const EVENTS = [
   'PokerNews Online Championship', 'Kings of Tallinn', 'Victorian Poker Championship',
@@ -24,6 +25,7 @@ const EVENTS = [
   'Super High Roller Bowl XI', '888LIVE London High Roller',
   'WPT Prime Cyprus Champions', 'RGPS Houston $600 Main Event',
   'MSPT Canadian Poker Championship',
+  'KPC Jeju Main Event',
 ] as const;
 const ordinal = '(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|[1-9][0-9]?(?:st|nd|rd|th))';
 const money = '(?:\\d+|\\d{1,3}(?:,\\d{3})+)(?:\\.\\d+)?';
@@ -51,6 +53,12 @@ const WIN_RULES = ACTORS.flatMap(([actor, aliases]) => EVENTS.map(event => {
     `${name} dominates day [1-9] to win ${tournament} for \\$${money}`,
     `${name} wins ${tournament} at Playground for largest-ever score on home soil`,
   ];
+  // The retained PokerNews headline states this first-event win directly.
+  // Its distinct King's Main Event context is not another claimed victory
+  // and never supplies a new semantic identity, result or caption fact.
+  if (actor === 'Peng Huang' && event === 'KPC Jeju Main Event') {
+    patterns.push(`${name} wins ${tournament}; Denied Heads-Up in King's Main Event`);
+  }
   if (event === '888LIVE London High Roller') patterns.push(`London proves ${name}'s (?:"Lucky Charm"|Lucky Charm) on his way to the 888LIVE High Roller title`);
   return {
     pattern: new RegExp(`^(?:${patterns.join('|')})$`, 'i'),
