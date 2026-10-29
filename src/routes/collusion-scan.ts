@@ -433,24 +433,20 @@ function scanSoftPlay(hands: HandRow[]): Finding[] {
   return findings;
 }
 
-function scanTimingCorrelation(actions: ActionRow[]): Finding[] {
-  const byHand = new Map<string, ActionRow[]>();
-  for (const a of actions) {
-    if (!a.hand_id) continue;
-    const arr = byHand.get(a.hand_id) ?? [];
-    arr.push(a);
-    byHand.set(a.hand_id, arr);
-  }
+interface TStat {
+  a: string;
+  b: string;
+  closeEvents: number;
+  totalEvents: number;
+}
 
-  interface TStat {
-    a: string;
-    b: string;
-    closeEvents: number;
-    totalEvents: number;
-  }
-  const pairStats = new Map<string, TStat>();
+/** Retain pair counts, never a run-wide array of every hand action. */
 
-  for (const handActions of byHand.values()) {
+export class TimingCorrelationAccumulator {
+  private readonly pairStats = new Map<string, TStat>();
+  actionCount = 0;
+  addHand(handActions: ActionRow[]): void {
+    this.actionCount += handActions.length;
     handActions.sort(
       (x, y) => new Date(x.created_at).getTime() - new Date(y.created_at).getTime(),
     );
@@ -462,7 +458,7 @@ function scanTimingCorrelation(actions: ActionRow[]): Finding[] {
         new Date(next.created_at).getTime() - new Date(cur.created_at).getTime(),
       );
       const key = pairKey(cur.user_id, next.user_id);
-      const existing = pairStats.get(key);
+      const existing = this.pairStats.get(key);
       const stat: TStat = existing ?? {
         a: cur.user_id < next.user_id ? cur.user_id : next.user_id,
         b: cur.user_id < next.user_id ? next.user_id : cur.user_id,
@@ -471,65 +467,82 @@ function scanTimingCorrelation(actions: ActionRow[]): Finding[] {
       };
       stat.totalEvents += 1;
       if (dt < 500) stat.closeEvents += 1;
-      pairStats.set(key, stat);
+      this.pairStats.set(key, stat);
     }
   }
 
-  /**
-   * THE BASELINE IS MEASURED, NOT ASSUMED (fixed 2026-09-05). The old test was
-   * `zish = (ratio - 0.15) / 0.08` - a hardcoded population rate and a
-   * hardcoded standard deviation, neither scaling with sample size, so it was
-   * not a z-score at all. With the ratio gate at 0.35 it evaluated to exactly
-   * 2.5 against a 2.5 threshold, meaning the significance test was a no-op and
-   * the whole rule was "35% of adjacent actions inside 500ms over 15 events".
-   *
-   * On this platform that is close to a description of the fleet: horses act
-   * on a timer, so two horses in sequence are fast by construction. It wrote
-   * 910 rows since 2026-08-28 and NOT ONE has ever been reviewed.
-   *
-   * The fix is not to exclude horses - CLAUDE.md 10.5 - it is to compare each
-   * pair against the rate this population actually produces, with a binomial
-   * standard error that shrinks as the pair plays more. A fast pool raises the
-   * baseline for everybody, and standing out means standing out from the room.
-   */
-  let totalClose = 0;
-  let totalEvents = 0;
-  for (const stat of pairStats.values()) {
-    totalClose += stat.closeEvents;
-    totalEvents += stat.totalEvents;
+
+  findings(): Finding[] {
+    /**
+     * THE BASELINE IS MEASURED, NOT ASSUMED (fixed 2026-09-05). The old test was
+     * `zish = (ratio - 0.15) / 0.08` - a hardcoded population rate and a
+     * hardcoded standard deviation, neither scaling with sample size, so it was
+     * not a z-score at all. With the ratio gate at 0.35 it evaluated to exactly
+     * 2.5 against a 2.5 threshold, meaning the significance test was a no-op and
+     * the whole rule was "35% of adjacent actions inside 500ms over 15 events".
+     *
+     * On this platform that is close to a description of the fleet: horses act
+     * on a timer, so two horses in sequence are fast by construction. It wrote
+     * 910 rows since 2026-08-28 and NOT ONE has ever been reviewed.
+     *
+     * The fix is not to exclude horses - CLAUDE.md 10.5 - it is to compare each
+     * pair against the rate this population actually produces, with a binomial
+     * standard error that shrinks as the pair plays more. A fast pool raises the
+     * baseline for everybody, and standing out means standing out from the room.
+     */
+    let totalClose = 0;
+    let totalEvents = 0;
+    for (const stat of this.pairStats.values()) {
+      totalClose += stat.closeEvents;
+      totalEvents += stat.totalEvents;
+    }
+    const baseRate = totalEvents > 0 ? totalClose / totalEvents : 0;
+
+    const findings: Finding[] = [];
+    if (!(baseRate > 0) || baseRate >= 1) return findings;
+
+    for (const stat of this.pairStats.values()) {
+      if (stat.totalEvents < MIN_HANDS_FOR_SIGNAL) continue;
+      const ratio = stat.closeEvents / stat.totalEvents;
+      if (ratio <= baseRate) continue;
+      const se = Math.sqrt((baseRate * (1 - baseRate)) / stat.totalEvents);
+      if (!(se > 0)) continue;
+      const z = (ratio - baseRate) / se;
+      if (z < TIMING_MIN_Z) continue;
+
+      findings.push({
+        player_a: stat.a,
+        player_b: stat.b,
+        pattern_type: 'TIMING_CORRELATION',
+        suspicion_score: Math.min(100, Math.round(50 + (z - TIMING_MIN_Z) * 10)),
+        evidence: {
+          close_action_pairs: stat.closeEvents,
+          total_adjacent_actions: stat.totalEvents,
+          close_ratio: Number(ratio.toFixed(3)),
+          population_rate: Number(baseRate.toFixed(3)),
+          z_score: Number(z.toFixed(2)),
+          threshold_z: TIMING_MIN_Z,
+          threshold_ms: 500,
+          method: 'share of adjacent actions inside 500ms, against the population rate for this window',
+        },
+      });
+    }
+    return findings;
+
   }
-  const baseRate = totalEvents > 0 ? totalClose / totalEvents : 0;
+}
 
-  const findings: Finding[] = [];
-  if (!(baseRate > 0) || baseRate >= 1) return findings;
-
-  for (const stat of pairStats.values()) {
-    if (stat.totalEvents < MIN_HANDS_FOR_SIGNAL) continue;
-    const ratio = stat.closeEvents / stat.totalEvents;
-    if (ratio <= baseRate) continue;
-    const se = Math.sqrt((baseRate * (1 - baseRate)) / stat.totalEvents);
-    if (!(se > 0)) continue;
-    const z = (ratio - baseRate) / se;
-    if (z < TIMING_MIN_Z) continue;
-
-    findings.push({
-      player_a: stat.a,
-      player_b: stat.b,
-      pattern_type: 'TIMING_CORRELATION',
-      suspicion_score: Math.min(100, Math.round(50 + (z - TIMING_MIN_Z) * 10)),
-      evidence: {
-        close_action_pairs: stat.closeEvents,
-        total_adjacent_actions: stat.totalEvents,
-        close_ratio: Number(ratio.toFixed(3)),
-        population_rate: Number(baseRate.toFixed(3)),
-        z_score: Number(z.toFixed(2)),
-        threshold_z: TIMING_MIN_Z,
-        threshold_ms: 500,
-        method: 'share of adjacent actions inside 500ms, against the population rate for this window',
-      },
-    });
+function scanTimingCorrelation(actions: ActionRow[]): Finding[] {
+  const byHand = new Map<string, ActionRow[]>();
+  for (const a of actions) {
+    if (!a.hand_id) continue;
+    const rows = byHand.get(a.hand_id) ?? [];
+    rows.push(a);
+    byHand.set(a.hand_id, rows);
   }
-  return findings;
+  const timing = new TimingCorrelationAccumulator();
+  for (const rows of byHand.values()) timing.addHand(rows);
+  return timing.findings();
 }
 
 /**
@@ -794,7 +807,7 @@ export async function collusionScan(c: Context) {
     // Paged: a single .limit(50000) came back as 1000 rows and a 200, so this
     // scan had only ever seen ~0.36% of a 24h window. See lib/pagedSelect.ts.
     const handsRows: HandRow[] = [];
-    const actionRows: ActionRow[] = [];
+    const timing = new TimingCorrelationAccumulator();
     let handsTruncated: boolean;
     let readBudgetHit = false;
     let readComplete = false;
@@ -844,20 +857,21 @@ export async function collusionScan(c: Context) {
           budgetMs: READ_BUDGET_MS,
           // FOLD EACH PAGE, DO NOT ACCUMULATE IT. The detectors need six
           // small fields per hand; `actions` is needed only to derive
-          // actionRows and is the bulk of the payload. Converting here and
-          // dropping the JSONB immediately keeps peak memory flat in
-          // MAX_SCAN_HANDS instead of growing with it. See the onPage note in
+          // per-hand timing statistics and is the bulk of the payload. Drop both
+          // the JSONB and derived per-action rows after folding one hand;
+          // only pair counts survive for the final population calculation. See the onPage note in
           // lib/pagedSelectKeyset.ts for what this is fixing and how much of
           // that is inferred rather than measured.
           onPage: (batch) => {
             for (const h of batch) {
+              const handActions: ActionRow[] = [];
               for (const a of (Array.isArray(h.actions) ? h.actions : []) as Array<
                 Record<string, unknown>
               >) {
                 const uid = (a.userId ?? a.user_id ?? a.id) as string | undefined;
                 const tsRaw = (a.timestamp ?? a.ts ?? a.time) as number | undefined;
                 if (!uid || typeof tsRaw !== 'number') continue;
-                actionRows.push({
+                handActions.push({
                   id: `${h.id}:${tsRaw}:${uid}`,
                   table_id: h.table_id,
                   hand_id: h.id,
@@ -867,6 +881,7 @@ export async function collusionScan(c: Context) {
                   action: (a.action as string | undefined) ?? null,
                 });
               }
+              timing.addHand(handActions);
               // Derived here, while the JSONB is still in hand. See the note
               // on HandRow.postflopLive for why this cannot be done later.
               const acts = (Array.isArray(h.actions) ? h.actions : []) as HandAction[];
@@ -931,7 +946,7 @@ export async function collusionScan(c: Context) {
     const findings: Finding[] = [
       ...scanChipDump(handsRows),
       ...scanSoftPlay(handsRows),
-      ...scanTimingCorrelation(actionRows),
+      ...timing.findings(),
       ...scanWinRateAnomaly(handsRows),
     ];
 
@@ -1091,7 +1106,7 @@ export async function collusionScan(c: Context) {
         identity_filtered: false,
       },
       scanned_hands: handsRows.length,
-      scanned_actions: actionRows.length,
+      scanned_actions: timing.actionCount,
       findings: findings.length,
       inserted,
       window: {

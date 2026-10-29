@@ -15,6 +15,7 @@
     "lint": "eslint src/**/*.ts",
     "test": "vitest run",
     "test:integrity-memory": "node scripts/ci/check-integrity-scan-memory.mjs",
+    "test:collusion-memory": "node scripts/ci/check-collusion-memory.mjs",
     "test:watch": "vitest",
     "prepare": "git config core.hooksPath .husky 2>/dev/null || true",
     "pretest": "node --test scripts/ci/retired-error-provider.test.mjs"
