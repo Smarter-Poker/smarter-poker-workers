@@ -99,7 +99,15 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Build on the VM"
-          $SSH "cd /opt/workers-build && docker build --build-arg GIT_SHA=$SHA --label org.opencontainers.image.revision=$SHORT -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -40 /tmp/workers-build.log; exit 2; }"
+          # 2026-11-07: a run cancelled at the job timeout dropped SSH but left its
+          # docker build running on the VM; it starved the 4 GB host until the
+          # serving container went unhealthy and SSH stopped answering. A build
+          # can no longer outlive its run: any build a previous run left behind
+          # is stopped first (separate call; the [d] keeps the pattern from
+          # matching its own command line), and this build is killed at 540s,
+          # well inside the job's 15 minutes. Killing the client cancels it.
+          $SSH "pkill -f 'docker buil[d] --build-arg GIT_SHA' && echo 'stopped a build a previous run left running' || true"
+          $SSH "cd /opt/workers-build && timeout --kill-after=30s 540s docker build --build-arg GIT_SHA=$SHA --label org.opencontainers.image.revision=$SHORT -t $IMAGE:latest . >/tmp/workers-build.log 2>&1 && echo BUILD_OK || { tail -40 /tmp/workers-build.log; exit 2; }"
           echo "::endgroup::"
 
           echo "::group::Cut over"
