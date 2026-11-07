@@ -29,6 +29,19 @@ describe('worker revision wiring', () => {
     expect(release).toContain('GIT_SHA=${{ github.sha }}');
   });
 
+  it('never lets a VM build outlive the run that started it', async () => {
+    const workflow = await repositoryFile('.github/workflows/auto-deploy-workers.yml');
+
+    // A leftover build from a cancelled run is stopped before the next one,
+    // in its own SSH call so the pattern cannot match (and kill) itself.
+    expect(workflow).toContain(`$SSH "pkill -f 'docker buil[d] --build-arg GIT_SHA'`);
+    expect(workflow.indexOf("pkill -f 'docker buil[d]")).toBeLessThan(workflow.indexOf('timeout --kill-after=30s 540s docker build'));
+    expect(workflow).not.toMatch(/pkill[^\n]*docker build/);
+    // The build itself is bounded well inside the 15-minute job.
+    expect(workflow).toContain('timeout --kill-after=30s 540s docker build --build-arg GIT_SHA=$SHA');
+    expect(workflow).toContain('timeout-minutes: 15');
+  });
+
   it('keeps long VM cutovers alive without deploying workflow-only maintenance', async () => {
     const workflow = await repositoryFile('.github/workflows/auto-deploy-workers.yml');
 
