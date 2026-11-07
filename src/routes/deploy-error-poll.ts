@@ -28,6 +28,44 @@ async function recordDeployAlert(deployId: string, title: string, message: strin
 }
 
 
+export const VERCEL_READ_ATTEMPTS = 3;
+const VERCEL_READ_TIMEOUT_MS = 15000;
+const VERCEL_READ_BACKOFF_MS = [1000, 3000];
+
+const retryableStatus = (status: number) => status === 429 || status >= 500;
+
+/**
+ * Reads the project's latest deployments, retrying a transient failure inside
+ * this poll. Returns the last response (ok or a non-retryable / final status);
+ * throws the last network or timeout error when every attempt failed to answer.
+ */
+export async function readVercelDeployments(
+  token: string,
+  { fetchImpl = fetch, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) }:
+    { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= VERCEL_READ_ATTEMPTS; attempt++) {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), VERCEL_READ_TIMEOUT_MS);
+    try {
+      const res = await fetchImpl(
+        `https://api.vercel.com/v6/deployments?projectId=${PROJECT_ID}&teamId=${TEAM_ID}&limit=25`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: abort.signal },
+      );
+      if (res.ok || !retryableStatus(res.status) || attempt === VERCEL_READ_ATTEMPTS) return res;
+      await res.text().catch(() => '');
+    } catch (error) {
+      lastError = error;
+      if (attempt === VERCEL_READ_ATTEMPTS) throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    await sleep(VERCEL_READ_BACKOFF_MS[attempt - 1] ?? 3000);
+  }
+  throw lastError;
+}
+
 interface VercelDeployment {
   uid: string;
   state: string;
@@ -57,23 +95,24 @@ export async function deployErrorPoll(c: Context) {
   }
 
   try {
-    // Step 1: fetch deployments (10s timeout)
-    const step1Abort = new AbortController();
-    const step1Timeout = setTimeout(() => step1Abort.abort(), 10000);
+    // Step 1: fetch deployments. ONE SLOW ANSWER IS NOT AN OUTAGE (2026-11-07):
+    // on 2026-11-05 18:00-18:22Z every poll alternated between a 10 s
+    // AbortError and a clean read, so each single slow Vercel answer filed a
+    // critical DeploymentMonitorUnavailable and the next poll resolved it. A
+    // read now gets up to three attempts in the same poll (15 s each, 1 s and
+    // 3 s apart) for a network failure, a timeout, HTTP 429 or a 5xx; only a
+    // poll whose every attempt fails reports the monitor unavailable. A 4xx
+    // other than 429 (a bad credential, a wrong project) is reported at once.
     let deploymentsRes: Response;
     try {
-      deploymentsRes = await fetch(
-        `https://api.vercel.com/v6/deployments?projectId=${PROJECT_ID}&teamId=${TEAM_ID}&limit=25`,
-        { headers: { Authorization: `Bearer ${vercelToken}` }, signal: step1Abort.signal },
-      );
+      deploymentsRes = await readVercelDeployments(vercelToken);
     } catch (error) {
       await recordDeploymentMonitorHealth('firing', {
         summary: 'Deployment monitoring cannot reach Vercel',
-        failureClass: error instanceof Error ? error.name : 'unknown', projectId: PROJECT_ID, teamId: TEAM_ID,
+        failureClass: error instanceof Error ? error.name : 'unknown',
+        attempts: VERCEL_READ_ATTEMPTS, projectId: PROJECT_ID, teamId: TEAM_ID,
       });
       throw error;
-    } finally {
-      clearTimeout(step1Timeout);
     }
 
     if (!deploymentsRes.ok) {
