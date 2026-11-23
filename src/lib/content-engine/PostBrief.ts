@@ -306,13 +306,13 @@ export function cleanTitle(raw: string | null | undefined): string {
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{2B00}-\u{2BFF}]/gu, ' ')
     .replace(/#\w+/g, (tag,offset,text:string) => /^#\d+$/.test(tag)&&/\bevent\s*$/i.test(text.slice(0,offset))?tag:' ')
     .replace(/@\w+/g, ' ')
-    // Official coverage often places its only event/stage or cash stakes
-    // after a pipe. Keep those typed clauses; a generic channel tail still
-    // contributes no fact and remains stripped.
+    // Official coverage often places its only event/stage, tour brand or cash
+    // stakes after a pipe. Keep those typed clauses; a generic channel tail
+    // still contributes no fact and remains stripped.
     .replace(/\s*\|\s*.*$/, tail => tail.split('|').slice(1)
-      .map(part=>part.trim()).filter(part=>/^(?:event\s*#?\s*\d+\b|day\s+\d+\b|\$[\d,]+\s*\/\s*\$?[\d,]+\s+no[- ]limit hold'?em cash game\b)/i.test(part))
+      .map(part=>part.trim()).filter(part=>/^(?:event\s*#?\s*\d+\b|day\s+\d+[a-z]?\b|\$[\d,]+\s*\/\s*\$?[\d,]+\s+(?:no[- ]limit hold'?em|no[- ]limit 2-7 single draw|pot[- ]limit omaha)\s+cash game\b|triton\s+(?:shrs|one|super high roller)\b|appt\s+championship\b|ept\s+day\s+\d+\b|big\s+game\s+on\s+tour\b|s\d+\s+(?:heat\s+\d+|e\d+)\b|\$[\d,]+[km]?\s+(?:no[- ]limit hold'?em|nlh|high roller)\s+(?:final\s+table|day\s+\d+)\b)/i.test(part))
       .map(part=>` | ${part}`).join(''))
-    .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ') // [HD], (Full Highlights)
+    .replace(/\[[^\]]*\]|\((?!\s*(?:day\s+\d+[a-z]?|final\s+(?:table|day))\s*\))[^)]*\)/gi, ' ') // [HD], (Full Highlights); keep (Day 2), (Final Table)
     .replace(/\s*[-–—]\s*(highlights?|shorts?|full (video|clip)).*$/i, '')
     .replace(/(^|\s)["'`]+|["'`]+(?=\s|$)/g, '$1')   // quotes, not apostrophes
     .replace(/\s{2,}/g, ' ')

@@ -134,6 +134,11 @@ export async function revalidatePokerClips(c: Context) {
   let metadataVerified = 0;
   let metadataRejected = 0;
   let metadataUnknown = 0;
+  const metadataUnknownReasons: Record<string, number> = {};
+  const recordMetadataUnknownReason = (reason: string | undefined) => {
+    const key = reason && reason.trim() ? reason.trim() : 'unknown';
+    metadataUnknownReasons[key] = (metadataUnknownReasons[key] ?? 0) + 1;
+  };
   const pendingForbidden: Array<{ id: string; video_id: string; checkedAt: string }> = [];
 
   const flushPendingForbidden = async () => {
@@ -199,13 +204,17 @@ export async function revalidatePokerClips(c: Context) {
       if (metadata.verdict === 'verified') {
         const recorded = await recordYouTubeVerification(clip.video_id, 'verified', checkedAt);
         if (recorded) metadataVerified++;
-        else metadataUnknown++;
+        else {
+          metadataUnknown++;
+          recordMetadataUnknownReason('verification_record_failed');
+        }
       } else if (metadata.verdict === 'embed_disabled' || metadata.verdict === 'unavailable') {
         await recordYouTubeVerification(clip.video_id, metadata.verdict, checkedAt);
         finalOk = false;
         metadataRejected++;
       } else {
         metadataUnknown++;
+        recordMetadataUnknownReason(metadata.reason);
       }
     }
 
@@ -241,6 +250,7 @@ export async function revalidatePokerClips(c: Context) {
     metadata_verified: metadataVerified,
     metadata_rejected: metadataRejected,
     metadata_unknown: metadataUnknown,
+    metadata_unknown_reasons: metadataUnknownReasons,
     stopped_early_blocked: blocked,
     stopped_early_deadline: stoppedEarlyDeadline,
     pool_size: poolSize ?? null,

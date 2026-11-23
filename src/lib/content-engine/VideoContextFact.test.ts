@@ -96,6 +96,12 @@ describe('source-bound named tournament stages from actual verified inventory',(
   expect(cleanTitle('Poker Masters 2026 | Event #5 - Day 1 | PokerGO #poker #shorts'))
    .toBe('Poker Masters 2026 | Event #5 - Day 1');
   expect(cleanTitle('A specific poker title | PokerGO')).toBe('A specific poker title');
+  expect(cleanTitle('🔴 FINAL TABLE $60K NLH 7-Handed – Event #8 | Triton SHRS N. Cyprus 2026'))
+   .toBe('FINAL TABLE $60K NLH 7-Handed – Event #8 | Triton SHRS N. Cyprus 2026');
+  expect(cleanTitle('$200K NLH Triton Invitational X – Event #7 (Day 2) | Triton SHRS N. Cyprus 2026'))
+   .toBe('$200K NLH Triton Invitational X – Event #7 (Day 2) | Triton SHRS N. Cyprus 2026');
+  expect(cleanTitle('$25,000GTD PokerAtlas Tour PLO Final Table | TCH LIVE Austin'))
+   .toBe('$25,000GTD PokerAtlas Tour PLO Final Table');
  });
  it('coalesces punctuation, coverage labels and participants instead of inventing extra supply',()=>{
   const a=pokerVideoContextFact('Poker Masters 2026 | Event #5 - Final Table with Adrian Mateos & Nick Schulman','PokerGO');
@@ -276,5 +282,58 @@ describe('literal video context facts',()=>{
  it('preserves genuinely distinct holding, player-count and amount propositions',()=>{
   const titles=['all-in with aces three ways','all-in with kings three ways','all-in with aces four ways','$5 million river','$4 million river'];
   expect(new Set(titles.map(title=>pokerVideoContextFact(title)?.identity)).size).toBe(titles.length);
+ });
+});
+
+describe('expanded live verified poker inventory (Triton, TCH, PokerGO, coaching & vlogs)',()=>{
+ it.each([
+  ['Triton Poker','🔴 FINAL TABLE $60K NLH 7-Handed – Event #8 | Triton SHRS N. Cyprus 2026','poker_event:triton:year:2026:event:8:stage:final_table'],
+  ['Triton Poker','$200K NLH Triton Invitational X – Event #7 (Day 2) | Triton SHRS N. Cyprus 2026','poker_event:triton:year:2026:event:7:stage:day_2'],
+  ['Triton Poker','$40K NLH Mystery Bounty – Event #3 (Final Day) | Triton SHRS N. Cyprus 2026','poker_event:triton:year:2026:event:3:stage:final_day'],
+  ['Triton Poker','$5K NLH Mystery Bounty – Event #3 (Final Day) | Triton ONE N. Cyprus 2026','poker_event:triton_one:year:2026:event:3:stage:final_day'],
+  ['Triton Poker','$8K NLH Main Event – Event #12 (Day 1C) | Triton ONE N. Cyprus 2026','poker_event:triton_one:year:2026:event:12:stage:day_1c'],
+  ['Triton Poker','Day 17 Highlights🔱 Triton SHRS $200K Invitational X','poker_event:triton_shrs:buyin:200k:invitational_x:stage:day_17'],
+  ['Triton Poker','Best Moments Day 10🔱 Triton One $8k Main Event FT','poker_event:triton_one:buyin:8k:nlh_main_event:stage:day_10:final_table'],
+  ['TCH Live','$100,000GTD PokerAtlas Value Town Final Table | TCH LIVE Austin','event:pokeratlas value town:guarantee:100000:unit:dollars'],
+  ['TCH Live','$50,000GTD PokerAtlas Kickoff Final Table | TCH LIVE Austin','event:pokeratlas kickoff:guarantee:50000:unit:dollars'],
+  ['TCH Live','LIVE POKER | $1/$2 No-Limit 2-7 Single Draw Cash Game | TCH Dallas','stakes:1:2:unit:dollars'],
+  ['PokerGO',"Poker Masters GRAND FINALE | $50,000 No Limit Hold'em Final Table with Dan Smith & Jeremy Ausmus",'poker_event:poker masters:grand_finale:stage:final_table'],
+  ['PokerGO','Poker Masters 2026 | $25,000 High Roller Final Table with Daniel Negreanu','poker_event:poker masters:year:2026:high_roller:25000:stage:final_table'],
+  ['PokerGO','KEVIN HART MAKES $200,000 BLUFF ON HIGH STAKES POKER','wager:bluff:actor:kevin hart:amount:200000:unit:dollars:show:high stakes poker'],
+  ['PokerStars','MAIN EVENT FINAL DAY - APPT Championship Manila','poker_event:appt championship manila:event:main:stage:final_day'],
+  ['PokerStars','New Rivalry EMERGES?!! Princess Love vs Doug Polk | Big Game On Tour | S3 E8','poker_event:big game on tour:season:3:episode:8'],
+  ['Bally Poker Live','4-CARD SMACKDOWN!!! $10/20 POT LIMIT OMAHA ACTION!- Live at the Commerce','stakes:10:20:unit:dollars'],
+  ['Mariano','A $16K Bluff With King-High! 😱','wager:bluff:amount:16000:unit:dollars:holding:k_high'],
+  ['Mariano','Q10 Suited in 7-Way Pot! 😱','pot:holding:qts:players:7'],
+  ['Bart Hanson','I Flopped a Full House... Then He Shoved 3X the Pot','made_hand:flopped_full_house:facing:3x_pot_shove'],
+  ['Bart Hanson','Bet Sizing with Pocket Queens! 💸','holding:qq:topic:bet_sizing'],
+  ['Brad Owen','I FLOP QUADS!!! Incredibly Rare!! Opponent Is Coming After Me!! #pokerstrategy #poker','made_hand:flopped_quads'],
+  ['Spraggy','FINAL TABLE!! $22 MYSTERY BOUNTY!','poker_event:mystery_bounty:buyin:22:stage:final_table'],
+  ['Conscious Poker','Bluffing His Whole Stack on TV | EPT Day 4','poker_event:ept:stage:day_4'],
+  ['Doug Polk Poker','$420,000 River Bet vs Dwan #poker','river:amount:420000:bet'],
+  ['Raise Your Edge','Final Table: $1,366,929 WSOP Millionaire Maker WIN','poker_event:wsop_millionaire_maker:stage:final_table'],
+ ])('grounds %s: %s through briefForAsset and composeCaption',(source,title,identity)=>{
+  const b=briefForAsset({kind:'video',domainHint:'poker',source,title});
+  expect(captionFact(b)?.identity).toBe(identity);
+  const out=composeCaption(b,style);
+  expect(out.text).not.toBe('');
+  expect(out.relevance).toBeGreaterThanOrEqual(.3);
+ });
+
+ it.each([
+  ['Bart Hanson','Mystery Hand Turns Straight... Trouble? 🚨','poker_question:decision:turned_straight'],
+  ['Bart Hanson','Would You Fold a Flush Here? 🤔','poker_question:decision:fold:holding:flush'],
+  ['Mariano','Will Pair of Fives be Enough? 🤔','poker_question:decision:evaluate:holding:55'],
+  ['Mariano','Trust the Math or Trust Your Gut? 🤔','poker_question:decision:math_or_gut'],
+  ['Upswing Poker','Would you go for thin value on the river in a 5-bet pot? 🤔','poker_question:decision:thin_value:street:river:pot_bet_level:5'],
+  ['Raise Your Edge','Would you OPEN JAM or OPEN LIMP with AA?','poker_question:decision:open_jam_or_limp:holding:aa'],
+  ['PokerStars','Would You Fold KINGS to Doug Polk?','poker_question:decision:fold:holding:kk:opponent:doug_polk'],
+ ])('grounds verified poker decision question %s: %s without asserting an outcome',(source,title,identity)=>{
+  const b=briefForAsset({kind:'video',domainHint:'poker',source,title});
+  expect(pokerVideoQuestionFact(b.title,source)?.identity).toBe(identity);
+  expect(captionFact(b)?.identity).toBe(identity);
+  const out=composeCaption(b,style);
+  expect(out.text).not.toBe('');
+  expect(out.relevance).toBeGreaterThanOrEqual(.3);
  });
 });

@@ -1,5 +1,6 @@
 import type {SportsVideoFact} from './SportsVideoFact.js';
 import {literalAdditionalInventory} from './LiteralAdditionalInventory.js';
+import {literalCurrentSportsInventory} from './LiteralCurrentSportsInventory.js';
 const key=(s:string)=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
 const NBA_PLAYERS=['OG Anunoby','Darryn Peterson','Ace Bailey','Damian Lillard','Tobe Awaka','Yaxel Lendeborg','Keaton Wagler','DeMar DeRozan','Jaren Jackson Jr.','Caleb Wilson','Leonard Miller','Aaron Gordon','Brayden Burries','AJ Dybantsa','Darius Acuff Jr.','Tyler Kolek','Scoot Henderson','Fred VanVleet'] as const;
 const escaped=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -58,5 +59,5 @@ export function literalVerifiedInventory(original:string,source:string|undefined
   const rbi=t.match(/^(Jos[eé] Ram[ií]rez) drives in another for the (Guardians) in the ([1-9])(?:st|nd|rd|th)$/i);
   if(rbi)return fact(`baseball:runs_batted_in:actor:jose ramirez:team:guardians:runs:1:inning:${rbi[3]}`,`José Ramírez driving in one more run for the Guardians in inning ${rbi[3]}`);
  }
- return literalAdditionalInventory(original,source);
+ return literalAdditionalInventory(original,source) ?? literalCurrentSportsInventory(original,source);
 }

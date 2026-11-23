@@ -129,6 +129,8 @@ describe('revalidate-poker-clips', () => {
       pending_forbidden_held: 0,
       metadata_checked: 1,
       metadata_verified: 1,
+      metadata_unknown: 0,
+      metadata_unknown_reasons: {},
       stopped_early_blocked: false,
       pool_size: 2,
     });
@@ -187,6 +189,45 @@ describe('revalidate-poker-clips', () => {
       { id: 'c1', patch: expect.objectContaining({ oembed_ok: false, is_active: false }) },
     ]);
     expect(mocks.recordYouTubeVerification).toHaveBeenCalledWith('1ZhDk_dOCd8', 'embed_disabled', expect.any(String));
+  });
+
+  it('records metadata_unknown_reasons counts for unknown metadata verdicts and failed verification writes', async () => {
+    mocks.clips = [
+      { id: 'c1', video_id: 'AAAAAAAAAAA', category: 'clip' },
+      { id: 'c2', video_id: 'BBBBBBBBBBB', category: 'clip' },
+      { id: 'c3', video_id: 'CCCCCCCCCCC', category: 'clip' },
+      { id: 'c4', video_id: 'DDDDDDDDDDD', category: 'clip' },
+    ];
+    mocks.verifyYouTubeMetadata
+      .mockResolvedValueOnce({ verdict: 'unknown', reason: 'yt_dlp_transient_failure' })
+      .mockResolvedValueOnce({ verdict: 'unknown', reason: 'yt_dlp_transient_failure' })
+      .mockResolvedValueOnce({ verdict: 'unknown', reason: 'yt_dlp_runtime_unavailable' })
+      .mockResolvedValueOnce({ verdict: 'verified', reason: 'yt_dlp_public_embeddable' });
+    mocks.recordYouTubeVerification.mockResolvedValueOnce(false);
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ html: '<iframe></iframe>' }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const c = context();
+    const pending = revalidatePokerClips(c as never);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(c.captured.status).toBe(200);
+    expect(c.captured.body).toMatchObject({
+      checked: 4,
+      still_ok: 4,
+      retired: 0,
+      metadata_checked: 4,
+      metadata_verified: 0,
+      metadata_rejected: 0,
+      metadata_unknown: 4,
+      metadata_unknown_reasons: {
+        yt_dlp_transient_failure: 2,
+        yt_dlp_runtime_unavailable: 1,
+        verification_record_failed: 1,
+      },
+    });
   });
 
   it('classifies HTTP 403 as forbidden and HTTP 429 as no-answer in askYouTube', async () => {

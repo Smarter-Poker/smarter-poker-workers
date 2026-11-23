@@ -12,6 +12,16 @@ describe('source-bound instructional topics',()=>{
  ['When Shot Taking Can Be a Mistake','Phil Galfond','shot_taking'],
  ['The Right Way to Approach Poker Strategy Decisions','Phil Galfond','decision_process'],
  ['The Nut Flush Draw Trap!','Mariano','nut_flush_draw'],
+ ['What is the Biggest Lever in Your Poker Career?','Phil Galfond','career_lever'],
+ ['Why Doesn’t Daniel Negreanu Travel To Poker Tournaments?','Daniel Negreanu','tournament_travel'],
+ ['Poker Wisdom vs. GTO: Experience’s Edge Against Young Pros','Daniel Negreanu','experience_vs_gto'],
+ ['How To Adjust To Recreational Poker Players!!!','PokerCoaching','adjusting_to_recreationals'],
+ ["how i'd beat the trappy nits",'Hungry Horse Poker','beating_trappy_nits'],
+ ['Solve Like a Pro: Run Your Solves and Study Your Hands','GTO Wizard','solver_study_workflow'],
+ ["You Don't Need the Nuts to Overbet",'Upswing Poker','overbetting'],
+ ['How To DESTROY Low Stakes Poker! (Every Hand)','Sethy Poker','low_stakes_strategy'],
+ ['5 Mistakes to Avoid in Low Stakes Online Poker','Natural8','low_stakes_online_mistakes'],
+ ['Stop Studying Poker Like This','Run It Once','poker_study_habits'],
  ])('binds approved video lesson without answering or inventing results %s',(title,source,topic)=>expect(strategyTopicFact(briefForAsset({kind:'video',domainHint:'poker',source,title}))?.identity).toBe('poker_strategy:'+topic));
  it.each(['Unknown channel','PokerNews'])('rejects video lesson from unqualified source %s',source=>expect(strategyTopicFact(briefForAsset({kind:'video',domainHint:'poker',source,title:'Preflop Mechanics in PLO'}))).toBeNull());
  const cases=[
