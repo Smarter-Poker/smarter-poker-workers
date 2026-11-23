@@ -308,7 +308,8 @@ export function render(sentences: string[], s: StyleSheet, seed: string, opts: R
   } else if (s.layout === 'double_break' && parts.length > 1) {
     const head = parts[0]!;
     const tail = parts.slice(1).join(sep);
-    joined = `${head}${s.punctuation === 'none' ? '' : '.'}\n\n${tail}`;
+    const headPunct = s.punctuation === 'none' ? '' : s.punctuation === 'ellipsis' ? '…' : '.';
+    joined = `${head}${headPunct}\n\n${tail}`;
   } else {
     joined = parts.join(sep);
   }

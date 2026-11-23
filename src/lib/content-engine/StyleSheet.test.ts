@@ -75,4 +75,17 @@ describe('conversational caption rendering',()=>{
     }
     expect(decorated).toBeGreaterThan(0);
   });
+
+  it('uses an ellipsis rather than a period on double_break ellipsis voices', () => {
+    const style = {
+      ...profiles[0]!,
+      layout: 'double_break' as const,
+      punctuation: 'ellipsis' as const,
+      opener: 'none' as const,
+      closer: 'none' as const,
+      casing: 'sentence' as const,
+    };
+    const text = render(['First thought', 'Second thought'], style, 'dbl-ellipsis');
+    expect(text).toBe('First thought…\n\nSecond thought…');
+  });
 });

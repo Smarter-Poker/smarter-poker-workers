@@ -16,12 +16,17 @@ const m = vi.hoisted(() => ({
   writeStory: vi.fn(),
   writeCaption: vi.fn(),
   candidateClips: vi.fn(),
+  postModeEnabled: vi.fn(),
+  filterUnusedAssets: vi.fn(),
+  recordAssetUse: vi.fn(),
+  recordPhrase: vi.fn(),
   random: [] as number[],
 }));
 
 vi.mock('../lib/supabase.js', () => ({ getSupabase: () => ({ rpc: m.rpc }) }));
 vi.mock('../lib/content-engine/Fleet.js', () => ({
   engineEnabled: vi.fn(async () => true),
+  postModeEnabled: m.postModeEnabled,
   loadFleet: vi.fn(async () => [
     { id: 1, name: 'Horse a', profile_id: 'pid-a', timezone: 'UTC' },
     { id: 2, name: 'Horse b', profile_id: 'pid-b', timezone: 'UTC' },
@@ -31,6 +36,13 @@ vi.mock('../lib/content-engine/FleetScheduler.js', () => ({ isOnlineNow: () => t
 vi.mock('../lib/content-engine/HorseScheduler.js', () => ({ getHorseActivityRate: () => 1 }));
 vi.mock('../lib/content-engine/VoiceWriter.js', () => ({ writeStory: m.writeStory, writeCaption: m.writeCaption }));
 vi.mock('../lib/content-engine/ClipSupply.js', () => ({ candidateClips: m.candidateClips }));
+vi.mock('../lib/content-engine/ContentLedger.js', () => ({
+  assetKeyFor: (url: string) => (url ? `yt:${url.slice(-11)}` : null),
+  filterUnusedAssets: m.filterUnusedAssets,
+  normalizePhrase: (text: string) => text.toLowerCase().trim(),
+  recordAssetUse: m.recordAssetUse,
+  recordPhrase: m.recordPhrase,
+}));
 
 import { horsesStories } from './horses-stories.js';
 
@@ -57,8 +69,16 @@ beforeEach(() => {
   m.writeStory.mockReset();
   m.writeCaption.mockReset();
   m.candidateClips.mockReset();
+  m.postModeEnabled.mockReset();
+  m.filterUnusedAssets.mockReset();
+  m.recordAssetUse.mockReset();
+  m.recordPhrase.mockReset();
   m.random = [];
   m.rpc.mockResolvedValue({ data: 'story-1', error: null });
+  m.postModeEnabled.mockResolvedValue(true);
+  m.filterUnusedAssets.mockImplementation(async (keys: string[]) => new Set(keys));
+  m.recordAssetUse.mockResolvedValue(undefined);
+  m.recordPhrase.mockResolvedValue(undefined);
   m.candidateClips.mockResolvedValue({ clips: [] });
 });
 
@@ -112,5 +132,14 @@ describe('a video story with nothing to show posts nothing', () => {
     expect(m.writeCaption).not.toHaveBeenCalled();
     expect(m.rpc).not.toHaveBeenCalled();
     expect(r.body).toMatchObject({ posted: 0, skip_reasons: { no_clip: 2 } });
+  });
+
+  it('skips video stories when poker_video mode is disabled', async () => {
+    fixRandom('video');
+    m.postModeEnabled.mockResolvedValue(false);
+    const r = await run();
+    expect(m.candidateClips).not.toHaveBeenCalled();
+    expect(m.rpc).not.toHaveBeenCalled();
+    expect(r.body).toMatchObject({ posted: 0, skip_reasons: { mode_disabled: 2 } });
   });
 });

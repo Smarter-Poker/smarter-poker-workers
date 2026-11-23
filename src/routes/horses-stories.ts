@@ -34,13 +34,22 @@ import { getSupabase } from '../lib/supabase.js';
 import { writeCaption, writeStory } from '../lib/content-engine/VoiceWriter.js';
 import { getHorseActivityRate } from '../lib/content-engine/HorseScheduler.js';
 import { isOnlineNow } from '../lib/content-engine/FleetScheduler.js';
-import { loadFleet, engineEnabled } from '../lib/content-engine/Fleet.js';
+import { loadFleet, engineEnabled, postModeEnabled } from '../lib/content-engine/Fleet.js';
 import { candidateClips } from '../lib/content-engine/ClipSupply.js';
+import {
+  assetKeyFor,
+  filterUnusedAssets,
+  normalizePhrase,
+  recordAssetUse,
+  recordPhrase,
+} from '../lib/content-engine/ContentLedger.js';
 
 
 const CONFIG = {
   HORSES_PER_TRIGGER: 2,
   VIDEO_STORY_PROBABILITY: 0.7,
+  THUMBNAIL_TIMEOUT_MS: 8_000,
+  MAX_CLIP_ATTEMPTS: 5,
 } as const;
 
 const STORY_GRADIENTS = [
@@ -92,53 +101,68 @@ function writerReason(prefix: string, written: { skipReason?: string; stale?: bo
 }
 
 async function validateYouTubeThumbnail(videoId: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG.THUMBNAIL_TIMEOUT_MS);
   try {
     const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-    const response = await fetch(thumbnailUrl, { method: 'HEAD' });
+    const response = await fetch(thumbnailUrl, { signal: controller.signal });
     if (!response.ok) return false;
-    const imageResponse = await fetch(thumbnailUrl);
-    const buffer = await imageResponse.arrayBuffer();
+    const buffer = await response.arrayBuffer();
     const sizeKB = buffer.byteLength / 1024;
     return sizeKB > 10;
   } catch (e) {
     console.warn('[horses-stories] thumbnail validation failed:', e instanceof Error ? e.message : e);
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function postVideoStory(horse: Horse): Promise<StoryOutcome> {
   try {
-    // Phase 4: the same renewing supply the feed draws from, and the same
-    // per-horse slice, so a horse's stories and its posts come from the
-    // channels that horse actually follows. This used to be getRandomClip()
-    // over the 150-literal array, which is how a story could show a video
-    // that had been deleted since April.
-    const { clips: pool } = await candidateClips('poker', horse.profile_id);
+    if (!(await postModeEnabled('poker_video'))) {
+      return { ok: false, reason: 'mode_disabled' };
+    }
+
+    const { clips: rawPool } = await candidateClips('poker', horse.profile_id);
+    if (rawPool.length === 0) return { ok: false, reason: 'no_clip' };
+
+    const keys = rawPool
+      .map((clip) => assetKeyFor(clip.source_url))
+      .filter((k): k is string => Boolean(k));
+    const unusedKeys = await filterUnusedAssets(keys, horse.profile_id);
+    const pool = rawPool.filter((clip) => {
+      const key = assetKeyFor(clip.source_url);
+      return Boolean(key && unusedKeys.has(key));
+    });
+    if (pool.length === 0) return { ok: false, reason: 'all_clips_used' };
+
     let validClip = null;
-    for (let attempt = 0; attempt < 5 && pool.length > 0; attempt++) {
+    let caption = '';
+    let lastReason = 'no_valid_thumbnail';
+    for (let attempt = 0; attempt < CONFIG.MAX_CLIP_ATTEMPTS && pool.length > 0; attempt++) {
       const idx = Math.floor(Math.random() * pool.length);
       const clip = pool[idx]!;
       pool.splice(idx, 1);
-      if (await validateYouTubeThumbnail(clip.video_id)) {
-        validClip = clip;
-        break;
+      if (!(await validateYouTubeThumbnail(clip.video_id))) {
+        lastReason = 'no_valid_thumbnail';
+        continue;
       }
+      const written = await writeCaption(horse as never, {
+        kind: 'video',
+        title: clip.title || '',
+        source: clip.source ?? null,
+        domainHint: 'poker',
+      });
+      if (!written.text || written.text.trim().length < 3) {
+        lastReason = writerReason('caption', written);
+        continue;
+      }
+      validClip = clip;
+      caption = written.text;
+      break;
     }
-    if (!validClip) return { ok: false, reason: pool.length === 0 ? 'no_clip' : 'no_valid_thumbnail' };
-
-    // Phase 2 (2026-09-06): the story caption is written from a brief of THIS
-    // clip in this horse's own style, like every other surface. It used to
-    // draw from the same category-keyed pools the feed used, which is how one
-    // sentence reached 26 horses in a month.
-    const written = await writeCaption(horse as never, {
-      kind: 'video',
-      title: validClip.title || '',
-      source: validClip.source ?? null,
-      domainHint: 'poker',
-    });
-    const caption = written.text;
-    if (!caption || caption.trim().length < 3) return { ok: false, reason: writerReason('caption', written) };
-
+    if (!validClip || !caption) return { ok: false, reason: lastReason };
 
     const thumbnailUrl = `https://img.youtube.com/vi/${validClip.video_id}/hqdefault.jpg`;
 
@@ -157,6 +181,13 @@ async function postVideoStory(horse: Horse): Promise<StoryOutcome> {
     }
     // fn_create_story returns NULL instead of raising when it refuses a row.
     if (!storyId) return { ok: false, reason: 'rpc_refused' };
+    try {
+      const assetKey = assetKeyFor(validClip.source_url);
+      if (assetKey) await recordAssetUse(assetKey, horse.profile_id, String(storyId));
+      await recordPhrase(normalizePhrase(caption), horse.profile_id, String(storyId));
+    } catch (ledgerErr) {
+      console.warn('[horses-stories] ledger write failed after story commit:', ledgerErr instanceof Error ? ledgerErr.message : ledgerErr);
+    }
     return { ok: true, type: 'video_story', story_id: String(storyId) };
   } catch (e) {
     console.warn('[horses-stories] video story failed:', e instanceof Error ? e.message : e);
@@ -193,6 +224,11 @@ async function postTextStory(horse: Horse): Promise<StoryOutcome> {
       return { ok: false, reason: 'rpc_error' };
     }
     if (!storyId) return { ok: false, reason: 'rpc_refused' };
+    try {
+      await recordPhrase(normalizePhrase(content), horse.profile_id, String(storyId));
+    } catch (ledgerErr) {
+      console.warn('[horses-stories] phrase ledger write failed after text story commit:', ledgerErr instanceof Error ? ledgerErr.message : ledgerErr);
+    }
     return { ok: true, type: 'text_story', story_id: String(storyId) };
   } catch (e) {
     console.warn('[horses-stories] text story failed:', e instanceof Error ? e.message : e);
@@ -243,6 +279,10 @@ export async function horsesStories(c: Context) {
     const skipReasons: Record<string, number> = {};
 
     for (const horse of selectedHorses) {
+      if (!(await engineEnabled())) {
+        skipReasons.engine_disabled = (skipReasons.engine_disabled ?? 0) + 1;
+        break;
+      }
       await new Promise((r) => setTimeout(r, Math.random() * 2000 + 1000));
       const isVideoStory = Math.random() < CONFIG.VIDEO_STORY_PROBABILITY;
       const outcome = isVideoStory ? await postVideoStory(horse) : await postTextStory(horse);
