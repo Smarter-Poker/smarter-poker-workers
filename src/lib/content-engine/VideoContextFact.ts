@@ -20,6 +20,9 @@ const QUESTION_COACHING_SOURCES = new Set([
   'gto wizard',
   'phil galfond',
   'pokercoaching',
+  'upswing poker',
+  'raise your edge',
+  'pokerstars',
 ]);
 
 /** Literal questions remain questions: no fold, call or result is asserted. */
@@ -33,10 +36,31 @@ export function pokerVideoQuestionFact(rawTitle:string,source?:string):CaptionFa
  const extra=sourceName==='mariano'?[
   [/^trapping with pocket aces$/,'decision:trap:holding:aa','the trapping decision with pocket aces'],
   [/^flatting a (?:3|three)[- ]bet out of position madness$/,'decision:flat:bet_level:3:position:oop','the decision about flatting a three-bet out of position'],
+  [/^will pair of fives be enough$/,'decision:evaluate:holding:55','the decision with a pair of fives'],
+  [/^trust the math or trust your gut$/,'decision:math_or_gut','the decision between trusting the math or a read'],
+  [/^is river all[- ]in too thin$/,'decision:thin_value:street:river:wager:all_in','the river all-in thin-value decision'],
+  [/^call or raise this shove$/,'decision:call_or_raise:facing:shove','the call-or-raise decision facing a shove'],
+  [/^is calling an? \$13k all[- ]in too risky$/,'decision:call:amount:13000:wager:all_in','the decision about calling a $13,000 all-in'],
+  [/^\$55k top pair mistake$/,'decision:evaluate:holding:top_pair:amount:55000','the $55,000 decision with top pair'],
  ] as const:sourceName==='bart hanson'?[
   [/^would you fold (?:5[- ]4|five[- ]four) suited here$/,'decision:fold:holding:54s','the folding decision with five-four suited'],
   [/^would you flat or (?:4|four)[- ]bet here$/,'decision:flat_or_four_bet','the flat-or-four-bet decision'],
   [/^bet or fold$/,'decision:bet_or_fold','the bet-or-fold decision'],
+  [/^mystery hand turns straight(?:\.{1,3}|…) trouble$/,'decision:turned_straight','the decision after turning a straight'],
+  [/^would you fold a flush here$/,'decision:fold:holding:flush','the folding decision with a flush'],
+  [/^is this river shove ever a bluff$/,'decision:interpret_shove:street:river','the decision facing a river shove'],
+  [/^is trip tens too weak$/,'decision:evaluate:holding:trip_tens','the decision with trip tens'],
+  [/^overplaying pocket queens$/,'decision:sizing:holding:qq','the sizing decision with pocket queens'],
+  [/^can hero fold top two pair$/,'decision:fold:holding:top_two_pair','the folding decision with top two pair'],
+  [/^smaller bluff can work better$/,'decision:bluff_sizing','the smaller-bluff sizing decision'],
+  [/^did hero miss a value bet against villain$/,'decision:value_bet','the value-betting decision'],
+ ] as const:sourceName==='upswing poker'?[
+  [/^would you go for thin value on the river in a (?:5|five)[- ]bet pot$/,'decision:thin_value:street:river:pot_bet_level:5','the river thin-value decision in a five-bet pot'],
+ ] as const:sourceName==='raise your edge'?[
+  [/^would you open jam or open limp with aa$/,'decision:open_jam_or_limp:holding:aa','the open-jam-or-limp decision with pocket aces'],
+ ] as const:sourceName==='pokerstars'?[
+  [/^would you fold kings to doug polk$/,'decision:fold:holding:kk:opponent:doug_polk','the folding decision with pocket kings against Doug Polk'],
+  [/^would you play pocket fours like this$/,'decision:play:holding:44','the decision with pocket fours'],
  ] as const:[] as const;
  const added=extra.find(([pattern])=>pattern.test(title));
  if(added)return {person:'',action:'poker_question_context',identity:`poker_question:${added[1]}`,subject:added[2]};
@@ -110,10 +134,22 @@ const EVENTS:Array<[RegExp,string,string]>=[
   [/\btrailblazer signature\b/,'trailblazer signature','Trailblazer Signature'],
   [/\btrailblazer warm[- ]up\b/,'trailblazer warm up','Trailblazer Warm-Up'],
   [/\blone star showdown\b/,'lone star showdown','Lone Star Showdown'],
+  [/\bpokeratlas value town\b/,'pokeratlas value town','PokerAtlas Value Town'],
+  [/\bpokeratlas kickoff\b/,'pokeratlas kickoff','PokerAtlas Kickoff'],
   [/\btexas trailblazer\b/,'texas trailblazer','Texas Trailblazer'],
   [/\beven bigger one\b/,'even bigger one','Even Bigger One'],
   [/\bwsopc\b.*\bmain event\b|\bmain event\b.*\bwsopc\b/,'wsopc main event','WSOPC Main Event'],
   [/\bwsopc\b.*\bplo ring event\b|\bplo ring event\b.*\bwsopc\b/,'wsopc plo ring event','WSOPC PLO Ring Event'],
+];
+
+const TRITON_DAILY_EVENTS: ReadonlyArray<readonly [RegExp, string, string]> = [
+  [/^invitational x$/i, 'invitational_x', 'Invitational X'],
+  [/^nlh 8[- ]handed$/i, 'nlh_8_handed', 'NLH 8-Handed'],
+  [/^nlh 7[- ]handed$/i, 'nlh_7_handed', 'NLH 7-Handed'],
+  [/^nlh mystery bounty$/i, 'nlh_mystery_bounty', 'NLH Mystery Bounty'],
+  [/^nlh titi poker$/i, 'nlh_titi_poker', 'NLH Titi Poker'],
+  [/^(?:nlh )?main event(?:\s+ft)?$/i, 'nlh_main_event', 'NLH Main Event'],
+  [/^nlh qqpk(?: genesis)?$/i, 'nlh_qqpk_genesis', 'NLH QQPK Genesis'],
 ];
 
 /** Official coverage supplies a literal event/stage, not an inferred result.
@@ -125,17 +161,38 @@ function tournamentStageContext(title:string,source?:string):CaptionFact|null {
   if(src==='triton poker'){
     const hasTriton=/\btriton\b/.test(title);
     if(!hasTriton)return null;
+    const isOne=/\btriton\s+one\b/.test(title);
+    const seriesKey=isOne?'triton_one':'triton';
+    const seriesLabel=isOne?'Triton ONE':'Triton';
     const years=[...title.matchAll(/\b(20\d{2})\b/g)].map(m=>m[1]!);
     const numbers=[...title.matchAll(/\bevent\s*#?\s*(\d{1,3})\b/g)].map(m=>Number(m[1]));
-    const stages=[...title.matchAll(/\bfinal\s*table\b|\bday\s+([1-9]\d?)\b/g)]
-      .map(m=>m[1]?`day_${Number(m[1])}`:'final_table');
-    if(years.length>1||numbers.length>1||stages.length!==1||numbers.some(n=>n<1))return null;
-    if(numbers.length!==1)return null;
-    const stage=stages[0]!,year=years[0],number=numbers[0]!;
-    const variant=/\bplo\b|\bpot[- ]limit omaha\b/.test(title)?'plo':null;
-    return {person:'',action:'poker_event_context',
-      identity:`poker_event:triton${year?`:year:${year}`:''}:event:${number}${variant?`:variant:${variant}`:''}:stage:${stage}`,
-      subject:`the ${year?`${year} `:''}Triton Event #${number}${variant?' PLO':''} ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
+    const stages=[...title.matchAll(/\bfinal\s*table\b|\bfinal\s*day\b|\bday\s+([1-9]\d?[a-d]?)\b/g)]
+      .map(m=>m[1]?`day_${m[1].toLowerCase()}`:/final\s*day/.test(m[0])?'final_day':'final_table');
+    if(years.length<=1&&numbers.length===1&&stages.length===1&&!numbers.some(n=>n<1)){
+      const stage=stages[0]!,year=years[0],number=numbers[0]!;
+      const variant=/\bplo\b|\bpot[- ]limit omaha\b/.test(title)?'plo':null;
+      const stageLabel=stage==='final_table'?'final table':stage==='final_day'?'final day':`Day ${stage.slice(4).toUpperCase()}`;
+      return {person:'',action:'poker_event_context',
+        identity:`poker_event:${seriesKey}${year?`:year:${year}`:''}:event:${number}${variant?`:variant:${variant}`:''}:stage:${stage}`,
+        subject:`the ${year?`${year} `:''}${seriesLabel} Event #${number}${variant?' PLO':''} ${stageLabel}`};
+    }
+    const daily=title.match(/^(?:day\s+([1-9]\d?)\s+highlights|best\s+moments\s+day\s+([1-9]\d?))\s+triton\s+(shrs|one)\s+\$([1-9]\d{0,2})k\s+(.+)$/);
+    if(daily&&numbers.length===0){
+      const day=Number(daily[1]??daily[2]);
+      const series=daily[3]!.toLowerCase();
+      const buyin=Number(daily[4]);
+      const rawEvent=daily[5]!.trim();
+      const isFt=/\bft$/i.test(rawEvent);
+      const matched=TRITON_DAILY_EVENTS.find(([pattern])=>pattern.test(rawEvent));
+      if(matched){
+        const [,eventKey,eventLabel]=matched;
+        const label=series==='shrs'?'Triton SHRS':'Triton ONE';
+        return {person:'',action:'poker_event_context',
+          identity:`poker_event:triton_${series}:buyin:${buyin}k:${eventKey}:stage:day_${day}${isFt?':final_table':''}`,
+          subject:`the ${label} $${buyin}K ${eventLabel} Day ${day}${isFt?' final table':''} coverage`};
+      }
+    }
+    return null;
   }
   if(src==='tch live'){
     if(!/\bpokeratlas tour\b/.test(title)||!/\bfinal\s*table\b/.test(title))return null;
@@ -145,6 +202,12 @@ function tournamentStageContext(title:string,source?:string):CaptionFact|null {
       subject:`the PokerAtlas Tour${variant?` ${variant.toUpperCase()}`:''} final table`};
   }
   if(src!=='pokergo')return null;
+  if(/^high stakes poker live \| day ([1-9]\d?)$/.test(title)){
+    const day=Number(title.match(/day ([1-9]\d?)$/)![1]);
+    return {person:'',action:'poker_event_context',
+      identity:`poker_event:high stakes poker:stage:day_${day}`,
+      subject:`High Stakes Poker Live Day ${day}`};
+  }
   const names=[...title.matchAll(/\b(poker masters|super high roller bowl)\b/g)];
   if(names.length!==1)return null;
   const event=names[0]![1]!;
@@ -153,6 +216,21 @@ function tournamentStageContext(title:string,source?:string):CaptionFact|null {
   const stages=[...title.matchAll(/\bfinal\s*table\b|\bday\s+([1-9]\d?)\b/g)]
     .map(m=>m[1]?`day_${Number(m[1])}`:'final_table');
   if(years.length>1||numbers.length>1||stages.length!==1||numbers.some(n=>n<1))return null;
+  if(event==='poker masters'&&numbers.length===0){
+    const stage=stages[0]!;
+    if(/\bgrand finale\b/.test(title)){
+      return {person:'',action:'poker_event_context',
+        identity:`poker_event:poker masters:grand_finale:stage:${stage}`,
+        subject:`the Poker Masters Grand Finale ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
+    }
+    const hr=title.match(/\$(25,000|25k)\s+high roller\b/);
+    if(hr&&years.length===1){
+      return {person:'',action:'poker_event_context',
+        identity:`poker_event:poker masters:year:${years[0]}:high_roller:25000:stage:${stage}`,
+        subject:`the ${years[0]} Poker Masters $25,000 High Roller ${stage==='final_table'?'final table':`Day ${stage.slice(4)}`}`};
+    }
+    return null;
+  }
   // An unidentified Masters edition must not become extra supply alongside
   // the same explicitly dated event. SHRB names the event itself.
   if(event==='poker masters'&&(numbers.length!==1||years.length!==1))return null;
@@ -188,8 +266,9 @@ function quantifiedContext(title:string):CaptionFact|null {
     if(value) return {person:'',action:'pot_context',identity:`pot:amount:${value}:unit:${denomination(wonPot[1]!)}`,subject:`the ${displayAmount(value,wonPot[1]!)} pot`};
   }
   const stakes=title.match(/(?:\bhigh stakes\s+|\bcash (?:game )?)(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])/)
-    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe)\b/)
-    ?? title.match(/(?<![\d.$,-])(\$)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+no[- ]limit hold'?em cash game\b/);
+    ?? title.match(/(?<![\d.$,-])(\$?)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:nlh|nlhe|plo|pot[- ]limit omaha)\b/)
+    ?? title.match(/(?<![\d.$,-])(\$)([\d,]+)\s*\/\s*\$?([\d,]+)(?![\d/])\s+(?:no[- ]limit hold'?em|no[- ]limit 2-7 single draw)\s+cash game\b/)
+    ?? title.match(/(?<![\d.$,-])(\$)([\d,]+)\s*\/\s*\$?([\d,]+)\+?\s+cash game\b/);
   if(stakes) {
     const small=quantity(stakes[2]!,undefined),big=quantity(stakes[3]!,undefined);
     if(small && big && big>small) return {person:'',action:'stakes_context',identity:`stakes:${small}:${big}:unit:${denomination(stakes[1]!)}`,subject:`the ${displayAmount(small,stakes[1]!)}/${displayAmount(big,stakes[1]!)} stakes`};
@@ -217,24 +296,88 @@ export function pokerVideoContextFact(rawTitle: string, source?: string): Captio
   const literalFact=(identity:string,subject:string,action:CaptionFact['action']='holding_context'):CaptionFact=>({person:'',identity,subject,action});
   // Complete clauses from maintained sources only. Money roles are bound to
   // their verb/noun; punctuation, scale and episode metadata cannot salt keys.
-  if(source?.toLowerCase()==='mariano'){
+  const srcLower=source?.toLowerCase();
+  if(srcLower==='mariano'){
     const firing=sourceLiteral.match(/^firing \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? with pure ten high$/);
     if(firing){const amount=quantity(firing[1]!,firing[2]);if(amount)return literalFact(`wager:amount:${amount}:unit:dollars:holding:t_high`,`the $${amount.toLocaleString('en-US')} wager with ten-high`);}
+    const kingBluff=sourceLiteral.match(/^a \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? bluff with king[- ]high$/);
+    if(kingBluff){const amount=quantity(kingBluff[1]!,kingBluff[2]);if(amount)return literalFact(`wager:bluff:amount:${amount}:unit:dollars:holding:k_high`,`the $${amount.toLocaleString('en-US')} bluff with king-high`);}
+    const q10Pot=sourceLiteral.match(/^(?:q10|queen[- ]ten) suited in ([2-9])[- ]way pot$/);
+    if(q10Pot)return literalFact(`pot:holding:qts:players:${Number(q10Pot[1])}`,`the ${Number(q10Pot[1])}-way pot with queen-ten suited`,'pot_context');
+    const akWar=sourceLiteral.match(/^ace[- ]king war for (?:a )?\$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? pot$/);
+    if(akWar){const amount=quantity(akWar[1]!,akWar[2]);if(amount)return literalFact(`pot:holding:ak:amount:${amount}:unit:dollars`,`the $${amount.toLocaleString('en-US')} pot with ace-king`,'pot_context');}
+    const flushDec=sourceLiteral.match(/^a \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? decision with a flush$/);
+    if(flushDec){const amount=quantity(flushDec[1]!,flushDec[2]);if(amount)return literalFact(`made_hand:flush:amount:${amount}:unit:dollars`,`the $${amount.toLocaleString('en-US')} decision with a flush`,'made_hand_context');}
+    const eightTwo=sourceLiteral.match(/^the \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? 8[- ]2 suited punt$/);
+    if(eightTwo){const amount=quantity(eightTwo[1]!,eightTwo[2]);if(amount)return literalFact(`wager:amount:${amount}:unit:dollars:holding:82s`,`the $${amount.toLocaleString('en-US')} hand with eight-two suited`);}
+    if(/^turning 8[- ]7 into a monster pot$/.test(sourceLiteral))return literalFact('pot:holding:87','the pot with eight-seven','pot_context');
+    const firstPlace=sourceLiteral.match(/^final table! \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? for 1st place$/);
+    if(firstPlace){const amount=quantity(firstPlace[1]!,firstPlace[2]);if(amount)return literalFact(`event:mariano_tournament:top_prize:${amount}:unit:dollars`,`the $${amount.toLocaleString('en-US')} first-place prize at the final table`,'prize_context');}
   }
-  if(source?.toLowerCase()==='bart hanson'){
+  if(srcLower==='bart hanson'){
     if(/^turned top pair in a (?:3|three)[- ]bet pot$/.test(sourceLiteral))return literalFact('made_hand:top_pair:street:turn:pot_bet_level:3','the top pair made on the turn in a three-bet pot','made_hand_context');
     if(/^facing a river all[- ]in$/.test(sourceLiteral))return literalFact('all_in:street:river:facing','the decision facing a river all-in','all_in_context');
     if(/^hero refused to fold top pair$/.test(sourceLiteral))return literalFact('holding:top_pair:decision:not_fold','the decision not to fold top pair');
     const shove=sourceLiteral.match(/^reg shoved \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? into hero's kings$/);
     if(shove){const amount=quantity(shove[1]!,shove[2]);if(amount)return literalFact(`holding:kk:facing:shove:amount:${amount}:unit:dollars`,`the pocket kings facing a $${amount.toLocaleString('en-US')} shove`);}
+    if(/^bet sizing with pocket queens$/.test(sourceLiteral))return literalFact('holding:qq:topic:bet_sizing','bet sizing with pocket queens');
+    const aaPot=sourceLiteral.match(/^aa in an? \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? pot$/);
+    if(aaPot){const amount=quantity(aaPot[1]!,aaPot[2]);if(amount)return literalFact(`pot:holding:aa:amount:${amount}:unit:dollars`,`the $${amount.toLocaleString('en-US')} pot with pocket aces`,'pot_context');}
+    if(/^ace[- ]king on mono[- ]heart flop$/.test(sourceLiteral))return literalFact('holding:ak:board:monotone_heart_flop','ace-king on a monotone heart flop');
+    if(/^aa gets raised on the river$/.test(sourceLiteral))return literalFact('holding:aa:street:river:facing:raise','pocket aces facing a river raise');
+    const bullyPot=sourceLiteral.match(/^standing up to the table bully in an? \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? pot$/);
+    if(bullyPot){const amount=quantity(bullyPot[1]!,bullyPot[2]);if(amount)return literalFact(`pot:amount:${amount}:unit:dollars`,`the $${amount.toLocaleString('en-US')} pot`,'pot_context');}
+    const turnedBoat=sourceLiteral.match(/^calling \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? into a turned boat$/);
+    if(turnedBoat){const amount=quantity(turnedBoat[1]!,turnedBoat[2]);if(amount)return literalFact(`made_hand:turned_full_house:call:${amount}:unit:dollars`,`calling $${amount.toLocaleString('en-US')} into a turned full house`,'made_hand_context');}
+    if(/^i flopped a full house(?:\.{1,3}|…) then he shoved 3x the pot$/.test(sourceLiteral))return literalFact('made_hand:flopped_full_house:facing:3x_pot_shove','a flopped full house facing a 3x pot shove','made_hand_context');
   }
-  if(source?.toLowerCase()==='pokerstars'){
-    const appt=sourceLiteral.match(/^(main event|super high roller) [-|] (day ?[1-9]\d?|final day) \| appt championship manila$/);
+  if(srcLower==='brad owen'){
+    if(/^i flop quads! incredibly rare! opponent is coming after me$/.test(sourceLiteral))return literalFact('made_hand:flopped_quads','flopping quads','made_hand_context');
+    if(/^i flop quad kings! unbelievable first hand! massive win in canada! running the hottest all year$/.test(sourceLiteral))return literalFact('made_hand:flopped_quad_kings','flopping quad kings','made_hand_context');
+  }
+  if(srcLower==='pokerstars'){
+    const appt=sourceLiteral.match(/^(main event|super high roller) [-|] (day ?[1-9]\d?|final day) \| appt championship manila$/)
+      ?? sourceLiteral.match(/^(main event|super high roller)\s+(final day)\s*-\s*appt championship manila$/);
     if(appt){const event=appt[1]==='main event'?'main':'super_high_roller',stage=appt[2]==='final day'?'final_day':`day_${Number(appt[2]!.replace(/day ?/,''))}`;return literalFact(`poker_event:appt championship manila:event:${event}:stage:${stage}`,`the APPT Championship Manila ${appt[1]} ${stage==='final_day'?'final day':`Day ${stage.slice(4)}`}`,'poker_event_context');}
-    const heat=sourceLiteral.match(/^big game on tour \| s([1-9]\d?) heat ([1-9]\d?) \| hands only, no breaks$/);
+    const heat=sourceLiteral.match(/^big game on tour \| s([1-9]\d?) heat ([1-9]\d?)(?: \| hands only, no breaks)?$/);
     if(heat)return literalFact(`poker_event:big game on tour:season:${Number(heat[1])}:heat:${Number(heat[2])}`,`Big Game on Tour Season ${Number(heat[1])} Heat ${Number(heat[2])}`,'poker_event_context');
+    const ep=sourceLiteral.match(/\| big game on tour \| s([1-9]\d?) e([1-9]\d?)$/);
+    if(ep)return literalFact(`poker_event:big game on tour:season:${Number(ep[1])}:episode:${Number(ep[2])}`,`Big Game on Tour Season ${Number(ep[1])} Episode ${Number(ep[2])}`,'poker_event_context');
   }
-  const guardedTitle=title.replace(/\bno[- ]limit hold'?em\b/g,'holdem');
+  if(srcLower==='pokergo'){
+    const hartBluff=sourceLiteral.match(/^kevin hart makes \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? bluff on high stakes poker$/);
+    if(hartBluff){const amount=quantity(hartBluff[1]!,hartBluff[2]);if(amount)return literalFact(`wager:bluff:actor:kevin hart:amount:${amount}:unit:dollars:show:high stakes poker`,`Kevin Hart's $${amount.toLocaleString('en-US')} bluff on High Stakes Poker`);}
+    const hartHand=sourceLiteral.match(/^kevin hart plays \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? poker hand$/);
+    if(hartHand){const amount=quantity(hartHand[1]!,hartHand[2]);if(amount)return literalFact(`pot:actor:kevin hart:amount:${amount}:unit:dollars`,`Kevin Hart's $${amount.toLocaleString('en-US')} hand`,'pot_context');}
+    if(/^quads in huge pot at 2026 poker masters$/.test(sourceLiteral))return literalFact('made_hand:quads:event:poker masters:year:2026','quads in a big pot at the 2026 Poker Masters','made_hand_context');
+    const upTop=sourceLiteral.match(/^poker masters grand finale with \$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? up top\b/);
+    if(upTop){const amount=quantity(upTop[1]!,upTop[2]);if(amount)return literalFact(`event:poker masters grand finale:top_prize:${amount}:unit:dollars`,`the $${amount.toLocaleString('en-US')} listed top prize for Poker Masters Grand Finale`,'prize_context');}
+  }
+  if(srcLower==='spraggy'){
+    const bounty=sourceLiteral.match(/^final table! \$([1-9][0-9,]*) mystery bounty$/);
+    if(bounty){const buyin=quantity(bounty[1]!,undefined);if(buyin)return literalFact(`poker_event:mystery_bounty:buyin:${buyin}:stage:final_table`,`the $${buyin.toLocaleString('en-US')} Mystery Bounty final table`,'poker_event_context');}
+  }
+  if(srcLower==='conscious poker'){
+    const ept=sourceLiteral.match(/\| ept day ([1-9]\d?)$/);
+    if(ept)return literalFact(`poker_event:ept:stage:day_${Number(ept[1])}`,`EPT Day ${Number(ept[1])}`,'poker_event_context');
+  }
+  if(srcLower==='doug polk poker'){
+    const riverBet=sourceLiteral.match(/^\$([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand)? river bet vs\.? dwan$/);
+    if(riverBet){const amount=quantity(riverBet[1]!,riverBet[2]);if(amount)return literalFact(`river:amount:${amount}:bet`,`the $${amount.toLocaleString('en-US')} river bet`,'river_context');}
+    if(/^pocket aces first hand at triton$/.test(sourceLiteral))return literalFact('holding:aa:event:triton','pocket aces at Triton');
+  }
+  if(srcLower==='raise your edge'){
+    if(/^final table: \$[0-9,]+ wsop millionaire maker win$/.test(sourceLiteral))return literalFact('poker_event:wsop_millionaire_maker:stage:final_table','the WSOP Millionaire Maker final table','poker_event_context');
+    if(/^turn fold overpair with kk - most painful spot for adr(?:ai|ia)n mateos$/.test(sourceLiteral))return literalFact('holding:kk:street:turn:fold','the turn fold with pocket kings');
+  }
+  if(srcLower==='poker night in america'){
+    if(/^jungleman hits quads twice against texas mike$/.test(sourceLiteral))return literalFact('made_hand:quads:count:2:actor:jungleman','Jungleman making quads twice','made_hand_context');
+  }
+  if(srcLower==='world series of poker'){
+    if(/^terrible flop for pocket kings$/.test(sourceLiteral))return literalFact('holding:kk:street:flop','pocket kings on the flop');
+    if(/^crazy runout for 2 sets$/.test(sourceLiteral))return literalFact('made_hand:set_over_set','two sets on the runout','made_hand_context');
+  }
+  const guardedTitle=title.replace(/\bno[- ]limit (?:hold'?em|2-7 single draw)\b/g,'nl_game');
   if (/[?]|\b(?:not|no|never|didn't|doesn't|don't|isn't|wasn't|weren't|won't|can't|cannot|can|may|could|would|should|couldn't|wouldn't|shouldn't|might|if|unless|without|reacts|watches|then|before|after|followed)\b/.test(guardedTitle)) return null;
   const literalContext=title.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu,' ')
     .replace(/(?:\s+#[a-z0-9_]+)+\s*$/,'').replace(/\s+/g,' ').trim().replace(/[.!]+$/,'').trim();

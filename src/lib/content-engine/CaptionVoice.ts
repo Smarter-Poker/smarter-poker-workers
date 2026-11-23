@@ -12,6 +12,7 @@ export {captionHolding} from './CaptionHolding.js';
 import { pokerVideoContextFact, pokerVideoQuestionFact } from './VideoContextFact.js';
 import { newsTitleFact } from './NewsTitleFact.js';
 import {sportsVideoFact} from './SportsVideoFact.js';
+import {isDeclarativeCurrentSportsIdentity} from './LiteralCurrentSportsInventory.js';
 import {strategyTopicFact} from './StrategyTopicFact.js';
 import {typedSportsActionFact} from './TypedSportsActionFact.js';
 
@@ -97,7 +98,9 @@ export function literalNewsReportClauses(fact: CaptionFact, title = ''): string[
 /** Only the newly source-bound inventory roles; legacy identities stay put. */
 export function literalSportInventoryClauses(fact: CaptionFact): string[] {
   if (fact.action !== 'sports_technical_context' || !fact.identity) return [];
-  if (fact.identity.startsWith('typed_sports_action:')) return [fact.subject];
+  if (fact.identity.startsWith('typed_sports_action:') || isDeclarativeCurrentSportsIdentity(fact.identity)) {
+    return [fact.subject];
+  }
   const id = fact.identity;
   const s = fact.subject;
   const rules: Array<[RegExp, RegExp, (m: RegExpMatchArray) => string]> = [
