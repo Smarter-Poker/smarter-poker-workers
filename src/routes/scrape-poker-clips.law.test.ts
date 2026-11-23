@@ -29,13 +29,21 @@ interface Row {
 
 const db = vi.hoisted(() => ({
   due: [] as Row[],
+  dueError: null as string | null,
   updates: [] as Array<{ id: unknown; patch: Record<string, unknown> }>,
   upserted: 0,
 }));
 
 vi.mock('../lib/supabase.js', () => {
   function builder(table: string) {
-    const state: { op: string; patch?: Record<string, unknown>; rows?: unknown[]; id?: unknown; eq: Array<[string, unknown]> } = { op: 'select', eq: [] };
+    const state: {
+      op: string;
+      patch?: Record<string, unknown>;
+      rows?: unknown[];
+      id?: unknown;
+      eq: Array<[string, unknown]>;
+      or: string[];
+    } = { op: 'select', eq: [], or: [] };
     const b: Record<string, unknown> = {};
     const self = () => b;
     Object.assign(b, {
@@ -44,6 +52,10 @@ vi.mock('../lib/supabase.js', () => {
       limit: self,
       not: self,
       in: self,
+      or: (expr: string) => {
+        state.or.push(expr);
+        return b;
+      },
       eq: (col: string, val: unknown) => {
         if (col === 'id') state.id = val;
         state.eq.push([col, val]);
@@ -65,10 +77,18 @@ vi.mock('../lib/supabase.js', () => {
           db.updates.push({ id: state.id, patch: state.patch! });
           out = { error: null };
         } else if (table === 'content_sources') {
-          const rows = db.due.filter((r) =>
-            state.eq.every(([col, val]) => (r as unknown as Record<string, unknown>)[col] === val),
-          );
-          out = { data: rows, error: null };
+          if (db.dueError) {
+            out = { data: null, error: { message: db.dueError } };
+          } else {
+            const rows = db.due.filter((r) => {
+              const eqOk = state.eq.every(([col, val]) => (r as unknown as Record<string, unknown>)[col] === val);
+              const orOk = state.or.every((expr) =>
+                expr === 'category.is.null,category.neq.slots' ? r.category == null || r.category !== 'slots' : true,
+              );
+              return eqOk && orOk;
+            });
+            out = { data: rows, error: null };
+          }
         } else if (table === 'poker_clips' && state.op === 'upsert') {
           db.upserted += state.rows!.length;
           out = { error: null, count: state.rows!.length };
@@ -155,6 +175,7 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => {
   vi.useFakeTimers({ now: NOW });
   db.due = [];
+  db.dueError = null;
   db.updates = [];
   db.upserted = 0;
 });
@@ -307,5 +328,29 @@ describe('the state transition itself', () => {
   it('only a real Atom document is a feed', () => {
     expect(isAtomFeed(atomFeed(1, []))).toBe(true);
     expect(isAtomFeed(interstitial)).toBe(false);
+  });
+
+  it('excludes slots channels, parses compact valid Atom feeds (<5KB), and fails closed on source-read error', async () => {
+    const slotsRow: Row = {
+      ...row(2, 0),
+      name: 'Lady Luck HQ',
+      category: 'slots',
+    };
+    db.due = [row(1, 0), slotsRow];
+    const compactFeed =
+      '<?xml version="1.0" encoding="UTF-8"?><feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" ' +
+      'xmlns="http://www.w3.org/2005/Atom"><title>Compact</title>' +
+      `<entry><yt:videoId>${videoId(1, 0)}</yt:videoId><title>River bluff</title>` +
+      '<published>2026-09-19T12:00:00+00:00</published></entry></feed>';
+    expect(compactFeed.length).toBeLessThan(5_000);
+    const body = await run(() => new Response(compactFeed, { status: 200 }));
+    expect(body).toMatchObject({ sources_scanned: 1, clips_found: 1, feeds_read: 1 });
+    expect(db.updates.filter((u) => u.id === 'src-2')).toEqual([]);
+
+    db.dueError = 'db connection reset';
+    const c = context();
+    await scrapePokerClips(c as never);
+    expect(c.captured.status).toBe(500);
+    expect(c.captured.body).toMatchObject({ success: false, error: 'db connection reset' });
   });
 });

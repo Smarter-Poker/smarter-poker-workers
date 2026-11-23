@@ -94,29 +94,37 @@ export function preferShortClips<T extends Pick<SupplyClip, 'source_url' | 'dura
   return [...clips].sort((a, b) => clipFormatPriority(a) - clipFormatPriority(b));
 }
 
+const DURATION_LOOKUP_CONCURRENCY = 4;
+
 async function withClipDurations(clips: SupplyClip[]): Promise<SupplyClip[]> {
   const ids = [...new Set(clips.map(clip => clip.video_id).filter(id => /^[A-Za-z0-9_-]{11}$/.test(id)))];
   const durations = new Map<string, number>();
+  const chunks: string[][] = [];
   for (let index = 0; index < ids.length; index += DURATION_LOOKUP_CHUNK) {
-    const chunk = ids.slice(index, index + DURATION_LOOKUP_CHUNK);
-    try {
-      const { data, error } = await getSupabase().from('video_library_videos')
-        .select('youtube_video_id, duration').in('youtube_video_id', chunk);
-      if (error) {
-        console.warn('[clip-supply] duration metadata unreadable; keeping duration unknown:', error.message);
-        continue;
-      }
-      for (const row of (data ?? []) as Array<{ youtube_video_id: string; duration: unknown }>) {
-        const seconds = clipDurationSeconds(row.duration);
-        if (seconds !== null && chunk.includes(row.youtube_video_id)) {
-          // Conflicting duplicate rows must not turn a known full stream into
-          // a short clip. Only the duration, never a new asset, is imported.
-          durations.set(row.youtube_video_id, Math.max(durations.get(row.youtube_video_id) ?? 0, seconds));
+    chunks.push(ids.slice(index, index + DURATION_LOOKUP_CHUNK));
+  }
+  for (let batchStart = 0; batchStart < chunks.length; batchStart += DURATION_LOOKUP_CONCURRENCY) {
+    const batch = chunks.slice(batchStart, batchStart + DURATION_LOOKUP_CONCURRENCY);
+    await Promise.all(batch.map(async (chunk) => {
+      try {
+        const { data, error } = await getSupabase().from('video_library_videos')
+          .select('youtube_video_id, duration').in('youtube_video_id', chunk);
+        if (error) {
+          console.warn('[clip-supply] duration metadata unreadable; keeping duration unknown:', error.message);
+          return;
         }
+        for (const row of (data ?? []) as Array<{ youtube_video_id: string; duration: unknown }>) {
+          const seconds = clipDurationSeconds(row.duration);
+          if (seconds !== null && chunk.includes(row.youtube_video_id)) {
+            // Conflicting duplicate rows must not turn a known full stream into
+            // a short clip. Only the duration, never a new asset, is imported.
+            durations.set(row.youtube_video_id, Math.max(durations.get(row.youtube_video_id) ?? 0, seconds));
+          }
+        }
+      } catch (error) {
+        console.warn('[clip-supply] duration lookup failed; keeping duration unknown:', error instanceof Error ? error.message : String(error));
       }
-    } catch (error) {
-      console.warn('[clip-supply] duration lookup failed; keeping duration unknown:', error instanceof Error ? error.message : String(error));
-    }
+    }));
   }
   return preferShortClips(clips.map(clip => ({ ...clip, duration_seconds: durations.get(clip.video_id) ?? null })));
 }
@@ -194,14 +202,17 @@ export function sportsShareFor(profileId: string): number {
   return 0.50;
 }
 
-/** Active sources for a domain. */
+/** Active video channel sources for a domain (never RSS feeds, never slots in poker). */
 export async function activeSources(domain: 'poker' | 'sports'): Promise<SourceRow[]> {
-  const { data, error } = await getSupabase()
+  let query = getSupabase()
     .from('content_sources')
     .select('id, name, handle, channel_id, category, sport, consecutive_failures')
     .eq('domain', domain)
+    .eq('kind', 'youtube_channel')
     .eq('is_active', true)
     .order('name');
+  if (domain === 'poker') query = query.or('category.is.null,category.neq.slots');
+  const { data, error } = await query;
   if (error) {
     console.warn('[clip-supply] source read failed:', error.message);
     return [];
@@ -247,7 +258,9 @@ export async function candidateClips(
       .in('source', mine)
       .order(freshness, { ascending: false, nullsFirst: false })
       .limit(limit);
-    if (domain === 'poker') q = q.eq('is_active', true).not('oembed_ok', 'is', false);
+    if (domain === 'poker') {
+      q = q.eq('is_active', true).not('oembed_ok', 'is', false).or('category.is.null,category.neq.slots');
+    }
     const { data, error } = await q;
     if (!error && (data ?? []).length >= 5) {
       return { clips: await withClipDurations(normalise(data, domain)), widened: false };
@@ -259,7 +272,9 @@ export async function candidateClips(
     .select(select)
     .order(freshness, { ascending: false, nullsFirst: false })
     .limit(limit);
-  if (domain === 'poker') q = q.eq('is_active', true).not('oembed_ok', 'is', false);
+  if (domain === 'poker') {
+    q = q.eq('is_active', true).not('oembed_ok', 'is', false).or('category.is.null,category.neq.slots');
+  }
   const { data, error } = await q;
   if (error) {
     console.warn(`[clip-supply] ${table} read failed:`, error.message);
@@ -297,12 +312,14 @@ export async function platformCandidateClips(
   const richLimit = boundedLimit - globalLimit;
   const richSources = domain === 'poker'
     ? ['PokerGO', 'Bart Hanson', 'Mariano', 'GTO Wizard', 'Phil Galfond', 'PokerStars']
-    : ['NBA', 'MLB'];
+    : ['NBA', 'MLB', 'NFL', 'NHL', 'NFL Films', 'NBA on TNT', 'Premier League', 'SportsCenter', 'FOX Sports', 'CBS Sports'];
   const read = async (take: number, sources?: string[]) => {
     let query = getSupabase().from(table).select(select)
       .order(freshness, { ascending: false, nullsFirst: false }).limit(take);
     if (sources) query = query.in('source', sources);
-    if (domain === 'poker') query = query.eq('is_active', true).not('oembed_ok', 'is', false);
+    if (domain === 'poker') {
+      query = query.eq('is_active', true).not('oembed_ok', 'is', false).or('category.is.null,category.neq.slots');
+    }
     try {
       return await query;
     } catch (error) {
@@ -429,7 +446,9 @@ export async function pokerChannelIndex(): Promise<ChannelIndex> {
     .from('content_sources')
     .select('id, name, handle, category, aliases')
     .eq('domain', 'poker')
-    .eq('kind', 'youtube_channel');
+    .eq('kind', 'youtube_channel')
+    .eq('is_active', true)
+    .or('category.is.null,category.neq.slots');
   const byName = new Map<string, ChannelEntry>();
   const rawNames: string[] = [];
   if (error) {

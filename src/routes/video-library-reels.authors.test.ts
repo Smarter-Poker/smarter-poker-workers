@@ -34,6 +34,12 @@ const pg = vi.hoisted(() => {
       this.filters.push((r) => r[col] !== null && r[col] !== undefined);
       return this;
     }
+    or(expr: string) {
+      if (expr === 'category.is.null,category.neq.slots') {
+        this.filters.push((r) => r.category == null || r.category !== 'slots');
+      }
+      return this;
+    }
     in(col: string, vs: unknown[]) {
       this.filters.push((r) => vs.includes(r[col]));
       return this;
@@ -104,7 +110,7 @@ beforeEach(() => {
   for (const k of Object.keys(pg.requests)) delete pg.requests[k];
   pg.inserted.length = 0;
   pg.tables.content_sources = [
-    { id: 's1', name: 'PokerGO', handle: null, category: null, aliases: [], domain: 'poker', kind: 'youtube_channel' },
+    { id: 's1', name: 'PokerGO', handle: null, category: null, aliases: [], domain: 'poker', kind: 'youtube_channel', is_active: true },
   ];
   // Storage order is not id order, and there is a person in the table too.
   pg.tables.profiles = [

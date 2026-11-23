@@ -64,9 +64,8 @@ export interface ChannelScrapeResult {
   rejectedMissingTitle: number;
 }
 
-const SPORTS_CHANNELS: SportsChannel[] = [
-  // NBA (10)
-  { name: 'ESPN NBA', handle: '@ESPN', sport: 'nba', category: 'highlight' },
+export const SPORTS_CHANNELS: SportsChannel[] = [
+  // NBA (9)
   { name: 'NBA', handle: '@NBA', sport: 'nba', category: 'highlight' },
   { name: 'House of Highlights', handle: '@HouseofHighlights', sport: 'nba', category: 'dunk' },
   { name: 'Bleacher Report NBA', handle: '@BleacherReport', sport: 'nba', category: 'highlight' },
@@ -76,8 +75,7 @@ const SPORTS_CHANNELS: SportsChannel[] = [
   { name: 'Celtics', handle: '@Celtics', sport: 'nba', category: 'highlight' },
   { name: 'Heat', handle: '@MiamiHeat', sport: 'nba', category: 'highlight' },
   { name: 'Bucks', handle: '@Bucks', sport: 'nba', category: 'highlight' },
-  // NFL (10)
-  { name: 'ESPN NFL', handle: '@ESPN', sport: 'nfl', category: 'highlight' },
+  // NFL (9)
   { name: 'NFL', handle: '@NFL', sport: 'nfl', category: 'touchdown' },
   { name: 'NFL Films', handle: '@NFLFilms', sport: 'nfl', category: 'highlight' },
   { name: 'Chiefs', handle: '@Chiefs', sport: 'nfl', category: 'touchdown' },
@@ -87,14 +85,12 @@ const SPORTS_CHANNELS: SportsChannel[] = [
   { name: 'Bills', handle: '@BuffaloBills', sport: 'nfl', category: 'touchdown' },
   { name: 'Ravens', handle: '@Ravens', sport: 'nfl', category: 'touchdown' },
   { name: 'Packers', handle: '@packers', sport: 'nfl', category: 'touchdown' },
-  // MLB (5)
-  { name: 'ESPN MLB', handle: '@ESPN', sport: 'mlb', category: 'highlight' },
+  // MLB (4)
   { name: 'MLB', handle: '@MLB', sport: 'mlb', category: 'highlight' },
   { name: 'Yankees', handle: '@Yankees', sport: 'mlb', category: 'highlight' },
   { name: 'Dodgers', handle: '@Dodgers', sport: 'mlb', category: 'highlight' },
   { name: 'Red Sox', handle: '@RedSox', sport: 'mlb', category: 'highlight' },
-  // NHL (5)
-  { name: 'ESPN NHL', handle: '@ESPN', sport: 'nhl', category: 'goal' },
+  // NHL (4)
   { name: 'NHL', handle: '@NHL', sport: 'nhl', category: 'goal' },
   { name: 'Bruins', handle: '@NHLBruins', sport: 'nhl', category: 'goal' },
   { name: 'Maple Leafs', handle: '@MapleLeafs', sport: 'nhl', category: 'goal' },
@@ -105,7 +101,9 @@ const SPORTS_CHANNELS: SportsChannel[] = [
   { name: 'Premier League', handle: '@PremierLeague', sport: 'soccer', category: 'goal' },
   { name: 'LaLiga', handle: '@LaLiga', sport: 'soccer', category: 'goal' },
   { name: 'MLS', handle: '@MLS', sport: 'soccer', category: 'goal' },
-  // General Sports (3)
+  // General Sports (4) — single @ESPN entry avoids 4x duplicate scrapes and
+  // prevents index-0 NBA from mislabeling ESPN NFL/MLB/NHL clips.
+  { name: 'ESPN', handle: '@ESPN', sport: 'general', category: 'highlight' },
   { name: 'SportsCenter', handle: '@SportsCenter', sport: 'general', category: 'highlight' },
   { name: 'FOX Sports', handle: '@FOXSports', sport: 'general', category: 'highlight' },
   { name: 'CBS Sports', handle: '@CBSSports', sport: 'general', category: 'highlight' },
@@ -484,8 +482,15 @@ export async function saveClips(
       saved++;
       existingByUrl.set(clip.source_url, clip.title);
     } else if (error) {
-      failed += 1;
-      console.warn('[scrape-sports-clips] insert error:', error.message);
+      if ((error as { code?: string }).code === '23505') {
+        // Already stored under a different URL shape (e.g. /watch?v= vs /shorts/)
+        // matching the unique video_id constraint. Not an error.
+        skipped += 1;
+        existingByUrl.set(clip.source_url, clip.title);
+      } else {
+        failed += 1;
+        console.warn('[scrape-sports-clips] insert error:', error.message);
+      }
     }
   }
 

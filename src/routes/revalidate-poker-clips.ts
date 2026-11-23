@@ -26,6 +26,8 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
+import { recordYouTubeVerification } from '../lib/content-engine/HorseVideoPublication.js';
+import { verifyYouTubeMetadata } from '../lib/content-engine/YouTubeMetadataVerifier.js';
 
 const CONFIG = {
   /** Per run. At 40 an hour the whole pool is re-checked well inside a week. */
@@ -34,6 +36,19 @@ const CONFIG = {
   TIMEOUT_MS: 10_000,
   /** Do not re-ask about a clip answered inside this window. */
   RECHECK_AFTER_DAYS: 7,
+  /**
+   * Three 403 answers in a row indicate IP/bot throttling rather than
+   * individual embed-disabled clips. Hold buffered 403 rows untouched and
+   * stop the sweep.
+   */
+  MAX_CONSECUTIVE_403: 3,
+  /**
+   * Bounded yt-dlp metadata verification per hourly run so newly scraped
+   * poker clips enter the shared youtube_embed_failures verification ledger
+   * (fn_fresh_public_youtube_verification_ids) inside the route budget.
+   */
+  MAX_METADATA_CHECKS: 15,
+  DEADLINE_MS: 90_000,
 } as const;
 
 const UA =
@@ -41,9 +56,18 @@ const UA =
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-type Answer = 'ok' | 'dead' | 'no-answer';
+export type Answer = 'ok' | 'dead' | 'forbidden' | 'no-answer';
 
-/** One oEmbed question. `no-answer` means ask again later, never "dead". */
+/**
+ * One oEmbed question.
+ *
+ * - `no-answer`: 429, 5xx, timeout, or network error. Always abort the sweep.
+ * - `forbidden`: HTTP 403. May be a single video with embedding disabled OR
+ *   an IP-level bot block; the caller buffers it until a subsequent clip
+ *   proves YouTube is still answering (or aborts after MAX_CONSECUTIVE_403).
+ * - `dead`: 404, 401, other non-ok status, or missing iframe payload.
+ * - `ok`: 200 with iframe HTML.
+ */
 export async function askYouTube(videoId: string): Promise<Answer> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.TIMEOUT_MS);
@@ -53,10 +77,8 @@ export async function askYouTube(videoId: string): Promise<Answer> {
       { signal: controller.signal, headers: { 'User-Agent': UA } },
     );
     clearTimeout(timer);
-    // 429 and 5xx are us being throttled. 403 is usually "embedding disabled"
-    // for one video, but in a sweep it is far more often bot detection, and
-    // treating a block as 40 dead videos is how a pool empties itself.
-    if (res.status === 429 || res.status === 403 || res.status >= 500) return 'no-answer';
+    if (res.status === 429 || res.status >= 500) return 'no-answer';
+    if (res.status === 403) return 'forbidden';
     if (res.status === 404 || res.status === 401) return 'dead';
     if (!res.ok) return 'dead';
     const body = (await res.json()) as { html?: string };
@@ -67,6 +89,22 @@ export async function askYouTube(videoId: string): Promise<Answer> {
   }
 }
 
+async function markClip(
+  clipId: string,
+  ok: boolean,
+  checkedAt: string,
+): Promise<boolean> {
+  const { error } = await getSupabase()
+    .from('poker_clips')
+    .update({ oembed_ok: ok, oembed_checked_at: checkedAt, is_active: ok })
+    .eq('id', clipId);
+  if (error) {
+    console.warn('[revalidate-poker-clips] write failed:', error.message);
+    return false;
+  }
+  return true;
+}
+
 export async function revalidatePokerClips(c: Context) {
   const started = Date.now();
   const cutoff = new Date(Date.now() - CONFIG.RECHECK_AFTER_DAYS * 86_400_000).toISOString();
@@ -75,6 +113,7 @@ export async function revalidatePokerClips(c: Context) {
     .from('poker_clips')
     .select('id, video_id, oembed_checked_at')
     .eq('is_active', true)
+    .or('category.is.null,category.neq.slots')
     .or(`oembed_checked_at.is.null,oembed_checked_at.lt.${cutoff}`)
     .order('oembed_checked_at', { ascending: true, nullsFirst: true })
     .limit(CONFIG.MAX_CHECKS);
@@ -89,31 +128,105 @@ export async function revalidatePokerClips(c: Context) {
   let stillOk = 0;
   let retired = 0;
   let blocked = false;
+  let stoppedEarlyDeadline = false;
+  let consecutive403 = 0;
+  let metadataChecked = 0;
+  let metadataVerified = 0;
+  let metadataRejected = 0;
+  let metadataUnknown = 0;
+  const pendingForbidden: Array<{ id: string; video_id: string; checkedAt: string }> = [];
+
+  const flushPendingForbidden = async () => {
+    while (pendingForbidden.length > 0) {
+      const item = pendingForbidden.shift()!;
+      checked++;
+      retired++;
+      await markClip(item.id, false, item.checkedAt);
+      await recordYouTubeVerification(item.video_id, 'embed_disabled', item.checkedAt);
+    }
+  };
 
   for (const clip of clips) {
+    if (Date.now() - started >= CONFIG.DEADLINE_MS) {
+      stoppedEarlyDeadline = true;
+      break;
+    }
+
+    const checkedAt = new Date().toISOString();
     const answer = await askYouTube(clip.video_id);
+
     if (answer === 'no-answer') {
-      // Leave every remaining row untouched. A blocked run must not look like
-      // a run that found nothing wrong, so it says so in the result.
+      // Leave every buffered 403 and remaining row untouched.
       blocked = true;
       break;
     }
+
+    if (answer === 'forbidden') {
+      pendingForbidden.push({ id: clip.id, video_id: clip.video_id, checkedAt });
+      consecutive403++;
+      if (consecutive403 >= CONFIG.MAX_CONSECUTIVE_403) {
+        blocked = true;
+        break;
+      }
+      await delay(CONFIG.DELAY_MS);
+      continue;
+    }
+
+    // YouTube positively answered (200/404/401), proving this IP is not
+    // bot-blocked. Any preceding buffered 403s were single-video embed blocks.
+    consecutive403 = 0;
+    await flushPendingForbidden();
+
+    if (answer === 'dead') {
+      checked++;
+      retired++;
+      await markClip(clip.id, false, checkedAt);
+      await recordYouTubeVerification(clip.video_id, 'unavailable', checkedAt);
+      await delay(CONFIG.DELAY_MS);
+      continue;
+    }
+
+    // oEmbed returned 200 with iframe. Within budget, run full public/embed
+    // metadata verification so the clip qualifies in the shared verification
+    // ledger used by the horse publishers.
+    let finalOk = true;
+    if (
+      metadataChecked < CONFIG.MAX_METADATA_CHECKS
+      && Date.now() - started < CONFIG.DEADLINE_MS
+    ) {
+      metadataChecked++;
+      const metadata = await verifyYouTubeMetadata(clip.video_id);
+      if (metadata.verdict === 'verified') {
+        const recorded = await recordYouTubeVerification(clip.video_id, 'verified', checkedAt);
+        if (recorded) metadataVerified++;
+        else metadataUnknown++;
+      } else if (metadata.verdict === 'embed_disabled' || metadata.verdict === 'unavailable') {
+        await recordYouTubeVerification(clip.video_id, metadata.verdict, checkedAt);
+        finalOk = false;
+        metadataRejected++;
+      } else {
+        metadataUnknown++;
+      }
+    }
+
     checked++;
-    const ok = answer === 'ok';
-    if (ok) stillOk++;
+    if (finalOk) stillOk++;
     else retired++;
-    const { error: wErr } = await getSupabase()
-      .from('poker_clips')
-      .update({ oembed_ok: ok, oembed_checked_at: new Date().toISOString(), is_active: ok })
-      .eq('id', clip.id);
-    if (wErr) console.warn('[revalidate-poker-clips] write failed:', wErr.message);
+    await markClip(clip.id, finalOk, checkedAt);
     await delay(CONFIG.DELAY_MS);
+  }
+
+  // If the entire candidate list consisted solely of 403s with zero positive
+  // answers from YouTube, treat the run as blocked and leave rows untouched.
+  if (pendingForbidden.length > 0 && checked === 0) {
+    blocked = true;
   }
 
   const { count: poolSize } = await getSupabase()
     .from('poker_clips')
     .select('*', { count: 'exact', head: true })
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .or('category.is.null,category.neq.slots');
 
   return c.json({
     success: true,
@@ -123,7 +236,13 @@ export async function revalidatePokerClips(c: Context) {
     checked,
     still_ok: stillOk,
     retired,
+    pending_forbidden_held: pendingForbidden.length,
+    metadata_checked: metadataChecked,
+    metadata_verified: metadataVerified,
+    metadata_rejected: metadataRejected,
+    metadata_unknown: metadataUnknown,
     stopped_early_blocked: blocked,
+    stopped_early_deadline: stoppedEarlyDeadline,
     pool_size: poolSize ?? null,
   });
 }

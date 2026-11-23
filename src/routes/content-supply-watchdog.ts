@@ -42,93 +42,153 @@ const LIMITS = {
 export async function contentSupplyWatchdog(c: Context) {
   const supa = getSupabase();
   const problems: string[] = [];
+  const queryErrors: string[] = [];
   const facts: Record<string, unknown> = {};
+
+  const recordError = (label: string, error: { message?: string } | null | undefined) => {
+    if (!error) return false;
+    const msg = `${label} query failed: ${error.message ?? 'unknown error'}`;
+    queryErrors.push(msg);
+    problems.push(msg);
+    return true;
+  };
 
   // 1. Is the reel queue draining?
   const stuckSince = new Date(Date.now() - LIMITS.REEL_QUEUE_HOURS * 3_600_000).toISOString();
-  const { count: stuckReels } = await supa
+  const stuckRes = await supa
     .from('social_reels')
     .select('*', { count: 'exact', head: true })
     .eq('media_status', 'queued')
     .lt('created_at', stuckSince);
-  facts.reels_queued_over_6h = stuckReels ?? 0;
-  if ((stuckReels ?? 0) > 0) {
-    problems.push(
-      `${stuckReels} reels have been queued for more than ${LIMITS.REEL_QUEUE_HOURS}h - the transcode queue is not draining`,
-    );
+  if (!recordError('social_reels queued count', stuckRes.error)) {
+    const stuckReels = stuckRes.count ?? 0;
+    facts.reels_queued_over_6h = stuckReels;
+    if (stuckReels > 0) {
+      problems.push(
+        `${stuckReels} reels have been queued for more than ${LIMITS.REEL_QUEUE_HOURS}h - the transcode queue is not draining`,
+      );
+    }
+  } else {
+    facts.reels_queued_over_6h = null;
   }
 
-  // 2. Is there enough poker to post?
-  const { count: pokerPool } = await supa
+  // 2. Is there enough poker to post? (Exclude slots contamination.)
+  const poolRes = await supa
     .from('poker_clips')
     .select('*', { count: 'exact', head: true })
-    .eq('is_active', true);
-  facts.poker_pool = pokerPool ?? 0;
-  if ((pokerPool ?? 0) < LIMITS.POKER_POOL_FLOOR) {
-    problems.push(
-      `only ${pokerPool} live poker clips (floor ${LIMITS.POKER_POOL_FLOOR}) - horses will fall through to sports`,
-    );
+    .eq('is_active', true)
+    .or('category.is.null,category.neq.slots');
+  if (!recordError('poker_clips active count', poolRes.error)) {
+    const pokerPool = poolRes.count ?? 0;
+    facts.poker_pool = pokerPool;
+    if (pokerPool < LIMITS.POKER_POOL_FLOOR) {
+      problems.push(
+        `only ${pokerPool} live poker clips (floor ${LIMITS.POKER_POOL_FLOOR}) - horses will fall through to sports`,
+      );
+    }
+  } else {
+    facts.poker_pool = null;
   }
 
   // 3. Is the scraper still finding anything? A pool that is big but frozen
   //    is the exact state the 150-clip array was in for five months.
   const silentSince = new Date(Date.now() - LIMITS.SCRAPER_SILENT_HOURS * 3_600_000).toISOString();
-  const { count: freshClips } = await supa
+  const freshRes = await supa
     .from('poker_clips')
     .select('*', { count: 'exact', head: true })
+    .or('category.is.null,category.neq.slots')
     .gte('created_at', silentSince);
-  facts.poker_clips_added_recently = freshClips ?? 0;
-  if ((freshClips ?? 0) === 0) {
-    problems.push(
-      `no poker clips added in ${LIMITS.SCRAPER_SILENT_HOURS}h - the channel scraper has stopped finding videos`,
-    );
+  if (!recordError('poker_clips recent count', freshRes.error)) {
+    const freshClips = freshRes.count ?? 0;
+    facts.poker_clips_added_recently = freshClips;
+    if (freshClips === 0) {
+      problems.push(
+        `no poker clips added in ${LIMITS.SCRAPER_SILENT_HOURS}h - the channel scraper has stopped finding videos`,
+      );
+    }
+  } else {
+    facts.poker_clips_added_recently = null;
   }
 
-  // 4. Are the sources themselves alive? Individual channels go away, which
-  //    is ordinary; half of them going away at once means we broke something.
-  //
-  //    The share is taken over the sources that have resolved at least once
-  //    (last_ok_at IS NOT NULL), not over every registered row. A handle that
-  //    never resolved (a channel that does not exist, no channel id) is not a
-  //    channel the resolver or the parser broke; it never worked. On
-  //    2026-09-29 thirty such rows kept this alarming (54 active of 111
-  //    registered) while every source that ever worked was healthy (50 active
-  //    of 77 ever resolved). The raw counts stay in the facts for the record.
-  const { count: totalSources } = await supa
-    .from('content_sources')
-    .select('*', { count: 'exact', head: true })
-    .eq('domain', 'poker');
-  const { count: activeSources } = await supa
+  // 4. Are the sources themselves alive? Measure poker YouTube channels only
+  //    (never RSS news rows, never slots channels) among those that resolved
+  //    at least once (last_ok_at IS NOT NULL).
+  const totalRes = await supa
     .from('content_sources')
     .select('*', { count: 'exact', head: true })
     .eq('domain', 'poker')
+    .eq('kind', 'youtube_channel')
+    .or('category.is.null,category.neq.slots');
+  const activeRes = await supa
+    .from('content_sources')
+    .select('*', { count: 'exact', head: true })
+    .eq('domain', 'poker')
+    .eq('kind', 'youtube_channel')
+    .or('category.is.null,category.neq.slots')
     .eq('is_active', true);
-  const { count: everResolved } = await supa
+  const everResolvedRes = await supa
     .from('content_sources')
     .select('*', { count: 'exact', head: true })
     .eq('domain', 'poker')
+    .eq('kind', 'youtube_channel')
+    .or('category.is.null,category.neq.slots')
     .not('last_ok_at', 'is', null);
-  const { count: activeEverResolved } = await supa
+  const activeEverResolvedRes = await supa
     .from('content_sources')
     .select('*', { count: 'exact', head: true })
     .eq('domain', 'poker')
+    .eq('kind', 'youtube_channel')
+    .or('category.is.null,category.neq.slots')
     .eq('is_active', true)
     .not('last_ok_at', 'is', null);
-  facts.poker_sources_total = totalSources ?? 0;
-  facts.poker_sources_active = activeSources ?? 0;
-  facts.poker_sources_ever_resolved = everResolved ?? 0;
-  facts.poker_sources_active_ever_resolved = activeEverResolved ?? 0;
-  if (
-    (everResolved ?? 0) > 0
-    && (activeEverResolved ?? 0) / (everResolved ?? 1) < LIMITS.DEAD_SOURCE_SHARE
-  ) {
-    problems.push(
-      `only ${activeEverResolved} of ${everResolved} poker sources that ever resolved are still active - the resolver or the feed parser is broken, not the channels`,
-    );
+
+  const sourceReadFailed = [
+    recordError('content_sources total count', totalRes.error),
+    recordError('content_sources active count', activeRes.error),
+    recordError('content_sources ever-resolved count', everResolvedRes.error),
+    recordError('content_sources active-ever-resolved count', activeEverResolvedRes.error),
+  ].some(Boolean);
+
+  if (!sourceReadFailed) {
+    const totalSources = totalRes.count ?? 0;
+    const activeSources = activeRes.count ?? 0;
+    const everResolved = everResolvedRes.count ?? 0;
+    const activeEverResolved = activeEverResolvedRes.count ?? 0;
+    facts.poker_sources_total = totalSources;
+    facts.poker_sources_active = activeSources;
+    facts.poker_sources_ever_resolved = everResolved;
+    facts.poker_sources_active_ever_resolved = activeEverResolved;
+    if (
+      everResolved > 0
+      && activeEverResolved / everResolved < LIMITS.DEAD_SOURCE_SHARE
+    ) {
+      problems.push(
+        `only ${activeEverResolved} of ${everResolved} poker sources that ever resolved are still active - the resolver or the feed parser is broken, not the channels`,
+      );
+    }
+  } else {
+    facts.poker_sources_total = null;
+    facts.poker_sources_active = null;
+    facts.poker_sources_ever_resolved = null;
+    facts.poker_sources_active_ever_resolved = null;
   }
 
   if (problems.length) {
     console.warn('[content-supply-watchdog] ' + problems.join(' | '));
+  }
+
+  if (queryErrors.length > 0) {
+    return c.json(
+      {
+        success: false,
+        healthy: false,
+        timestamp: new Date().toISOString(),
+        problems,
+        query_errors: queryErrors,
+        facts,
+      },
+      500,
+    );
   }
 
   return c.json({

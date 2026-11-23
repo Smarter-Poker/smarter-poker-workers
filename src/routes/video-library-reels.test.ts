@@ -27,6 +27,10 @@ vi.mock('../lib/supabase.js', () => ({
         }
         return chain;
       };
+      chain.or = () =>
+        table === 'content_sources'
+          ? Promise.resolve({ data: [], error: null })
+          : chain;
       chain.limit = () =>
         Promise.resolve({
           data: table === 'social_reels' ? reelRows : videoRows,
