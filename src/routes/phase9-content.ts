@@ -487,9 +487,33 @@ export async function runPhase9(options: RunOptions): Promise<Phase9Result> {
   result.candidates = candidates.length;
   if (candidates.length === 0) return finish('no_candidates');
 
-  // 4. The first candidate whose horse has an open fleet slot.
+  // 4. The first candidate whose horse has an open, not-yet-filled fleet slot.
   if (overBudget()) return finish('deadline');
   const authors = await readAuthors(supa, [...new Set(candidates.map((candidate) => candidate.review.horse_user_id))]);
+  const candidateKeys = [...new Set(
+    candidates
+      .map((candidate) => {
+        const author = authors.get(candidate.review.horse_user_id);
+        if (!author) return null;
+        const slot = fleetSlotId(candidate.review.horse_user_id, author.timezone, options.now);
+        return slot ? fleetPublicationKey(candidate.review.horse_user_id, slot) : null;
+      })
+      .filter((k): k is string => Boolean(k)),
+  )];
+  const filledKeys = new Set<string>();
+  if (candidateKeys.length > 0) {
+    const { data: existingJobs, error: existingJobsErr } = await supa
+      .from('hand_clip_jobs')
+      .select('publication_key')
+      .in('publication_key', candidateKeys);
+    if (existingJobsErr) {
+      throw new Error(`hand_clip_jobs slot precheck failed: ${existingJobsErr.message}`);
+    }
+    for (const row of (existingJobs ?? []) as Array<{ publication_key?: unknown }>) {
+      const key = text(row.publication_key);
+      if (key) filledKeys.add(key);
+    }
+  }
   let pick: Phase9Pick | null = null;
   for (const candidate of candidates) {
     const horse = candidate.review.horse_user_id;
@@ -500,6 +524,11 @@ export async function runPhase9(options: RunOptions): Promise<Phase9Result> {
     }
     const slot = fleetSlotId(horse, author.timezone, options.now);
     if (!slot) {
+      result.passed_over.no_slot += 1;
+      continue;
+    }
+    const pubKey = fleetPublicationKey(horse, slot);
+    if (filledKeys.has(pubKey)) {
       result.passed_over.no_slot += 1;
       continue;
     }
@@ -514,7 +543,7 @@ export async function runPhase9(options: RunOptions): Promise<Phase9Result> {
       hand_id: candidate.review.hand_id,
       author_id: horse,
       slot,
-      publication_key: fleetPublicationKey(horse, slot),
+      publication_key: pubKey,
       caption,
       review_id: candidate.review.id,
       pot_bb: Number(formatPotBb(candidate.pot_bb)),

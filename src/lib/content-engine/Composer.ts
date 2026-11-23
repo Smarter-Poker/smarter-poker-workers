@@ -539,21 +539,6 @@ function contentWords(s: string): Set<string> {
   );
 }
 
-/**
- * Pick a line that does not repeat the sentence before it. Without this a
- * two-sentence style produced "the detail in X is what makes it. the details
- * are what make it." (measured 2026-09-05).
- */
-function pickDistinct(arr: string[], avoid: string, seed: string, salt: string): string | null {
-  const taken = contentWords(avoid);
-  const fresh = arr.filter((c) => {
-    for (const w of contentWords(c)) if (taken.has(w)) return false;
-    return true;
-  });
-  if (!fresh.length) return null;
-  return fresh[fleetHash(seed, salt) % fresh.length]!;
-}
-
 /** The noun the sentence hangs on: a real name from the post. */
 /** "AcKh2s7d", "AKs", "JJ" - a holding, not a name. */
 const CARD_GROUP = /^(?:[AKQJT2-9][hdcs]){2,}$|^[AKQJT2-9]{2}[so]?$/;
@@ -761,12 +746,6 @@ function chooseOpening(
   return pool[fleetHash(seed, 'open') % pool.length]!;
 }
 
-/** What a caption asks, when this horse's style asks anything. */
-const CAPTION_QUESTIONS: Record<'poker' | 'sports', string[]> = {
-  poker: ["what's your read", 'anyone see it differently', 'would you change anything', 'is that a fair take'],
-  sports: ['what stood out to you', 'what did you make of it', 'what was the best part for you', 'is that a fair take'],
-};
-
 /**
  * One namespace for what a line MEANS, whatever styling it wears and whether
  * it opened a caption or a comment. Captions used 'caption:' and comments
@@ -817,63 +796,25 @@ export function composeCaption(
   // A source-established actor/action gives the opinion a genuine subject.
   // Unlike a video-id suffix, this changes what the sentence actually asks
   // about while equivalent wordings retain one canonical semantic key.
-  if (subject) {
-    const longer = targetWords(style).sentences >= 2;
-    const retry = /^\d+$/.test(variantSeed) ? Number(variantSeed) : 0;
-    const extra = longer ? subjectCaption(b, style, String(retry + 1)) : null;
-    let question = subject.text.endsWith('?') ? subject.text : undefined;
-    const lines = question ? [] : [subject.text];
-    // Longer voices develop a second grounded angle, never a stock verdict.
-    // A questioning voice puts its question last after that consideration.
-    if (extra && extra.semanticKey !== subject.semanticKey) {
-      if (question) {
-        lines.push(extra.statement.replace(extra.reference, extra.subject));
-        question = question.replace(subject.subject, subject.reference);
-      } else lines.push(extra.statement);
-    }
-    let text = render(lines, style, `${style.profileId}:${b.title}`, {
-      question, noOpener: true, noCloser: true,
-    });
-    if (!style.contractions) text = text.replace(/\bI'd\b/gi, 'I would').replace(/\bI'm\b/gi, 'I am').replace(/\bwe'd\b/gi, 'we would');
-    if (!captionQuality(text, {subject: subject.subject}).pass) return { text: '', relevance: 0, grounding: [] };
-    return { ...subject, text: ornament(text), relevance: relevanceOf(text, b) };
+  const longer = targetWords(style).sentences >= 2;
+  const retry = /^\d+$/.test(variantSeed) ? Number(variantSeed) : 0;
+  const extra = longer ? subjectCaption(b, style, String(retry + 1)) : null;
+  let question = subject.text.endsWith('?') ? subject.text : undefined;
+  const lines = question ? [] : [subject.text];
+  // Longer voices develop a second grounded angle, never a stock verdict.
+  // A questioning voice puts its question last after that consideration.
+  if (extra && extra.semanticKey !== subject.semanticKey) {
+    if (question) {
+      lines.push(extra.statement.replace(extra.reference, extra.subject));
+      question = question.replace(subject.subject, subject.reference);
+    } else lines.push(extra.statement);
   }
-
-  const seed = `${style.profileId}:${b.postId ?? b.title}:${variantSeed}`;
-  // Only a public figure of this post's own world can be the subject of a
-  // sentence. anchorOf() also returns teams and title fragments, and through
-  // it the Warriors CHANNEL went "up like the rim owed money" for a Porzingis
-  // dunk and the fragment "Dunk DUNKMAN" did the same (P2C-01, P2C-07).
-  const anchor = agentOf(b);
-  const grounding: string[] = [];
-  const { sentences } = targetWords(style);
-
-  const lines: string[] = [];
-  const chosen = chooseOpening(b, seed, anchor, true);
-  if (!chosen) return { text: '', relevance: 0, grounding: [] };
-  lines.push(chosen.text);
-  grounding.push(...chosen.grounding);
-
-  // Extra sentences for the longer styles.
-  if (sentences >= 2 && b.concepts.length) {
-    const groundedAngles = specificTakePool(b).filter((t) => !t.includes('{'));
-    const angle = groundedAngles.length ? pickDistinct(groundedAngles, lines[0]!, seed, 'angle1') : null;
-    if (angle) lines.push(angle);
-  }
-
-  // The question habit, when the style has one.
-  const wantsQuestion = !b.isQuestion && style.closer !== 'tag_question' && style.questionRate > 0
-    && (fleetHash(seed, 'q') % 100) / 100 < style.questionRate;
-  const question = wantsQuestion
-    ? pickFrom(CAPTION_QUESTIONS[b.domain === 'sports' ? 'sports' : 'poker'], seed, 'qline')
-    : undefined;
-
-  // The question is the last thing said, after any closer, and nothing else
-  // ever ends in "?". Appending "?" after render() published "what is your
-  // read. i keep coming back to that?" and "...what is your read...?" (P2C-10).
-  const text = render(lines, style, seed, { question, varyCloser: true });
-  if (!captionQuality(text).pass) return { text: '', relevance: 0, grounding: [] };
-  return { text: ornament(text), relevance: relevanceOf(text, b), grounding, semanticKey: meaningKey(lines[0]!) };
+  let text = render(lines, style, `${style.profileId}:${b.title}`, {
+    question, noOpener: true, noCloser: true,
+  });
+  if (!style.contractions) text = text.replace(/\bI'd\b/gi, 'I would').replace(/\bI'm\b/gi, 'I am').replace(/\bwe'd\b/gi, 'we would');
+  if (!captionQuality(text, {subject: subject.subject}).pass) return { text: '', relevance: 0, grounding: [] };
+  return { ...subject, text: ornament(text), relevance: relevanceOf(text, b) };
 }
 
 /**

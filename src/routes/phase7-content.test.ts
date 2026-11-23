@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   recentPostGuard: vi.fn(),
   composePuzzle: vi.fn(),
   draftStories: vi.fn(),
+  phraseRecentlyUsed: vi.fn(),
   recordPhrase: vi.fn(),
 }));
 
@@ -38,6 +39,7 @@ vi.mock('../lib/content-engine/Fleet.js', () => ({
 vi.mock('../lib/content-engine/HorsePublisher.js', () => ({ recentPostGuard: h.recentPostGuard }));
 vi.mock('../lib/content-engine/ContentLedger.js', () => ({
   normalizePhrase: (value: string) => value,
+  phraseRecentlyUsed: h.phraseRecentlyUsed,
   recordPhrase: h.recordPhrase,
 }));
 vi.mock('../lib/content-engine/PuzzleComposer.js', () => ({
@@ -211,6 +213,7 @@ beforeEach(() => {
   h.engineSwitch.mockResolvedValue('on');
   h.postModeEnabled.mockResolvedValue(false);
   h.recentPostGuard.mockResolvedValue('clear');
+  h.phraseRecentlyUsed.mockResolvedValue(false);
   h.recordPhrase.mockResolvedValue(undefined);
   h.composePuzzle.mockImplementation((kind: string, row: PuzzleReviewRow, opts: { salt: string }) => puzzleFor(kind, row, opts.salt));
   h.draftStories.mockImplementation(async () => ({ drafts: [], skipped: {}, considered: 0 }));
@@ -671,8 +674,9 @@ describe('budget and shape', () => {
   it('returns the full result shape on every live run', async () => {
     const body = await live();
     expect(Object.keys(body).sort()).toEqual([
-      'at', 'candidates', 'deadline_hit', 'duration_ms', 'errors', 'fleet', 'limits', 'preview', 'puzzles', 'reveals', 'stopped', 'stories', 'success', 'timestamp',
+      'at', 'candidates', 'deadline_hit', 'duration_ms', 'errors', 'fleet', 'limits', 'posted', 'preview', 'puzzles', 'reveals', 'stopped', 'stories', 'success', 'timestamp',
     ]);
+    expect(body.posted).toBe(0);
     expect(Object.keys(body.reveals).sort()).toEqual([
       'already_revealed', 'answers_graded', 'attempted', 'cap_hit', 'closed_post_gone', 'correct', 'due', 'errors', 'failed', 'not_due', 'paid', 'read_failed', 'refused', 'remaining', 'revealed',
     ]);
@@ -701,5 +705,20 @@ describe('budget and shape', () => {
     const captured = await run();
     expect(captured.status).toBe(500);
     expect(captured.body).toEqual({ success: false, error: 'modes table gone' });
+  });
+
+  it('skips stories whose phrase was recently used and totals posted across puzzles and stories', async () => {
+    fleet(['horse-a', 'horse-b']);
+    enable('human_thread');
+    h.draftStories.mockImplementation(async (mode: StoryMode) => ({
+      drafts: [storyFor(mode, 'horse-a', '1'), storyFor(mode, 'horse-b', '2')],
+      skipped: {},
+      considered: 2,
+    }));
+    h.phraseRecentlyUsed.mockImplementation(async (_norm: string, horseId: string) => horseId === 'horse-a');
+    const body = await live();
+    expect(body.stories.human_thread.posted).toBe(1);
+    expect(body.stories.human_thread.skipped.phrase_recently_used).toBe(1);
+    expect(body.posted).toBe(1);
   });
 });

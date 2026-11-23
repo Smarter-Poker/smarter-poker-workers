@@ -36,6 +36,7 @@ import {
   prepareSharedHorseVideoSupply,
   publishForHorse,
   takeSupplyStats,
+  type NewsSourcesCache,
   type PublishResult,
 } from '../lib/content-engine/HorsePublisher.js';
 import { syncStyleSheets } from '../lib/content-engine/VoiceWriter.js';
@@ -53,6 +54,67 @@ const DEADLINE_MS = 540_000;
 // race. ~30 horses an hour at 2 to 5 seconds each is well inside the budget.
 const CONCURRENCY = 1;
 
+function stableRingHash(input: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Rotate fairly across over-cap due cohorts each UTC hour (same principle as
+ * selectFairHorseVideoQueue) so a failing front cohort cannot starve the rest
+ * of the fleet. When due <= limit, preserves oldest-slot-first order.
+ */
+export function selectFairHorsePostQueue<T extends { horse: { profile_id: string }; due: { age?: number | null } }>(
+  due: readonly T[],
+  now: Date,
+  limit = MAX_POSTS_PER_RUN,
+): T[] {
+  const capacity = Math.max(0, Math.floor(limit));
+  const ageOrder = (a: T, b: T) => (
+    (b.due.age ?? 0) - (a.due.age ?? 0)
+    || a.horse.profile_id.localeCompare(b.horse.profile_id)
+  );
+  if (capacity === 0 || due.length === 0) return [];
+  if (due.length <= capacity) return [...due].sort(ageOrder);
+
+  // Preserve oldest-slot-first priority across age tiers, and rotate fairly
+  // across UTC hours inside any equal-age cohort that exceeds remaining capacity.
+  const byAge = new Map<number, T[]>();
+  for (const item of due) {
+    const age = item.due.age ?? 0;
+    const bucket = byAge.get(age);
+    if (bucket) bucket.push(item);
+    else byAge.set(age, [item]);
+  }
+  const ages = [...byAge.keys()].sort((a, b) => b - a);
+  const selected: T[] = [];
+  const epochHour = Math.floor(now.getTime() / 3_600_000);
+  for (const age of ages) {
+    const remaining = capacity - selected.length;
+    if (remaining <= 0) break;
+    const cohort = byAge.get(age)!;
+    if (cohort.length <= remaining) {
+      selected.push(...cohort.sort(ageOrder));
+      continue;
+    }
+    const ring = [...cohort].sort((a, b) => (
+      stableRingHash(`${a.horse.profile_id}:horse-posts-ring`)
+        - stableRingHash(`${b.horse.profile_id}:horse-posts-ring`)
+      || a.horse.profile_id.localeCompare(b.horse.profile_id)
+    ));
+    const offset = stableRingHash('horse-posts:cursor') % ring.length;
+    const cursor = (offset + (epochHour % ring.length) * (remaining % ring.length)) % ring.length;
+    for (let i = 0; i < remaining; i++) {
+      selected.push(ring[(cursor + i) % ring.length]!);
+    }
+  }
+  return selected.sort(ageOrder);
+}
+
 type Halt = 'engine_disabled' | 'engine_unreadable';
 
 export async function horsePosts(c: Context) {
@@ -66,12 +128,9 @@ export async function horsePosts(c: Context) {
     const fleet = await loadFleet();
     const due = fleet
       .map((h) => ({ horse: h, due: isDueForPost(h.profile_id, h.timezone, now) }))
-      .filter((x) => x.due.due)
-      // Oldest open slot first, so a horse that was skipped by the cap last
-      // hour is served before one whose slot just opened.
-      .sort((a, b) => (b.due.age ?? 0) - (a.due.age ?? 0));
+      .filter((x) => x.due.due);
 
-    const queue = due.slice(0, MAX_POSTS_PER_RUN);
+    const queue = selectFairHorsePostQueue(due, now, MAX_POSTS_PER_RUN);
     const preparedVideoSupply = queue.length > 0
       ? await prepareSharedHorseVideoSupply(['poker', 'sports'])
       : null;
@@ -85,6 +144,7 @@ export async function horsePosts(c: Context) {
     };
 
     const ledgerFailuresBefore = ledgerReadFailureTotal();
+    const newsSourcesCache: NewsSourcesCache = new Map();
     const worker = async () => {
       while (run.cursor < queue.length && !run.halt && !run.unknown) {
         if (run.created >= MAX_NEW_HORSE_POSTS_PER_RUN) return;
@@ -99,6 +159,7 @@ export async function horsePosts(c: Context) {
           return;
         }
         const item = queue[run.cursor++]!;
+        let published = false;
         try {
           const result = await publishForHorse(item.horse, {
             fleet,
@@ -111,8 +172,10 @@ export async function horsePosts(c: Context) {
             // The slot this run found the horse due for, read from the same
             // clock, so an overlapping run names the same slot and key.
             slot: fleetSlotId(item.horse.profile_id, item.horse.timezone, now),
+            newsSourcesCache,
           });
           results.push(result);
+          published = result.success === true;
           // Atomic publication receipts distinguish creations from replays.
           // Legacy acknowledged writes without a flag spend fresh capacity.
           if (result.success && result.created !== false) run.created += 1;
@@ -131,9 +194,9 @@ export async function horsePosts(c: Context) {
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        // A little air between publishes: RSS hosts and persistence endpoints
-        // both rate-limit bursts from the VM.
-        await new Promise((r) => setTimeout(r, 400));
+        // Only pace after an actual publish; skipped/exhausted horses do not
+        // need a 400ms sleep.
+        if (published) await new Promise((r) => setTimeout(r, 400));
       }
     };
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));

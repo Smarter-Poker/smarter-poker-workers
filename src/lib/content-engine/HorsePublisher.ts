@@ -40,7 +40,6 @@ import Parser from 'rss-parser';
 import { getSupabase } from '../supabase.js';
 import { postModeEnabled } from './Fleet.js';
 import { topicsFor } from './SocialTopics.js';
-import { seedHorseMemory } from './HumanVoiceEngine.js';
 import { writeCaption, writeGrounded, summarise, recordBrief, type AuthorHorse, type ModelAttemptContext } from './VoiceWriter.js';
 import { briefForAsset, isUninformativeTitle } from './PostBrief.js';
 import { hasSpecificTake } from './Composer.js';
@@ -561,10 +560,11 @@ export function isCaptionableSharedVideoClip(
     domainHint: topic,
     sportHint: clip.sport_type ?? clip.category,
   });
-  // The real composer also accepts strict source-bound facts even when no
-  // older generic take pool knows this holding/action. Verification alone is
-  // still insufficient; the ordinary writer retains its relevance floor.
-  return hasSpecificTake(brief) || captionFact(brief) !== null;
+  // Align preflight with composeCaption(): quantity-only all_in_context is
+  // refused by composeCaption() and must not enter candidate supply only to
+  // burn six failed caption drafts per horse.
+  const fact = captionFact(brief);
+  return fact !== null && fact.action !== 'all_in_context';
 }
 
 export async function youtubeValidity(url: string | null | undefined): Promise<YtValidity> {
@@ -746,19 +746,17 @@ export async function postedRecently(profileId: string, hours = RECENT_POST_GUAR
   return (await recentPostGuard(profileId, hours)) !== 'clear';
 }
 
-async function seedMemoryFromHistory(profileId: string): Promise<void> {
-  const { data } = await getSupabase()
-    .from('social_posts')
-    .select('content')
-    .eq('author_id', profileId)
-    .order('created_at', { ascending: false })
-    .limit(15);
-  if (data?.length) {
-    seedHorseMemory(
-      profileId,
-      (data as { content: string | null }[]).map((p) => p.content?.split('\n')[0] || ''),
-    );
-  }
+export type NewsSourcesCache = Map<'poker' | 'sports', Awaited<ReturnType<typeof newsSources>>>;
+
+async function cachedNewsSources(
+  domain: 'poker' | 'sports',
+  cache?: NewsSourcesCache,
+): Promise<Awaited<ReturnType<typeof newsSources>>> {
+  const hit = cache?.get(domain);
+  if (hit && hit.length > 0) return hit;
+  const rows = await newsSources(domain);
+  if (cache && rows && rows.length > 0) cache.set(domain, rows);
+  return rows;
 }
 
 export async function publishVideoClip(
@@ -936,8 +934,6 @@ export async function publishVideoClip(
   if (!publicationKey) {
     return { ...base, success: false, error: `${scheduler} video publication requires a slot key` };
   }
-
-  await seedMemoryFromHistory(horse.profile_id);
 
   let belowFloor = 0;
   let stale = 0;
@@ -1247,14 +1243,13 @@ async function postNewsLink(
   fleet: AuthorHorse[],
   publicationKey: string,
   modelAttempt: ModelAttemptContext,
+  newsSourcesCache?: NewsSourcesCache,
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
 
-  // The registry first. A failed READ falls back to the literals so a horse
-  // does not go silent because Postgres blinked; an EMPTY registry is a real
-  // answer and falls back too, because no feeds registered still means this
-  // horse has something to say.
-  const registered = await newsSources(newsType);
+  // Reuse per-run news source lookup when provided so an hourly run does not
+  // repeat ~80 identical content_sources reads; direct callers always read fresh.
+  const registered = await cachedNewsSources(newsType, newsSourcesCache);
   let candidates: NewsFeedCandidate[];
   if (registered && registered.length) {
     // Each horse reads its own slice of the feeds, the same way it draws its
@@ -1342,7 +1337,6 @@ async function postNewsFromSource(
       bumpSupplyStat(`${newsType}_news_no_story_image`);
       return { ...base, success: false, skipped: 'supply_exhausted', publicationKey, error: 'No fresh article has genuine associated story artwork' };
     }
-    await seedMemoryFromHistory(horse.profile_id);
     const remaining = [...illustrated];
     let exhaustion: PublishResult = { ...base, success: false, skipped: 'caption_exhausted', publicationKey,
       error: 'All illustrated article candidates exhausted' };
@@ -1562,6 +1556,7 @@ export async function publishForHorse(
     slot?: string | null;
     sharedVideoSupply?: SharedHorseVideoSupply;
     sharedVideoSupplyError?: string;
+    newsSourcesCache?: NewsSourcesCache;
   } = {},
 ): Promise<PublishResult> {
   const base = { horse: horse.name, profile_id: horse.profile_id };
@@ -1674,7 +1669,7 @@ export async function publishForHorse(
   }
 
   for (const kind of [preferred, other]) {
-    const result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey, modelAttempt);
+    const result = await postNewsLink(horse, kind, opts.fleet ?? [], publicationKey, modelAttempt, opts.newsSourcesCache);
     if (result.success) return result;
     if (result.skipped && recordAttempt(`${kind}_news`, result) === 'return') return result;
     // An acknowledgement loss is not proof that the atomic write failed.

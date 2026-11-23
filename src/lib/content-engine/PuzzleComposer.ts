@@ -389,6 +389,9 @@ function finish(
   // situation is not the option "Call"); the explanation never repeats it in
   // any case, because the reveal appends the label itself.
   if (prompt.includes(correct) || explanation.toLowerCase().includes(correct.toLowerCase())) return reject('answer_leaks');
+  // Keep reveal comment ("Answer: X (label). <explanation>") inside the
+  // 500-character social_comments ceiling before publishing the puzzle.
+  if (explanation.length + correct.length + 32 > 500) return reject('reveal_too_long');
   return {
     ok: true,
     puzzle: {
