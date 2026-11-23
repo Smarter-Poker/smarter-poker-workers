@@ -30,6 +30,7 @@ import {
   composeCaption,
   composeComment,
   composeReply,
+  composeStory,
   relevanceOf,
   RELEVANCE_FLOOR,
 } from './Composer.js';
@@ -208,7 +209,7 @@ export interface AuthorHorse extends FriendCandidate {
 }
 
 /** Optional mention identity comes from the current public horse profile. */
-async function publicHorseTag(profileId: string, legacyAlias: string | null | undefined): Promise<{ name: string; username: string } | null> {
+export async function publicHorseTag(profileId: string, legacyAlias: string | null | undefined): Promise<{ name: string; username: string } | null> {
   try {
     const { data, error } = await getSupabase().from('profiles')
       .select('id, is_horse, username, display_name').eq('id', profileId).eq('is_horse', true).maybeSingle();
@@ -313,7 +314,7 @@ export async function writeStory(
   const brief = briefForAsset({ kind: 'text', title: seedTopic, source: null, domainHint });
   const style = styleSheetFor(horse.profile_id);
   const core = await writeGated(
-    (variant) => composeCaption(brief, style, variant),
+    (variant) => composeStory(brief, style, variant),
     brief,
     style,
     horse.profile_id,

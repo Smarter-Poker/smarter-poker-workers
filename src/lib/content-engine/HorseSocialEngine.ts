@@ -39,7 +39,7 @@ import { pagedSelect } from '../pagedSelect.js';
 import { getHorseActivityRate } from './HorseScheduler.js';
 import { isOnlineNow } from './FleetScheduler.js';
 import { loadFleet, engineEnabled } from './Fleet.js';
-import { writeComment, writeReply, recordBrief, recordThreadTurn } from './VoiceWriter.js';
+import { writeComment, writeReply, recordBrief, recordThreadTurn, publicHorseTag } from './VoiceWriter.js';
 import { tagCandidateFor } from './FriendGraph.js';
 import { normalizePhrase, recordPhrase, ledgerReadFailureTotal } from './ContentLedger.js';
 import { decideReply, composerReason, type ThreadComment } from './ReplyEngine.js';
@@ -549,7 +549,11 @@ export async function acceptFriendRequests(maxAccepts = 15) {
  * Horses comment on posts from horses AND real users
  * Uses per-horse scheduling and writing styles
  */
-export async function commentOnPosts(maxComments = 20, includeRealUsers = true) {
+export async function commentOnPosts(
+    maxComments = 20,
+    includeRealUsers = true,
+    prefetchedRoster?: Awaited<ReturnType<typeof loadFleet>> | null,
+) {
     const now = new Date();
     const skips: SkipReasons = {};
     const ledgerBefore = ledgerReadFailureTotal();
@@ -559,7 +563,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     if (!(await switchStillOn())) return { commented: 0, activeHorses: 0, skip_reasons: { engine_disabled: 1 } };
 
     // Get all horses (A1: the paged roster, not the first 1,000 rows)
-    const allHorses = await rosterOrNull('commentOnPosts');
+    const allHorses = prefetchedRoster ?? await rosterOrNull('commentOnPosts');
 
     if (!allHorses) return { commented: 0, activeHorses: 0, skip_reasons: { roster_unreadable: 1 } };
 
@@ -586,7 +590,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
         .from('social_posts')
         .select('id, author_id, content_type, content, link_title, link_site_name, metadata'))
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(100);
 
     // Phase 12 - Inter-Bot Drama: Allow horses to also see all horse posts
     const { data: posts, error: postsErr } = await postsQuery;
@@ -602,14 +606,21 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
     }
 
     let commented = 0;
+    let attempts = 0;
+    const maxAttempts = Math.max(maxComments * 4, 40);
     let skippedNoContent = 0;
     let belowFloor = 0;
     let staleDrafts = 0;
     let relevanceSum = 0;
     let relevanceCount = 0;
 
-    // Each ACTIVE horse may comment on some posts
+    // Each ACTIVE horse may comment on some posts (bounded attempts prevent
+    // walking all ~450 online horses for 235s when drafts are scarce).
     for (const horse of activeHorses) {
+        if (attempts >= maxAttempts) {
+            bump(skips, 'attempt_cap');
+            break;
+        }
         // D2: the switch is re-read before every horse, so turning the engine
         // off stops a run that is already inside this loop.
         if (!(await switchStillOn())) {
@@ -629,6 +640,7 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
         const post = eligiblePosts[Math.floor(Math.random() * eligiblePosts.length)];
 
         if (!post) continue;
+        attempts++;
 
         // Check anti-spam cooldown (fails closed: unreadable is cooling down)
         const cooldown = await checkCooldown(horse.profile_id, post.id, 'comment_post');
@@ -645,12 +657,6 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
         }
 
         // Phase 2 (2026-09-05): read the post before writing about it.
-        // The ladder this replaces guessed a CATEGORY from regexes over the
-        // post text and then drew a whole sentence from a pool for that
-        // category, so a comment was never about the post, only about its
-        // genre. writeComment() builds a brief (subject, people, teams,
-        // concepts, tone) and composes from it in this horse's own style,
-        // with the relevance floor and the phrase ledger as gates.
         const written = await writeComment(horse, {
             postId: post.id,
             contentType: post.content_type,
@@ -659,32 +665,33 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
             linkSiteName: post.link_site_name ?? null,
             metadata: post.metadata ?? null,
         });
-        let comment = written.text;
-        if (!comment || comment.trim().length < 5) {
-            // Nothing composable: skip rather than publish filler. Phase 1's
-            // lesson is that a bad post is worse than no post.
+        const rawComment = written.text;
+        if (!rawComment || rawComment.trim().length < 5) {
             skippedNoContent++;
-            // 2026-09-21: these two counters sat below this `continue` and so
-            // could never move (writeGated returns '' for exactly these
-            // drafts). Here, a phrase ledger that cannot be read, which now
-            // reads as "used", shows up as comment_stale in the run log.
             if (written.belowFloor) belowFloor++;
             if (written.stale) staleDrafts++;
             bump(skips, 'no_text');
+            if (written.skipReason) bump(skips, written.skipReason);
             continue;
         }
         relevanceSum += written.relevance;
         relevanceCount += 1;
-        // Only a brief we DERIVED is written. A stored brief comes back
-        // sanitised by loadBrief(), and writing that copy back would make
-        // every read a small permanent downgrade (2026-09-06: grounded posts
-        // went from confidence 1.00 to 0.35 the first time anybody commented).
         if (!written.briefWasStored) await recordBrief(post.id, written.brief);
 
+        // P2C-04 (2026-09-21): verify the switch & post liveness BEFORE
+        // broadcasting typing or sleeping, then re-verify immediately before insert.
+        if (!(await switchStillOn())) {
+            bump(skips, 'engine_disabled');
+            break;
+        }
+        const preTypingState = await postLiveness(post.id);
+        if (preTypingState !== 'live') {
+            bump(skips, preTypingState === 'unreadable' ? 'post_unreadable' : 'post_not_live');
+            continue;
+        }
+
         // 🟢 DYNAMIC TYPING INDICATOR (Phase 11)
-        // Broadcast a typing payload to all connected clients viewing this post
         try {
-            // The paged roster does not carry avatars; one row for the horse that is typing.
             const { data: avatarRows } = await getSupabase()
                 .from('content_authors')
                 .select('avatar_url')
@@ -701,13 +708,11 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
                     isTyping: true
                 }
             });
-            
-            // Simulate human typing delay (1s - 3s based on comment length, reduced for cron efficiency)
-            const typingMs = Math.max(1000, Math.min(3000, comment.length * 50));
+
+            const typingMs = Math.max(1000, Math.min(3000, rawComment.length * 50));
             console.debug(`   [Live] ${horse.name} is typing on post ${post.id.substring(0,6)}... (${Math.round(typingMs/1000)}s)`);
             await new Promise(r => setTimeout(r, typingMs));
-            
-            // Send stop typing event
+
             await getSupabase().channel('social-feed').send({
                 type: 'broadcast',
                 event: 'typing',
@@ -717,10 +722,6 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
             console.warn(`   [Live] Failed to broadcast typing indicator for ${horse.name}`);
         }
 
-        // P2C-04 (2026-09-21): the post is re-read immediately before the
-        // comment is written, and it must still be live. The list above is a
-        // draft and a typing pause old by now, and a post deleted or hidden in
-        // that time must not collect a comment. The switch is re-read too.
         if (!(await switchStillOn())) {
             bump(skips, 'engine_disabled');
             break;
@@ -731,7 +732,30 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
             continue;
         }
 
-        // Insert comment
+        // Build validated friend mention BEFORE insert so the comment is
+        // written atomically in a single INSERT with a validated single-token
+        // @username (never spaces, no fragile 5s UPDATE) and rawComment stays
+        // clean for the phrase ledger.
+        let comment = rawComment;
+        let taggedFriend: { profile_id: string; username: string } | null = null;
+        if (Math.random() < 0.15) {
+            const cand = tagCandidateFor(
+                horse,
+                allHorses,
+                { domain: written.brief.domain, concepts: written.brief.concepts, sport: written.brief.sport },
+                `${horse.profile_id}:${post.id}`,
+            );
+            const friend = cand?.friend;
+            if (friend?.profile_id) {
+                const tag = await publicHorseTag(friend.profile_id, friend.alias);
+                if (tag?.username) {
+                    comment = `@${tag.username} ${rawComment}`;
+                    taggedFriend = { profile_id: friend.profile_id, username: tag.username };
+                }
+            }
+        }
+
+        // Insert comment in one write
         const { error } = await getSupabase()
             .from('social_comments')
             .insert({
@@ -741,50 +765,17 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
             });
         if (error) bump(skips, 'insert_failed');
 
-        // Phase 2 (2026-09-06): a mention goes to a FRIEND, by alias.
-        //
-        // This used to pick a uniformly random horse out of the whole fleet
-        // and address it by profiles.username, which produced
-        // "@sophie andersson 2 ..." in production - a display name with
-        // spaces, from a horse this one has never interacted with. Dan:
-        // "HORSES NEED TO BE ADDING AND TAGGING OTHER HORSES IN POSTS THAT
-        // THEY ARE FRIENDS WITH. BUT NOT EVERY HORSE SHOULD BE FRIENDS WITH
-        // EVERY OTHER HORSE, THAT WOULD BE WEIRD AND SUSPICIOUS."
-        if (!error && Math.random() < 0.15) {
-            const cand = tagCandidateFor(
-                horse,
-                allHorses,
-                { domain: written.brief.domain, concepts: written.brief.concepts, sport: written.brief.sport },
-                `${horse.profile_id}:${post.id}`,
-            );
-            const friend = cand?.friend;
-            if (friend?.alias) {
-                const friendProfile = { username: friend.alias };
-                    const mentionComment = `@${friendProfile.username} ${comment}`;
-                    // BUG-WR03 FIX: match by author+post+timestamp window instead of content string
-                    // (content-match was fragile: two horses posting same text to same post → wrong row updated)
-                    const nowIso = new Date(Date.now() - 5000).toISOString(); // last 5s
-                    await getSupabase().from('social_comments')
-                        .update({ content: mentionComment })
-                        .eq('post_id', post.id)
-                        .eq('author_id', horse.profile_id)
-                        .gte('created_at', nowIso);
-                    comment = mentionComment;
-                    console.debug(`   ${horse.name} tagged @${friendProfile.username}`);
-
-                    // Phase 28 Fix: Insert notification for the mentioned friend
-                    await getSupabase().from('notifications').insert({
-                        user_id: friend.profile_id,
-                        actor_id: horse.profile_id,
-                        type: 'mention',
-                        title: horse.name,           // NOT NULL — was missing, caused silent insert fail
-                        reference_id: post.id,
-                        message: `mentioned you in a comment`
-                    });
-
-                    // Trigger push notification to mentioned user
-                    await sendSocialPush(friend.profile_id, horseIds, 'New Mention', `${horse.name} mentioned you in a comment.`, `/hub/social-media?post_id=${post.id}`);
-            }
+        if (!error && taggedFriend) {
+            console.debug(`   ${horse.name} tagged @${taggedFriend.username}`);
+            await getSupabase().from('notifications').insert({
+                user_id: taggedFriend.profile_id,
+                actor_id: horse.profile_id,
+                type: 'mention',
+                title: horse.name,
+                reference_id: post.id,
+                message: `mentioned you in a comment`
+            });
+            await sendSocialPush(taggedFriend.profile_id, horseIds, 'New Mention', `${horse.name} mentioned you in a comment.`, `/hub/social-media?post_id=${post.id}`);
         }
 
         if (!error) {
@@ -793,10 +784,9 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
 
             const author = allHorses.find(h => h.profile_id === post.author_id);
             console.debug(`   ${horse.name} → ${author?.name || 'User'}'s post: "${comment}"`);
-            // Comments share the freshness ledger with captions. Before Phase 2
-            // nothing recorded them, so one line could reappear across the feed
-            // all day and no counter would show it.
-            await recordPhrase(normalizePhrase(comment), horse.profile_id, post.id);
+            // Record the untagged rawComment so a leading @handle prefix never
+            // defeats phrase-ledger duplicate detection.
+            await recordPhrase(normalizePhrase(rawComment), horse.profile_id, post.id);
             if (written.semanticKey) await recordPhrase(written.semanticKey, horse.profile_id, post.id);
             commented++;
 
@@ -831,7 +821,11 @@ export async function commentOnPosts(maxComments = 20, includeRealUsers = true) 
  * Horses like posts from horses AND real users
  * Now uses per-horse scheduling - each horse only acts during their unique time slot
  */
-export async function likePosts(maxLikes = 30, includeRealUsers = true) {
+export async function likePosts(
+    maxLikes = 30,
+    includeRealUsers = true,
+    prefetchedRoster?: Awaited<ReturnType<typeof loadFleet>> | null,
+) {
     const now = new Date();
     const skips: SkipReasons = {};
 
@@ -840,7 +834,7 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
     if (!(await switchStillOn())) return { liked: 0, activeHorses: 0, skip_reasons: { engine_disabled: 1 } };
 
     // Get all horses (A1: the paged roster, not the first 1,000 rows)
-    const allHorses = await rosterOrNull('likePosts');
+    const allHorses = prefetchedRoster ?? await rosterOrNull('likePosts');
 
     if (!allHorses) return { liked: 0, activeHorses: 0, skip_reasons: { roster_unreadable: 1 } };
 
@@ -889,9 +883,9 @@ export async function likePosts(maxLikes = 30, includeRealUsers = true) {
             continue;
         }
 
-        // Pick 1-3 random posts for this horse to like
+        // Pick 1-3 random posts for this horse to like (unbiased Fisher-Yates)
         const numToLike = 1 + Math.floor(Math.random() * 3);
-        const shuffledPosts = posts.filter(p => p.author_id !== horse.profile_id).sort(() => Math.random() - 0.5);
+        const shuffledPosts = shuffleHorses(posts.filter(p => p.author_id !== horse.profile_id));
 
         for (let i = 0; i < numToLike && liked < maxLikes; i++) {
             const post = shuffledPosts[i];
@@ -1012,7 +1006,10 @@ async function findReplyId(postId: string, horseId: string, parentId: string): P
  * Horses reply to comments on posts (both horse and real user comments)
  * Uses per-horse scheduling and writing styles
  */
-export async function replyToComments(maxReplies = 15) {
+export async function replyToComments(
+    maxReplies = 15,
+    prefetchedRoster?: Awaited<ReturnType<typeof loadFleet>> | null,
+) {
     const now = new Date();
     const skips: SkipReasons = {};
     const ledgerBefore = ledgerReadFailureTotal();
@@ -1022,7 +1019,7 @@ export async function replyToComments(maxReplies = 15) {
     if (!(await switchStillOn())) return { replied: 0, activeHorses: 0, reply_reasons: {}, skip_reasons: { engine_disabled: 1 } };
 
     // Get all horses (A1: the paged roster; alias is how a horse notices it was addressed)
-    const allHorses = await rosterOrNull('replyToComments');
+    const allHorses = prefetchedRoster ?? await rosterOrNull('replyToComments');
 
     if (!allHorses) return { replied: 0, activeHorses: 0, reply_reasons: {}, skip_reasons: { roster_unreadable: 1 } };
 
@@ -1213,7 +1210,7 @@ export async function replyToComments(maxReplies = 15) {
         );
         const replyText = written.text;
         if (!replyText || replyText.trim().length < 2) {
-            bump(skips, 'no_text');
+            bump(skips, written.skipReason ?? (written.stale ? 'stale' : written.belowFloor ? 'below_floor' : 'no_text'));
             continue;
         }
 
@@ -1404,7 +1401,10 @@ export async function runSocialInteractions(options = {}) {
 // Phase 27: HORSE-TO-HORSE COMMENT REACTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
-export async function reactToComments(maxReactions = 15) {
+export async function reactToComments(
+    maxReactions = 15,
+    prefetchedRoster?: Awaited<ReturnType<typeof loadFleet>> | null,
+) {
     const now = new Date();
     const skips: SkipReasons = {};
 
@@ -1413,7 +1413,7 @@ export async function reactToComments(maxReactions = 15) {
     if (!(await switchStillOn())) return { reacted: 0, skip_reasons: { engine_disabled: 1 } };
 
     // A1: the paged roster, not the first 1,000 rows
-    const allHorses = await rosterOrNull('reactToComments');
+    const allHorses = prefetchedRoster ?? await rosterOrNull('reactToComments');
 
     if (!allHorses) return { reacted: 0, skip_reasons: { roster_unreadable: 1 } };
 
@@ -1481,6 +1481,38 @@ export async function reactToComments(maxReactions = 15) {
             break;
         }
 
+        const dailyLimit = await checkDailyLimit(horse.profile_id, 'likes');
+        if (dailyLimit !== 'within') {
+            bump(skips, dailyLimit === 'unreadable' ? 'daily_limit_unreadable' : 'daily_limit');
+            continue;
+        }
+
+        const postId = comment.post_id || comment.id;
+        const targetState = await commentLiveness(comment.id, postId);
+        if (targetState !== 'live') {
+            bump(skips, targetState === 'unreadable' ? 'target_unreadable' : 'target_not_live');
+            continue;
+        }
+
+        // Skip if this horse already reacted to this comment instead of
+        // repeatedly deleting and re-inserting the same reaction.
+        const { data: existingReact, error: existingReactErr } = await getSupabase()
+            .from('social_interactions')
+            .select('id')
+            .eq('user_id', horse.profile_id)
+            .eq('post_id', postId)
+            .eq('interaction_type', 'comment_like')
+            .filter('metadata->>comment_id', 'eq', comment.id)
+            .limit(1);
+        if (existingReactErr || !Array.isArray(existingReact)) {
+            bump(skips, 'reaction_unreadable');
+            continue;
+        }
+        if (existingReact.length > 0) {
+            bump(skips, 'already_reacted');
+            continue;
+        }
+
         // Weighted reaction type
         const roll = Math.random();
         let reaction = 'like';
@@ -1488,18 +1520,6 @@ export async function reactToComments(maxReactions = 15) {
         else if (roll > 0.70) reaction = 'fire';
         else if (roll > 0.50) reaction = 'haha';
         else if (roll > 0.30) reaction = 'love';
-
-        // BUG-SI01 FIX: onConflict='metadata->>comment_id' is NOT valid PostgREST syntax
-        // (JSON path expressions are not column names). This caused silent INSERT duplicates
-        // or a 42703 error. Use atomic delete+insert instead for guaranteed idempotency.
-        const postId = comment.post_id || comment.id;
-        await getSupabase()
-            .from('social_interactions')
-            .delete()
-            .eq('user_id', horse.profile_id)
-            .eq('post_id', postId)
-            .eq('interaction_type', 'comment_like')
-            .filter('metadata->>comment_id', 'eq', comment.id);
 
         const { error } = await getSupabase()
             .from('social_interactions')

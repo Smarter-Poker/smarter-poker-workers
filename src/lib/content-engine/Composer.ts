@@ -245,6 +245,64 @@ const POKER_TAKES: Record<string, string[]> = {
   ],
 };
 
+/**
+ * Additional poker concept takes used by comments and text stories so posts
+ * mentioning these concepts get grounded engagement without widening the
+ * legacy caption `hasSpecificTake` pool.
+ */
+const COMMENT_EXTRA_POKER_TAKES: Record<string, string[]> = {
+  turn: [
+    'the turn card is where a lot of hands actually get decided',
+    'playing the turn clean sets up every river decision',
+    'most leaks show up on the turn before the river ever lands',
+  ],
+  four_bet: [
+    'a four-bet pot plays completely different from a three-bet pot',
+    'four-betting light only works when you know how the table reacts',
+    'sizing a four-bet right keeps the whole stack playable',
+  ],
+  pocket_pair: [
+    'small pocket pairs are all about implied odds and discipline',
+    'a pocket pair plays totally differently depending on stack depth',
+    'knowing when to let a pocket pair go saves a lot of chips',
+  ],
+  suited_holding: [
+    'suited hands realize way more equity than people give them credit for',
+    'playing suited connectors in position is still one of the cleanest spots in poker',
+  ],
+  offsuit_holding: [
+    'offsuit broadways look prettier preflop than they play out of position',
+    'playing offsuit hands carefully keeps you out of dominated spots',
+  ],
+  stakes: [
+    'moving up in stakes changes the table dynamic faster than people expect',
+    'every jump in stakes punishes the leaks you got away with lower down',
+  ],
+  straight: [
+    'a straight on a paired board is always an uncomfortable spot',
+    'hitting a straight is great until the board pairs up',
+    'disguised straights win the biggest pots in live games',
+  ],
+  flush: [
+    'a flush draw changes how much pressure you can apply on every street',
+    'getting paid on a flush comes down to how you played the earlier streets',
+    'blocking the flush makes some river decisions a lot clearer',
+  ],
+  set: [
+    'flopping a set is nice, getting paid with a set is the real trick',
+    'a set on a wet board still has plenty of decisions left',
+    'slow-playing a set costs more chips than people admit',
+  ],
+  guarantee: [
+    'a big guarantee always brings out a softer field than usual',
+    'tournaments with a strong guarantee are worth circling on the schedule',
+  ],
+  prize: [
+    'chasing the top prize changes how people play the final two tables',
+    'big prize pools are what make the long tournament days worth it',
+  ],
+};
+
 // No card, stake, pot, bluff or hand language here: these lines sit under
 // sports clips, and "what does Lebron James do there if the card bricks"
 // reached the harness output under a basketball clip (P2C-01).
@@ -541,7 +599,7 @@ export function anchorOf(b: PostBrief): string | null {
   return null;
 }
 
-function specificTakePool(b: PostBrief): string[] {
+function specificTakePool(b: PostBrief, includeCommentExtras = false): string[] {
   // Never cross domains. A stored poker brief containing a stale sports
   // concept once turned an EPT debut into "doing that as a rookie". General
   // briefs are intentionally unsupported until their domain is known.
@@ -549,7 +607,7 @@ function specificTakePool(b: PostBrief): string[] {
   if (!table) return [];
   const hits: string[] = [];
   for (const c of b.concepts) {
-    const lines = table[c];
+    const lines = table[c] ?? (includeCommentExtras && b.domain === 'poker' ? COMMENT_EXTRA_POKER_TAKES[c] : undefined);
     if (!lines) continue;
     for (const line of lines) {
       // A take that asserts an event only when the title states it (P2C-06).
@@ -607,8 +665,23 @@ export interface ComposeResult {
  * domain vocabulary. Text that shares nothing with the brief scores 0 and is
  * refused (the caller retries or falls back).
  */
+const CONCEPT_SYNONYMS: Record<string, string[]> = {
+  gto: ['solver', 'solvers', 'balance', 'balanced'],
+  all_in: ['shove', 'shoved', 'jam', 'jammed'],
+  fold: ['laydown', 'lay down'],
+  variance: ['downswing', 'upswing', 'heater', 'heaters'],
+  three_bet: ['3bet', '3 bet', 'three bet'],
+  four_bet: ['4bet', '4 bet', 'four bet'],
+  check_raise: ['checkraise', 'check raise'],
+  hero_call: ['hero call'],
+  heads_up: ['heads up'],
+  buzzer_beater: ['buzzer beater'],
+  home_run: ['home run', 'homer'],
+};
+
 export function relevanceOf(text: string, b: PostBrief): number {
   const lc = text.toLowerCase();
+  const lcSpaced = lc.replace(/-/g, ' ');
   let score = 0;
   // The closed fact extractors bind a canonical subject to this exact brief.
   // Keep its complete subject as evidence, including StyleSheet's documented
@@ -629,7 +702,16 @@ export function relevanceOf(text: string, b: PostBrief): number {
   for (const t of b.teams) if (lc.includes(t.toLowerCase())) { score += 0.35; break; }
   for (const c of b.concepts) {
     const word = c.replace(/_/g, ' ');
-    if (lc.includes(word) || lc.includes(word.split(' ')[0] ?? '')) { score += 0.3; break; }
+    const first = word.split(' ')[0] ?? '';
+    const syns = CONCEPT_SYNONYMS[c] ?? [];
+    if (
+      lcSpaced.includes(word)
+      || (first.length >= 3 && lcSpaced.includes(first))
+      || syns.some((syn) => lcSpaced.includes(syn))
+    ) {
+      score += 0.3;
+      break;
+    }
   }
   for (const a of b.amounts) if (lc.includes(a.toLowerCase())) { score += 0.2; break; }
   if (b.keyPhrase && lc.includes(b.keyPhrase.toLowerCase())) score += 0.2;
@@ -654,10 +736,11 @@ function chooseOpening(
   b: PostBrief,
   seed: string,
   anchor: string | null,
+  includeCommentExtras = false,
 ): { text: string; grounding: string[] } | null {
   const candidates: Array<{ text: string; grounding: string[] }> = [];
 
-  for (const tpl of specificTakePool(b)) {
+  for (const tpl of specificTakePool(b, includeCommentExtras)) {
     const filled = fill(tpl, b, anchor);
     if (!filled) continue;
     const g: string[] = [];
@@ -766,7 +849,7 @@ export function composeCaption(
   const { sentences } = targetWords(style);
 
   const lines: string[] = [];
-  const chosen = chooseOpening(b, seed, anchor);
+  const chosen = chooseOpening(b, seed, anchor, true);
   if (!chosen) return { text: '', relevance: 0, grounding: [] };
   lines.push(chosen.text);
   grounding.push(...chosen.grounding);
@@ -791,6 +874,38 @@ export function composeCaption(
   const text = render(lines, style, seed, { question, varyCloser: true });
   if (!captionQuality(text).pass) return { text: '', relevance: 0, grounding: [] };
   return { text: ornament(text), relevance: relevanceOf(text, b), grounding, semanticKey: meaningKey(lines[0]!) };
+}
+
+/**
+ * A horse's own short text story from a poker/sports topic seed.
+ *
+ * `composeCaption()` stays closed on `captionFact()` for feed video/link posts
+ * so unverified clips and headlines never leak into the feed. Text stories
+ * carry no external asset and instead express one grounded concept take in
+ * this horse's own voice, checked against `RELEVANCE_FLOOR` and `captionQuality`.
+ */
+export function composeStory(
+  b: PostBrief,
+  style: StyleSheet,
+  variantSeed = '0',
+): ComposeResult {
+  if (b.kind !== 'text' || (b.domain !== 'poker' && b.domain !== 'sports')) {
+    return { text: '', relevance: 0, grounding: [] };
+  }
+  const seed = `${style.profileId}:story:${b.title}:${variantSeed}`;
+  const anchor = agentOf(b);
+  const chosen = chooseOpening(b, seed, anchor, true);
+  if (!chosen) return { text: '', relevance: 0, grounding: [] };
+
+  const text = render([chosen.text], style, seed, { varyCloser: true });
+  if (!captionQuality(text).pass) return { text: '', relevance: 0, grounding: [] };
+  const relevance = relevanceOf(text, b);
+  return {
+    text,
+    relevance,
+    grounding: chosen.grounding,
+    semanticKey: meaningKey(chosen.text),
+  };
 }
 
 /**
@@ -900,6 +1015,11 @@ const HAND_REACT: Record<string, string[]> = {
     'small clean pots, that is the job',
     'nothing flashy and nothing wrong with it',
   ],
+  tough_spot: [
+    'that is the kind of spot that makes you stare at the board for a minute',
+    'no easy button in a spot like that',
+    'spots like that are where the real edge lives',
+  ],
 };
 
 /**
@@ -937,6 +1057,7 @@ const CATEGORY_WORDS: Record<string, string> = {
   big_fold: 'that fold',
   stackoff: 'that stackoff',
   grind: 'that one',
+  tough_spot: 'that spot',
 };
 
 /** "AA on Qc 8s Qs 9c 9d" -> the two halves, when they are there. */
@@ -1019,7 +1140,7 @@ export function composeComment(
   // identify (P2C-01, P2C-07, P2C-12). A key phrase is a title fragment
   // ("Proxy Sports Betting", "the study") and cannot act at all.
   const anchor = agentOf(b);
-  const fillable = specificTakePool(b).filter((line) => {
+  const fillable = specificTakePool(b, true).filter((line) => {
     if (line.includes('{anchor}') && !anchor) return false;
     if (line.includes('{amount}') && !b.amounts.length) return false;
     return true;

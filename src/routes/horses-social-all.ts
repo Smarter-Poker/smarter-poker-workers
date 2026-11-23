@@ -21,7 +21,7 @@ import {
   reactToComments,
 } from '../lib/content-engine/HorseSocialEngine.js';
 import { processDirectMessages } from '../lib/content-engine/HorseMessengerEngine.js';
-import { engineEnabled } from '../lib/content-engine/Fleet.js';
+import { engineEnabled, loadFleet } from '../lib/content-engine/Fleet.js';
 
 async function withDeadline<T>(
   fn: () => Promise<T>,
@@ -35,15 +35,16 @@ async function withDeadline<T>(
     );
     return null;
   }
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       fn(),
-      new Promise<T>((_, reject) =>
-        setTimeout(
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
           () => reject(new Error(`${label} hit deadline`)),
           remaining - 1000,
-        ),
-      ),
+        );
+      }),
     ]);
   } catch (err) {
     console.warn(
@@ -51,6 +52,8 @@ async function withDeadline<T>(
       err instanceof Error ? err.message : err,
     );
     return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -79,6 +82,7 @@ export async function horsesSocialAll(c: Context) {
       comment_skipped?: number;
       reply_reasons?: Record<string, number>;
       skip_reasons?: Record<string, Record<string, number>>;
+      step_ms?: Record<string, number>;
       stopped?: string;
     } = {
       liked: 0,
@@ -89,7 +93,17 @@ export async function horsesSocialAll(c: Context) {
       skipped: [],
       timestamp: new Date().toISOString(),
       skip_reasons: {},
+      step_ms: {},
     };
+
+    // Load the active fleet roster once for all four social steps instead of
+    // repeating 4x paginated loadFleet() scans inside one hourly fire.
+    let sharedFleet: Awaited<ReturnType<typeof loadFleet>> | undefined;
+    try {
+      sharedFleet = await loadFleet();
+    } catch {
+      sharedFleet = undefined;
+    }
 
     // 2026-09-21 (D2): the switch is re-read between steps as well as inside
     // each step's loop, so an engine turned off mid-run starts no new step.
@@ -103,18 +117,20 @@ export async function horsesSocialAll(c: Context) {
       const s = (r as { skip_reasons?: Record<string, number> } | null)?.skip_reasons;
       if (s && Object.keys(s).length) results.skip_reasons![step] = s;
     };
+    const timed = async <T>(step: string, fn: () => Promise<T>): Promise<T | null> => {
+      const t0 = Date.now();
+      const out = await withDeadline(fn, deadline, step);
+      results.step_ms![step] = Date.now() - t0;
+      return out;
+    };
 
-    const likeResult = await withDeadline(() => likePosts(40, true), deadline, 'likes');
+    const likeResult = await timed('likes', () => likePosts(40, true, sharedFleet));
     results.liked = (likeResult as { liked?: number } | null)?.liked ?? 0;
     if (!likeResult) results.skipped.push('likes');
     keepSkips('likes', likeResult);
 
     if (!(await stillOn('comments'))) return c.json({ success: true, ...results });
-    const commentResult = await withDeadline(
-      () => commentOnPosts(20, true),
-      deadline,
-      'comments',
-    );
+    const commentResult = await timed('comments', () => commentOnPosts(20, true, sharedFleet));
     const cr = commentResult as {
       commented?: number; avg_relevance?: number; below_floor?: number;
       stale_drafts?: number; skipped_no_content?: number;
@@ -134,11 +150,7 @@ export async function horsesSocialAll(c: Context) {
     keepSkips('comments', commentResult);
 
     if (!(await stillOn('replies'))) return c.json({ success: true, ...results });
-    const replyResult = await withDeadline(
-      () => replyToComments(12),
-      deadline,
-      'replies',
-    );
+    const replyResult = await timed('replies', () => replyToComments(12, sharedFleet));
     const rr = replyResult as { replied?: number; reply_reasons?: Record<string, number> } | null;
     results.replied = rr?.replied ?? 0;
     // Which rule allowed each reply: the thread engine's decisions, visible.
@@ -147,21 +159,13 @@ export async function horsesSocialAll(c: Context) {
     keepSkips('replies', replyResult);
 
     if (!(await stillOn('reactions'))) return c.json({ success: true, ...results });
-    const reactResult = await withDeadline(
-      () => reactToComments(20),
-      deadline,
-      'reactions',
-    );
+    const reactResult = await timed('reactions', () => reactToComments(20, sharedFleet));
     results.reacted = (reactResult as { reacted?: number } | null)?.reacted ?? 0;
     if (!reactResult) results.skipped.push('reactions');
     keepSkips('reactions', reactResult);
 
     if (!(await stillOn('DMs'))) return c.json({ success: true, ...results });
-    const dmResult = await withDeadline(
-      () => processDirectMessages(),
-      deadline,
-      'DMs',
-    );
+    const dmResult = await timed('DMs', () => processDirectMessages());
     if (!dmResult) results.skipped.push('DMs');
     results.dm = (dmResult as { replied?: number } | null)?.replied ?? 0;
     keepSkips('DMs', dmResult);
