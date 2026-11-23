@@ -30,7 +30,7 @@ import { getSupabase } from '../supabase.js';
 import { engineSwitch, loadFleet, postModeEnabled } from './Fleet.js';
 import { recentPostGuard, type FleetHorse, type RecentPostGuard } from './HorsePublisher.js';
 import { fleetHash } from './FleetScheduler.js';
-import { normalizePhrase, recordPhrase } from './ContentLedger.js';
+import { normalizePhrase, phraseRecentlyUsed, recordPhrase } from './ContentLedger.js';
 import { storyTopicKind, topicsFor } from './SocialTopics.js';
 import {
   composePuzzle,
@@ -704,6 +704,16 @@ async function storyStep(state: RunState, mode: StoryMode, fleet: FleetHorse[]):
     }
     const guard = await guardFor(draft.horse.profile_id);
     if (guard !== 'clear') { count(out.skipped, guard); continue; }
+    try {
+      if (await phraseRecentlyUsed(normalizePhrase(draft.text), draft.horse.profile_id)) {
+        count(out.skipped, 'phrase_recently_used');
+        continue;
+      }
+    } catch (error) {
+      out.failed += 1;
+      pushError(out.errors, `phrase ledger check failed: ${message(error)}`);
+      continue;
+    }
     let outcome: StoryOutcome;
     try {
       outcome = await publishStory(state.supa, mode, draft);
@@ -728,6 +738,7 @@ async function storyStep(state: RunState, mode: StoryMode, fleet: FleetHorse[]):
 export interface Phase7RunResult {
   success: true;
   preview: false;
+  posted: number;
   at: string;
   stopped: Halt | null;
   deadline_hit: boolean;
@@ -853,9 +864,14 @@ export async function runPhase7(options: RunOptions): Promise<Phase7RunResult> {
     }
   }
 
+  const posted =
+    Object.values(puzzles).reduce((sum, item) => sum + item.created, 0)
+    + Object.values(stories).reduce((sum, item) => sum + item.posted, 0);
+
   return {
     success: true,
     preview: false,
+    posted,
     at: state.now.toISOString(),
     stopped: state.halt,
     deadline_hit: state.deadlineHit,

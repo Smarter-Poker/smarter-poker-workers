@@ -552,21 +552,21 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
     const factualSource=sources.find(source=>!preferred.has(source))!;
     const clips=sources.map((source,i)=>({
       id:`clip-${i}`,video_id:`Factual000${i}`,source_url:`https://www.youtube.com/watch?v=Factual000${i}`,
-      source,title:source===factualSource?'Navigating a five-way all-in':'CRAZY FINAL TABLE',duration_seconds:60,
+      source,title:source===factualSource?'Pocket kings in a three-way pot':'CRAZY FINAL TABLE',duration_seconds:60,
     })) as SupplyClip[];
     const good=await voice.writeCaption.getMockImplementation()!(horse(profileId),{});
-    voice.writeCaption.mockImplementation(async (_horse,asset)=>asset.title.includes('five-way')?good:{...good,text:'',stale:true});
+    voice.writeCaption.mockImplementation(async (_horse,asset)=>asset.title.includes('three-way')?good:{...good,text:'',stale:true});
     const result=await publishVideoClip(horse(profileId),'poker',[],'fleet',{poker:clips,sports:[]},`fleet:${profileId}:${SLOT}`);
     expect(result).toMatchObject({success:true,postId:'post-1',reelId:'reel-1'});
     expect(voice.writeCaption).toHaveBeenCalledTimes(1);
-    expect(voice.writeCaption.mock.calls[0]?.[1]).toMatchObject({title:'Navigating a five-way all-in'});
+    expect(voice.writeCaption.mock.calls[0]?.[1]).toMatchObject({title:'Pocket kings in a three-way pot'});
     expect(db.rpcCalls.filter(x=>x.name==='publish_horse_video_reel')).toHaveLength(1);
   });
 
   it('screens past six asset-fresh but meaning-stale factual shorts before choosing the bounded writer candidates', async () => {
     const clips = Array.from({length: 7}, (_,index)=>({id:`clip-${index}`,video_id:`Factual000${index}`,
       source_url:`https://www.youtube.com/watch?v=Factual000${index}`, source:'PokerGO',
-      title:index===6?'Pocket aces in a four-way pot':'Navigating a five-way all-in',duration_seconds:60,
+      title:index===6?'Pocket aces in a four-way pot':'Pocket kings in a three-way pot',duration_seconds:60,
     })) as SupplyClip[];
     freshness.screen.mockResolvedValue({status:'ok', clips:[clips[6]], scanned:7, stale:6, keys:2});
     const result=await publishVideoClip(horse(horseId(0)),'poker',[],'fleet',{poker:clips,sports:[]},'fleet:slot');
@@ -578,7 +578,7 @@ describe('a second insert for the same slot is a duplicate, not a failure', () =
 
   it('does not publish or fall through on unreadable meaning preflight', async () => {
     freshness.screen.mockResolvedValue({status:'unknown',error:'semantic ledger unavailable'});
-    const clip={id:'x',video_id:'Factual0001',source_url:'https://www.youtube.com/watch?v=Factual0001',source:'PokerGO',title:'Navigating a five-way all-in',duration_seconds:60} as SupplyClip;
+    const clip={id:'x',video_id:'Factual0001',source_url:'https://www.youtube.com/watch?v=Factual0001',source:'PokerGO',title:'Pocket kings in a three-way pot',duration_seconds:60} as SupplyClip;
     const result=await publishVideoClip(horse(horseId(0)),'poker',[],'fleet',{poker:[clip],sports:[]},'fleet:slot');
     expect(result).toMatchObject({success:false,outcome:'unknown'});
     expect(voice.writeCaption).not.toHaveBeenCalled();

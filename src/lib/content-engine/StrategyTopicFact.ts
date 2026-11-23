@@ -26,6 +26,9 @@ export function strategyTopicFact(brief:PostBrief):CaptionFact|null{
    ['Phil Galfond',/^The Biggest Mistake Poker Players Make With Their Bankroll$/i,'bankroll_mistakes','Bankroll mistakes in poker'],
    ['Phil Galfond',/^When Shot Taking Can Be a Mistake$/i,'shot_taking','When taking a shot can be a mistake'],
    ['Phil Galfond',/^The Right Way to Approach Poker Strategy Decisions$/i,'decision_process','Approaching poker strategy decisions'],
+   ['Phil Galfond',/^Why You Need to Understand GTO to Play Poker$/i,'understanding_gto','Understanding GTO in poker'],
+   ['Phil Galfond',/^(?:Poker Players: )?Why a Higher Win Rate Can Be Better Than Higher Stakes$/i,'winrate_vs_stakes','Higher win rate versus higher stakes in poker'],
+   ['PokerCoaching',/^THE TOURNAMENT MASTERCLASS(?: \[Run Deep in MTTs\])?$/i,'mtt_deep_runs','Running deep in multi-table tournaments'],
    ['Mariano',/^The Nut Flush Draw Trap!$/i,'nut_flush_draw','A nut-flush-draw scenario'],
   ];
   const lesson=lessons.find(([source,pattern])=>brief.source?.toLowerCase()===source.toLowerCase()&&pattern.test(title));
