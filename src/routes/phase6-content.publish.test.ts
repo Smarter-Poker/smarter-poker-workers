@@ -442,6 +442,42 @@ describe('P6C-06/03: the whole event window, without junk', () => {
     expect(db.writes()).toHaveLength(0);
   });
 
+  it('uses genuine venue profile_photo_url when cover_photo_url is null, and still rejects logos', async () => {
+    const db = world();
+    enableOnly('local_event');
+    db.tables.set('poker_venues', [{
+      id: 'venue-1',
+      cover_photo_url: null,
+      profile_photo_url: 'https://cdn.example/venues/bell-room-profile.jpg',
+    }]);
+    const result = (await live()).results.local_event!;
+    expect(result.posted).toBe(1);
+    expect(db.inserts('social_posts')[0]).toMatchObject({
+      link_image: 'https://cdn.example/venues/bell-room-profile.jpg',
+    });
+
+    const dbLogo = world();
+    enableOnly('local_event');
+    dbLogo.tables.set('poker_venues', [{
+      id: 'venue-1',
+      cover_photo_url: null,
+      profile_photo_url: 'https://cdn.example/venues/bell-room-logo.png',
+    }]);
+    const logoResult = (await live()).results.local_event!;
+    expect(logoResult.posted).toBe(0);
+    expect(logoResult.skipped.media_unavailable).toBeGreaterThan(0);
+  });
+
+  it('skips club_member_daily_stats scan on live runs when club digest key is already published', async () => {
+    const db = world();
+    enableOnly('club_data_digest');
+    db.seed('social_page_posts', [{ id: 'done-1', page_id: PAGE, metadata: { publication_key: `phase6:club:day:${CLUB}:2026-09-21` } }]);
+    const result = (await live()).results.club_data_digest!;
+    expect(result.posted).toBe(0);
+    expect(result.skipped.duplicate).toBe(1);
+    expect(db.calls.filter((call) => call.table === 'club_member_daily_stats')).toHaveLength(0);
+  });
+
   it('finds a horse-city listing beyond the first 1,000 rows of the window', async () => {
     const filler = Array.from({ length: 2500 }, (_, i) => event(`f${String(i).padStart(4, '0')}`, {
       city: 'Elsewhere', state: 'ZZ', specific_date: i < 1250 ? '2026-09-22' : '2026-09-24',

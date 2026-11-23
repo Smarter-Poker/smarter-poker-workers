@@ -102,7 +102,7 @@ export interface Phase6Draft {
 }
 
 const BAD_SOURCE_TEXT = /(?:agency_|iframe|javascript|undefined|unknown|untitled|null)/i;
-const CLEAN_COPY = /[\u{1F000}-\u{1FAFF}\u2600-\u27BF]/gu;
+const CLEAN_COPY = /[\u{1F000}-\u{1FAFF}\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]|\p{Extended_Pictographic}/gu;
 
 export function cleanSourceText(value: string | null | undefined, max = 120): string | null {
   const clean = String(value ?? '')
@@ -174,6 +174,11 @@ function daysBetween(fromIso: string, toIso: string): number {
 // club_data_digest
 // ---------------------------------------------------------------------------
 
+export function clubDigestPublicationKey(clubId: string, period: ClubDigestPeriod): string {
+  const periodKey = period.weekly ? `${period.start}:${period.end}` : period.end;
+  return `phase6:club:${period.weekly ? 'week' : 'day'}:${clubId}:${periodKey}`;
+}
+
 /**
  * One digest per club and exact period. Hands and chips come from the club's
  * daily aggregate rows inside the period; the biggest pot and the leader are
@@ -217,13 +222,12 @@ export function buildClubDigestDraft(
       ? `${leaderName} finished the week on top of the club at +${formatCount(leaderProfit)}.`
       : `${leaderName} had the best day in the club at +${formatCount(leaderProfit)}.`);
   }
-  const periodKey = period.weekly ? `${period.start}:${period.end}` : period.end;
   return {
     mode: 'club_data_digest',
     authorId: page.owner_id,
     pageId: page.id,
     content: sentences.join(' '),
-    publicationKey: `phase6:club:${period.weekly ? 'week' : 'day'}:${page.linked_entity_id}:${periodKey}`,
+    publicationKey: clubDigestPublicationKey(page.linked_entity_id, period),
     sourceId: page.linked_entity_id,
     grounding: [
       ...inPeriod
@@ -580,27 +584,47 @@ export function sportsInSeason(now: Date): Sport[] {
     .filter((sport) => SEASON_WINDOWS[sport].some(([start, end]) => mmdd >= start && mmdd <= end));
 }
 
+/**
+ * Day of the month (1..20) when a city's monthly seasonal note unlocks, so
+ * cities stagger across the month instead of firing all ~24 on Day 1.
+ */
+export function seasonalReleaseDay(publicationKey: string): number {
+  return 1 + (fleetHash(publicationKey, 'phase6-season-day') % 20);
+}
+
 function seasonalCopy(seed: string, sport: Sport, team: string, city: string): string {
   const frames: Record<Sport, string[]> = {
     football: [
       `Football's rolling in ${city}. I'll be sneaking looks at the ${team} score between hands.`,
       `It's ${team} season around ${city}. Anybody else trying to follow the game and play a big pot at the same time?`,
       `Football's back on in ${city}. Rooting for the ${team} and trying not to let it tilt me at the tables.`,
+      `The card rooms around ${city} always feel livelier when ${team} football's on. Hard not to glance up at the screen.`,
+      `Nothing slows down a table in ${city} like a close ${team} drive. I'm trying to stay focused on my own range.`,
+      `Sunday sessions in ${city} hit different with the ${team} on in the background. Don't ask me to tank during fourth down.`,
     ],
     baseball: [
       `Still baseball season in ${city}. I'll take a ${team} game on in the background over a quiet card room any day.`,
       `${team} baseball's still going in ${city}. Anybody else keeping one eye on the score while they play?`,
       `It's still ${team} season in ${city}. A ballgame on and a few orbits to play sounds about right.`,
+      `Baseball's the easiest sport to sweat at a ${city} table. You don't miss a hand checking in on the ${team}.`,
+      `A long session in ${city} goes faster when the ${team} are on the TVs. Can't beat nine innings and deep stacks.`,
+      `It's hard to beat a quiet ${city} afternoon with ${team} baseball on and a steady game running.`,
     ],
     hockey: [
       `Hockey's on in ${city}. I'll have the ${team} on somewhere while I play.`,
       `It's ${team} season in ${city}. Watching hockey and playing a tough spot at the same time is a skill I'm still working on.`,
       `${team} hockey's on in ${city}. Anybody else sweating a game and a session at once?`,
+      `Hard to keep your eyes off the screen in ${city} when the ${team} are in a tight third period. Doesn't help my river decisions.`,
+      `Card rooms in ${city} always pick up a little extra energy once ${team} hockey's rolling.`,
+      `I'm not saying the ${team} affect my session in ${city}, I'm just saying I play tighter during power plays.`,
     ],
     basketball: [
       `${team} basketball's on in ${city}. Somebody tell me how to play a big pot and watch a close game at the same time.`,
       `It's ${team} season in ${city}. Hoops in the background, cards in front of me. Can't complain.`,
       `Basketball's on in ${city}. Anybody else keeping the ${team} on while they play?`,
+      `Late-night ${city} tables always slow down in the fourth quarter when the ${team} are playing. Can't blame anybody.`,
+      `Hoops season around ${city} means half the table's checking ${team} box scores between hands.`,
+      `It's good having the ${team} back on in ${city}. Gives me something to watch while I'm folding seven-deuce.`,
     ],
   };
   const options = frames[sport];
