@@ -1,11 +1,12 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
-const db=vi.hoisted(()=>({rows:[] as Record<string,unknown>[],queries:[] as {table:string;limit:number;source:string[];order:string;active:boolean;valid:boolean}[],fail:'',durationIds:[] as string[]}));
+const db=vi.hoisted(()=>({rows:[] as Record<string,unknown>[],queries:[] as {table:string;limit:number;source:string[];order:string;active:boolean;valid:boolean;noSlots:boolean}[],fail:'',durationIds:[] as string[]}));
 vi.mock('../supabase.js',()=>({getSupabase:()=>({from:(table:string)=>{
-  const state={table,limit:1000,source:[] as string[],order:'',active:false,valid:false};
+  const state={table,limit:1000,source:[] as string[],order:'',active:false,valid:false,noSlots:false};
   const q:Record<string,unknown>={};
   q.select=()=>q;q.order=(column:string)=>{state.order=column;return q;};q.limit=(n:number)=>{state.limit=n;return q;};
   q.eq=(column:string,value:unknown)=>{if(column==='is_active'&&value===true)state.active=true;return q;};
   q.not=(column:string,op:string,value:unknown)=>{if(column==='oembed_ok'&&op==='is'&&value===false)state.valid=true;return q;};
+  q.or=(expr:string)=>{if(expr==='category.is.null,category.neq.slots')state.noSlots=true;return q;};
   q.in=(column:string,values:string[])=>{if(column==='source')state.source=values;if(column==='youtube_video_id')db.durationIds.push(...values);return q;};
   q.then=(resolve:(value:unknown)=>void)=>{
     if(table==='video_library_videos'){resolve({data:[],error:null});return;}
@@ -13,7 +14,7 @@ vi.mock('../supabase.js',()=>({getSupabase:()=>({from:(table:string)=>{
     if(db.fail==='missing'){resolve({data:null,error:null});return;}
     if(db.fail==='throw')throw new Error('transport lost');
     if(db.fail===(state.source.length?'rich':'global')){resolve({data:null,error:{message:'unreadable'}});return;}
-    const rows=db.rows.filter(r=>(!state.source.length||state.source.includes(String(r.source)))&&(!state.active||r.is_active===true)&&(!state.valid||r.oembed_ok!==false));
+    const rows=db.rows.filter(r=>(!state.source.length||state.source.includes(String(r.source)))&&(!state.active||r.is_active===true)&&(!state.valid||r.oembed_ok!==false)&&(!state.noSlots||r.category==null||r.category!=='slots'));
     resolve({data:rows.slice(0,state.limit),error:null});
   };return q;
 }})}));
@@ -61,7 +62,7 @@ describe('bounded balanced platform source snapshot',()=>{
     expect(result.status).toBe('ok');if(result.status!=='ok')return;
     expect(result.clips.map(r=>r.id)).toEqual(['row1','row3','row4']);
     expect(db.queries.map(q=>q.limit)).toEqual([1,2]);
-    expect(db.queries[1]!.source).toEqual(['NBA','MLB']);
+    expect(db.queries[1]!.source).toEqual(['NBA','MLB','NFL','NHL','NFL Films','NBA on TNT','Premier League','SportsCenter','FOX Sports','CBS Sports']);
     expect(db.queries.every(q=>q.order==='created_at')).toBe(true);
   });
   it('does not admit inactive or oembed-rejected poker rows from the rich half',async()=>{

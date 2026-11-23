@@ -91,30 +91,18 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * arriving at the source level instead.
  */
 const THROTTLE_PAGE_BYTES = 5_000;
-
 /**
- * What one request to YouTube established.
- *
- *   ok        - YouTube answered with a page or feed we can read.
- *   missing   - YouTube said the thing does not exist: 404 or 410. This is the
- *               ONLY response that counts as evidence against a source.
- *   no-answer - everything else: 429 and 5xx (throttled), 403 (bot detection;
- *               revalidate-poker-clips reads it the same way), any other
- *               status, a timeout, a dropped connection, the ~755-byte throttle
- *               page, and - for callers that check the document - a 200 that is
- *               not what was asked for, such as a consent or bot-check page.
- *               None of these says anything about the channel.
- *
- * 2026-09-20: this used to report only `throttled`, and every status that was
- * neither 429 nor 5xx came back as `throttled: false`, which the caller charged
- * to the channel. From 2026-09-08 every 05:20 UTC run read zero videos from all
- * 25 channels it visited and each of those reads was charged; with a good read
- * never clearing the count (see sourcePatch), live channels were retired.
+ * Valid YouTube channel Atom feeds with 0-3 entries are legitimately 400-4,500
+ * bytes. `isAtomFeed()` independently rejects HTML throttle/interstitial pages,
+ * so Atom feeds must not be discarded by the 5 KB HTML channel-page floor.
  */
+const MIN_ATOM_FEED_BYTES = 120;
+
 export type ReadOutcome = 'ok' | 'missing' | 'no-answer';
 
 async function fetchText(
   url: string,
+  minBytes = THROTTLE_PAGE_BYTES,
 ): Promise<{ body: string | null; throttled: boolean; outcome: ReadOutcome }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
@@ -126,8 +114,8 @@ async function fetchText(
     }
     if (!res.ok) return { body: null, throttled: true, outcome: 'no-answer' };
     const body = await res.text();
-    // A 200 this small is the throttle page, not a channel.
-    if (body.length < THROTTLE_PAGE_BYTES) return { body: null, throttled: true, outcome: 'no-answer' };
+    // A 200 smaller than the expected document floor is a throttle stub.
+    if (body.length < minBytes) return { body: null, throttled: true, outcome: 'no-answer' };
     return { body, throttled: false, outcome: 'ok' };
   } catch {
     clearTimeout(timer);
@@ -215,20 +203,21 @@ function decodeEntities(s: string): string {
  * Poker.org, PokerNews and Upswing Poker News - and newsSources('poker'),
  * which reads only active rss rows, has had nothing to offer a horse since.
  */
-async function dueSources(): Promise<SourceRow[]> {
+async function dueSources(): Promise<{ sources: SourceRow[]; error: string | null }> {
   const { data, error } = await getSupabase()
     .from('content_sources')
     .select('id, name, handle, channel_id, category, consecutive_failures')
     .eq('domain', 'poker')
     .eq('kind', 'youtube_channel')
     .eq('is_active', true)
+    .or('category.is.null,category.neq.slots')
     .order('last_scraped_at', { ascending: true, nullsFirst: true })
     .limit(CONFIG.MAX_SOURCES_PER_RUN);
   if (error) {
     console.warn('[scrape-poker-clips] source read failed:', error.message);
-    return [];
+    return { sources: [], error: error.message };
   }
-  return (data ?? []) as SourceRow[];
+  return { sources: (data ?? []) as SourceRow[], error: null };
 }
 
 /**
@@ -336,7 +325,7 @@ export async function importFromVideoLibrary(): Promise<{ found: number; saved: 
     .not('youtube_video_id', 'is', null)
     .in('source_name', rawNames)
     .order('published_at', { ascending: false, nullsFirst: false })
-    .limit(1500);
+    .limit(1000);
   if (vErr) {
     console.warn('[scrape-poker-clips] video library read failed:', vErr.message);
     return { found: 0, saved: 0 };
@@ -391,7 +380,11 @@ export async function importFromVideoLibrary(): Promise<{ found: number; saved: 
 
 export async function scrapePokerClips(c: Context) {
   const started = Date.now();
-  const sources = await dueSources();
+  const due = await dueSources();
+  if (due.error) {
+    return c.json({ success: false, error: due.error }, 500);
+  }
+  const sources = due.sources;
   let scanned = 0;
   let found = 0;
   let saved = 0;
@@ -427,7 +420,10 @@ export async function scrapePokerClips(c: Context) {
       continue;
     }
 
-    const feed = await fetchText(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
+    const feed = await fetchText(
+      `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`,
+      MIN_ATOM_FEED_BYTES,
+    );
     if (feed.outcome === 'missing') {
       accused.push({ source, channelId });
       await delay(CONFIG.REQUEST_DELAY_MS);
@@ -505,7 +501,8 @@ export async function scrapePokerClips(c: Context) {
   const { count: poolSize } = await getSupabase()
     .from('poker_clips')
     .select('*', { count: 'exact', head: true })
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .or('category.is.null,category.neq.slots');
 
   return c.json({
     success: true,

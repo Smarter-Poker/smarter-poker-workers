@@ -18,6 +18,7 @@ import { getSupabase } from '../lib/supabase.js';
 
 interface Source {
   name: string;
+  kind: 'rss' | 'html';
   primary: string;
   fallbacks: string[];
 }
@@ -25,20 +26,43 @@ interface Source {
 const SOURCES: Source[] = [
   {
     name: 'PokerNews',
+    kind: 'rss',
     primary: 'https://www.pokernews.com/rss.php',
-    fallbacks: ['https://www.pokernews.com/news.rss', 'https://www.pokernews.com/news/'],
+    fallbacks: ['https://www.pokernews.com/news.rss'],
   },
-  { name: 'MSPT', primary: 'https://msptpoker.com/pages/Magazine.aspx', fallbacks: ['https://msptpoker.com/'] },
+  {
+    name: 'MSPT',
+    kind: 'html',
+    primary: 'https://msptpoker.com/pages/Magazine.aspx',
+    fallbacks: ['https://msptpoker.com/'],
+  },
   {
     name: 'CardPlayer',
+    kind: 'rss',
     primary: 'https://www.cardplayer.com/poker-news.rss',
-    fallbacks: ['https://www.cardplayer.com/rss/news.xml', 'https://www.cardplayer.com/poker-news'],
+    fallbacks: ['https://www.cardplayer.com/rss/news.xml'],
   },
-  { name: 'WSOP', primary: 'https://www.wsop.com/news/', fallbacks: ['https://www.wsop.com/'] },
-  { name: 'Poker.org', primary: 'https://www.poker.org/feed', fallbacks: ['https://www.poker.org/'] },
-  { name: 'Pokerfuse', primary: 'https://pokerfuse.com/', fallbacks: ['https://pokerfuse.com/latest-news/'] },
+  {
+    name: 'WSOP',
+    kind: 'html',
+    primary: 'https://www.wsop.com/news/',
+    fallbacks: ['https://www.wsop.com/'],
+  },
+  {
+    name: 'Poker.org',
+    kind: 'rss',
+    primary: 'https://www.poker.org/feed',
+    fallbacks: [],
+  },
+  {
+    name: 'Pokerfuse',
+    kind: 'html',
+    primary: 'https://pokerfuse.com/',
+    fallbacks: ['https://pokerfuse.com/latest-news/'],
+  },
   {
     name: 'PokerNews Videos (YouTube)',
+    kind: 'rss',
     primary: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCSu1ww_wgD0XD66C1ESrIGQ',
     fallbacks: [],
   },
@@ -47,52 +71,68 @@ const SOURCES: Source[] = [
 const HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xml,application/rss+xml;q=0.9,*/*;q=0.8',
+  Accept: 'application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,text/html;q=0.8,*/*;q=0.7',
 };
 
-async function checkSource(url: string): Promise<{ ok: boolean; status: number; error?: string }> {
+export function isValidFeedBody(body: string): boolean {
+  const head = body.trimStart().slice(0, 2048);
+  if (!head) return false;
+  if (/^(?:<!doctype\s+html|<html[\s>])/i.test(head)) return false;
+  return /<(?:rss|feed|rdf:RDF)[\s>]/i.test(head);
+}
+
+async function checkSource(
+  url: string,
+  kind: Source['kind'],
+): Promise<{ ok: boolean; status: number; error?: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
     const res = await fetch(url, { headers: HEADERS, signal: controller.signal });
-    clearTimeout(timeout);
-    return { ok: res.status === 200, status: res.status };
+    if (res.status !== 200) {
+      return { ok: false, status: res.status };
+    }
+    if (kind === 'rss') {
+      const body = typeof res.text === 'function' ? await res.text() : '';
+      if (!isValidFeedBody(body)) {
+        return { ok: false, status: res.status, error: 'not_valid_xml_feed' };
+      }
+    }
+    return { ok: true, status: res.status };
   } catch (e) {
     return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 /**
- * Try each fallback and, when one answers, ACTUALLY SWITCH TO IT.
- *
- * This function used to write a `system_logs` row saying
- * "<source>: Switched from <old> to <new>" and then return - it changed
- * nothing anywhere. The message was true about intent and false about the
- * world: the feed the horses read was a literal in HorsePublisher.ts, which
- * no log line can reach. An auto-fix that only announces itself is worse than
- * none, because the log says the problem was handled.
- *
- * Phase 4 put the feeds in `content_sources`, so there is now somewhere to
- * write the repair. The log row is kept - it is the audit trail - but the
- * UPDATE is what makes it true, and `applied` records which of the two
- * happened.
+ * Try each fallback and, when one answers with a valid document of the same
+ * kind (RSS feeds must return real XML, never an HTML homepage), switch the
+ * registry row to it. Only report `applied: true` when an active registry row
+ * was actually updated.
  */
 async function tryFallbacks(
   source: Source,
   configPath: string,
-): Promise<{ fixed: boolean; new_url?: string; applied?: boolean }> {
+): Promise<{ fixed: boolean; new_url?: string; applied: boolean }> {
   const supabase = getSupabase();
   for (const fallback of source.fallbacks) {
-    const result = await checkSource(fallback);
+    const result = await checkSource(fallback, source.kind);
     if (!result.ok) continue;
 
-    const { error: upErr, count } = await supabase
-      .from('content_sources')
-      .update({ feed_url: fallback, updated_at: new Date().toISOString() }, { count: 'exact' })
-      .eq('kind', 'rss')
-      .eq('feed_url', source.primary);
-    const applied = !upErr && (count ?? 0) > 0;
-    if (upErr) console.warn('[content-health] could not apply the fallback:', upErr.message);
+    let applied = false;
+    let rowsUpdated = 0;
+    if (source.kind === 'rss') {
+      const { error: upErr, count } = await supabase
+        .from('content_sources')
+        .update({ feed_url: fallback, updated_at: new Date().toISOString() }, { count: 'exact' })
+        .eq('kind', 'rss')
+        .eq('feed_url', source.primary);
+      rowsUpdated = count ?? 0;
+      applied = !upErr && rowsUpdated > 0;
+      if (upErr) console.warn('[content-health] could not apply the fallback:', upErr.message);
+    }
 
     await supabase.from('system_logs').insert({
       type: 'content_health_autofix',
@@ -105,12 +145,12 @@ async function tryFallbacks(
         new_url: fallback,
         config_path: configPath,
         auto_fixed: applied,
-        rows_updated: count ?? 0,
+        rows_updated: rowsUpdated,
       },
     });
     return { fixed: true, new_url: fallback, applied };
   }
-  return { fixed: false };
+  return { fixed: false, applied: false };
 }
 
 export async function contentHealthCheck(c: Context) {
@@ -131,15 +171,23 @@ export async function contentHealthCheck(c: Context) {
   };
 
   for (const source of SOURCES) {
-    const check = await checkSource(source.primary);
+    const check = await checkSource(source.primary, source.kind);
     if (check.ok) {
       results.sources.push({ name: source.name, status: 'healthy' });
       results.healthy++;
     } else if (source.fallbacks.length > 0) {
       const fix = await tryFallbacks(source, 'pages/api/cron/news-scraper.js');
-      if (fix.fixed) {
+      if (fix.fixed && fix.applied) {
         results.sources.push({ name: source.name, status: 'auto_fixed', new_url: fix.new_url });
         results.auto_fixed++;
+      } else if (fix.fixed && !fix.applied) {
+        results.sources.push({
+          name: source.name,
+          status: 'fallback_not_applied',
+          new_url: fix.new_url,
+        });
+        results.failed++;
+        results.needs_attention.push(source.name);
       } else {
         results.sources.push({ name: source.name, status: 'failed' });
         results.failed++;

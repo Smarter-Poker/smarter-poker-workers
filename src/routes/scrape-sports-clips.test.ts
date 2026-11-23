@@ -4,6 +4,7 @@ const db = vi.hoisted(() => ({
   existing: [] as Array<{ source_url: string; title: string | null }>,
   inserted: [] as Array<Record<string, unknown>>,
   updated: [] as Array<{ source_url: string; patch: Record<string, unknown> }>,
+  insertError: null as { message: string; code?: string } | null,
 }));
 
 vi.mock('../lib/supabase.js', () => ({
@@ -24,7 +25,7 @@ vi.mock('../lib/supabase.js', () => ({
       };
       chain.insert = (row: Record<string, unknown>) => {
         state.op = 'insert';
-        db.inserted.push(row);
+        if (!db.insertError) db.inserted.push(row);
         return chain;
       };
       chain.update = (patch: Record<string, unknown>) => {
@@ -41,7 +42,11 @@ vi.mock('../lib/supabase.js', () => ({
         }
         return chain;
       };
-      chain.maybeSingle = () => Promise.resolve({ data: { id: 'saved' }, error: null });
+      chain.maybeSingle = () => Promise.resolve(
+        db.insertError
+          ? { data: null, error: db.insertError }
+          : { data: { id: 'saved' }, error: null },
+      );
       chain.then = (
         resolve: (value: unknown) => unknown,
         reject?: (reason: unknown) => unknown,
@@ -56,6 +61,7 @@ vi.mock('../lib/supabase.js', () => ({
 }));
 
 import {
+  SPORTS_CHANNELS,
   capClipsRoundRobin,
   createOEmbedFallbackState,
   parseYouTubeShortsPage,
@@ -168,6 +174,7 @@ beforeEach(() => {
   db.existing = [];
   db.inserted = [];
   db.updated = [];
+  db.insertError = null;
 });
 
 afterEach(() => {
@@ -230,8 +237,8 @@ describe('sports Shorts metadata integrity', () => {
     expect(c.body).toMatchObject({
       success: true,
       dry_run: true,
-      channels_scraped: 38,
-      channels_with_clips: 38,
+      channels_scraped: 35,
+      channels_with_clips: 35,
       found: 2,
       saved: 0,
       repaired: 0,
@@ -254,15 +261,24 @@ describe('sports Shorts metadata integrity', () => {
     await vi.runAllTimersAsync();
     await pending;
 
-    expect(startedAt).toHaveLength(38);
-    expect(startedAt.at(-1)! - startedAt[0]!).toBe(37 * 1_500);
+    expect(startedAt).toHaveLength(35);
+    expect(startedAt.at(-1)! - startedAt[0]!).toBe(34 * 1_500);
     expect(c.body).toMatchObject({
       success: true,
       dry_run: true,
-      channels_scraped: 38,
-      channels_with_clips: 38,
+      channels_scraped: 35,
+      channels_with_clips: 35,
       found: 2,
     });
+  });
+
+  it('keeps channel handles unique and counts 23505 video_id conflicts as skipped rather than failed', async () => {
+    const handles = SPORTS_CHANNELS.map((ch) => ch.handle.toLowerCase());
+    expect(new Set(handles).size).toBe(handles.length);
+
+    db.insertError = { code: '23505', message: 'duplicate key value violates unique constraint "sports_clips_video_id_key"' };
+    const result = await saveClips([clip(VIDEO_A, 'Ohtani launches a walk off home run')]);
+    expect(result).toEqual({ saved: 0, skipped: 1, repaired: 0, failed: 0 });
   });
 
   it('uses bounded oEmbed metadata only when a renderer title is unusable', async () => {

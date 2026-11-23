@@ -8,25 +8,45 @@
 import { describe, it, expect, vi } from 'vitest';
 const clipDb = vi.hoisted(() => ({
   clips: [] as Array<Record<string, unknown>>,
+  sources: [] as Array<Record<string, unknown>>,
   durations: [] as Array<Record<string, unknown>>,
   libraryError: false,
   libraryChunks: [] as string[][],
 }));
 vi.mock('../supabase.js', () => ({ getSupabase: () => ({ from: (table: string) => {
   let ids: string[] = [];
+  const filters: Array<(row: Record<string, unknown>) => boolean> = [];
   const q: Record<string, unknown> = {};
-  for (const method of ['select', 'eq', 'not', 'order', 'limit']) q[method] = () => q;
-  q.in = (_column: string, values: string[]) => { ids = values; return q; };
+  for (const method of ['select', 'not', 'order', 'limit']) q[method] = () => q;
+  q.eq = (col: string, val: unknown) => {
+    filters.push(row => col in row ? row[col] === val : true);
+    return q;
+  };
+  q.or = (expr: string) => {
+    if (expr === 'category.is.null,category.neq.slots') {
+      filters.push(row => row.category == null || row.category !== 'slots');
+    }
+    return q;
+  };
+  q.in = (column: string, values: string[]) => {
+    if (table === 'video_library_videos') ids = values;
+    else filters.push(row => values.includes(String(row[column])));
+    return q;
+  };
   q.then = (resolve: (value: unknown) => void) => {
     if (table === 'video_library_videos') {
       clipDb.libraryChunks.push(ids);
       resolve({ data: clipDb.durations.filter(row => ids.includes(String(row.youtube_video_id))),
         error: clipDb.libraryError ? { message: 'duration metadata unavailable' } : null });
-    } else resolve({ data: table === 'content_sources' ? [] : clipDb.clips, error: null });
+    } else if (table === 'content_sources') {
+      resolve({ data: clipDb.sources.filter(row => filters.every(fn => fn(row))), error: null });
+    } else {
+      resolve({ data: clipDb.clips.filter(row => filters.every(fn => fn(row))), error: null });
+    }
   };
   return q;
 } }) }));
-import { sliceForHorse, sportsShareFor, SOURCES_PER_HORSE, platformCandidateClips, clipDurationSeconds, clipFormatPriority, preferShortClips } from './ClipSupply.js';
+import { sliceForHorse, sportsShareFor, SOURCES_PER_HORSE, platformCandidateClips, activeSources, pokerChannelIndex, clipDurationSeconds, clipFormatPriority, preferShortClips } from './ClipSupply.js';
 import { parseChannelFeed } from '../../routes/scrape-poker-clips.js';
 import { briefForPost } from './PostBrief.js';
 import { composeCaption, agentOf, anchorOf } from './Composer.js';
@@ -321,6 +341,32 @@ describe('a poker feed does not fill with slots', () => {
     );
     expect(src).toContain(".in('source_name', rawNames)");
     expect(src).not.toContain('[...byName.keys()]');
+  });
+
+  it('excludes slots channels and RSS rows from activeSources, pokerChannelIndex, and platformCandidateClips', async () => {
+    clipDb.sources = [
+      { id: '1', name: 'PokerGO', domain: 'poker', kind: 'youtube_channel', is_active: true, category: 'broadcast', handle: '@PokerGO', channel_id: 'UC1', sport: null, consecutive_failures: 0, aliases: ['PG'] },
+      { id: '2', name: 'Lady Luck HQ', domain: 'poker', kind: 'youtube_channel', is_active: true, category: 'slots', handle: '@LadyLuckHQ', channel_id: 'UC2', sport: null, consecutive_failures: 0, aliases: [] },
+      { id: '3', name: 'PokerNews', domain: 'poker', kind: 'rss', is_active: true, category: null, handle: null, channel_id: null, sport: null, consecutive_failures: 0, aliases: [] },
+      { id: '4', name: 'Retired Channel', domain: 'poker', kind: 'youtube_channel', is_active: false, category: 'clip', handle: '@Retired', channel_id: 'UC4', sport: null, consecutive_failures: 6, aliases: [] },
+    ];
+    clipDb.clips = [
+      { id: 'p1', video_id: 'pokerclip01', source_url: 'https://www.youtube.com/watch?v=pokerclip01', source: 'PokerGO', title: 'Phil Ivey river bluff', category: 'broadcast', oembed_ok: true, is_active: true },
+      { id: 's1', video_id: 'slotsclip01', source_url: 'https://www.youtube.com/watch?v=slotsclip01', source: 'Lady Luck HQ', title: 'MASSIVE JACKPOT ON DRAGON LINK', category: 'slots', oembed_ok: true, is_active: true },
+    ];
+    clipDb.durations = [];
+
+    const active = await activeSources('poker');
+    expect(active.map((s) => s.name)).toEqual(['PokerGO']);
+
+    const index = await pokerChannelIndex();
+    expect(index.rawNames).toEqual(['PokerGO', 'PG']);
+
+    const pool = await platformCandidateClips('poker');
+    expect(pool.status).toBe('ok');
+    if (pool.status === 'ok') {
+      expect(pool.clips.map((c) => c.video_id)).toEqual(['pokerclip01']);
+    }
   });
 });
 

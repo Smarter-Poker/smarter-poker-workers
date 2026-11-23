@@ -20,13 +20,21 @@ import type { Context } from 'hono';
 import RssParser from 'rss-parser';
 import { getSupabase } from '../lib/supabase.js';
 import { extractArticleImageUrl } from '../lib/content-engine/NewsImage.js';
+import { newsSources } from '../lib/content-engine/ClipSupply.js';
 
 const SYSTEM_UUID = '00000000-0000-0000-0000-000000000001';
 
 const CONFIG = {
   NEWS_COOLDOWN_HOURS: 6,
   MAX_SUMMARY_LENGTH: 200,
+  FETCH_TIMEOUT_MS: 10_000,
 } as const;
+
+const FEED_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: 'application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8',
+};
 
 interface NewsSource {
   name: string;
@@ -35,12 +43,21 @@ interface NewsSource {
   priority: number;
 }
 
-const NEWS_SOURCES: NewsSource[] = [
-  { name: 'PokerNews', rss: 'https://www.pokernews.com/news.rss', icon: '🃏', priority: 1 },
-  { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news/rss', icon: '♠️', priority: 2 },
-  { name: 'PokerListings', rss: 'https://www.pokerlistings.com/feed', icon: '🃏', priority: 3 },
-  { name: 'Poker.org', rss: 'https://www.poker.org/feed/', icon: '♦️', priority: 4 },
+/**
+ * Fallback feeds used ONLY when `content_sources` is unreadable.
+ * Uses the verified working XML RSS endpoints rather than dead/HTML URLs.
+ */
+const FALLBACK_NEWS_SOURCES: NewsSource[] = [
+  { name: 'PokerNews', rss: 'https://www.pokernews.com/rss.php', icon: '🃏', priority: 1 },
+  { name: 'CardPlayer', rss: 'https://www.cardplayer.com/poker-news.rss', icon: '♠️', priority: 2 },
 ];
+
+const SOURCE_META: Record<string, { icon: string; priority: number }> = {
+  pokernews: { icon: '🃏', priority: 1 },
+  cardplayer: { icon: '♠️', priority: 2 },
+  'poker.org': { icon: '♦️', priority: 3 },
+  'upswing poker news': { icon: '♣️', priority: 4 },
+};
 
 interface Article {
   title: string;
@@ -54,7 +71,45 @@ interface Article {
   imageUrl: string | null;
 }
 
+interface FetchNewsResult {
+  articles: Article[];
+  feedsAttempted: number;
+  feedsSucceeded: number;
+  feedErrors: Array<{ source: string; url: string; error: string }>;
+}
+
 const rssParser = new RssParser();
+
+async function resolveNewsSources(): Promise<NewsSource[]> {
+  const fromRegistry = await newsSources('poker');
+  if (fromRegistry === null) return FALLBACK_NEWS_SOURCES;
+  return fromRegistry.map((row, idx) => {
+    const meta = SOURCE_META[row.name.toLowerCase()];
+    return {
+      name: row.name,
+      rss: row.feed_url,
+      icon: meta?.icon ?? '♠️',
+      priority: meta?.priority ?? 10 + idx,
+    };
+  });
+}
+
+async function fetchFeedXml(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG.FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { headers: FEED_HEADERS, signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.text();
+    const head = body.trimStart().slice(0, 2048);
+    if (/^(?:<!doctype\s+html|<html[\s>])/i.test(head) || !/<(?:rss|feed|rdf:RDF)[\s>]/i.test(head)) {
+      throw new Error('response_not_xml_feed');
+    }
+    return body;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function categorizeArticle(title: string): Article['category'] {
   const t = title.toLowerCase();
@@ -64,12 +119,17 @@ function categorizeArticle(title: string): Article['category'] {
   return 'news';
 }
 
-async function fetchLatestNews(): Promise<Article[]> {
+async function fetchLatestNews(): Promise<FetchNewsResult> {
+  const sources = await resolveNewsSources();
   const all: Article[] = [];
+  const feedErrors: Array<{ source: string; url: string; error: string }> = [];
+  let feedsSucceeded = 0;
 
-  for (const source of NEWS_SOURCES) {
+  for (const source of sources) {
     try {
-      const feed = await rssParser.parseURL(source.rss);
+      const xml = await fetchFeedXml(source.rss);
+      const feed = await rssParser.parseString(xml);
+      feedsSucceeded++;
       const items = (feed.items || []).slice(0, 5);
       for (const item of items) {
         if (!item.title || !item.link) continue;
@@ -79,10 +139,12 @@ async function fetchLatestNews(): Promise<Article[]> {
           0,
           CONFIG.MAX_SUMMARY_LENGTH,
         );
+        const parsedDate = new Date(item.pubDate || item.isoDate || Date.now());
+        const pubDate = Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
         all.push({
           title: item.title,
           link: item.link,
-          pubDate: new Date(item.pubDate || item.isoDate || Date.now()),
+          pubDate,
           source: source.name,
           icon: source.icon,
           priority: source.priority,
@@ -92,17 +154,23 @@ async function fetchLatestNews(): Promise<Article[]> {
         });
       }
     } catch (err) {
-      console.warn(
-        `[poker-news] error fetching ${source.name}:`,
-        err instanceof Error ? err.message : err,
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      feedErrors.push({ source: source.name, url: source.rss, error: msg });
+      console.warn(`[poker-news] error fetching ${source.name}:`, msg);
     }
   }
 
-  return all.sort((a, b) => {
+  const articles = all.sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
     return b.pubDate.getTime() - a.pubDate.getTime();
   });
+
+  return {
+    articles,
+    feedsAttempted: sources.length,
+    feedsSucceeded,
+    feedErrors,
+  };
 }
 
 async function isArticleRecentlyShared(link: string): Promise<boolean> {
@@ -243,10 +311,30 @@ async function postNewsArticle(article: Article, newsId: string | null): Promise
 
 export async function pokerNews(c: Context) {
   try {
-    const articles = await fetchLatestNews();
+    const { articles, feedsAttempted, feedsSucceeded, feedErrors } = await fetchLatestNews();
+
+    if (feedsAttempted > 0 && feedsSucceeded === 0) {
+      return c.json(
+        {
+          success: false,
+          error: 'all_news_feeds_failed',
+          feeds_attempted: feedsAttempted,
+          feeds_succeeded: feedsSucceeded,
+          feed_errors: feedErrors,
+          posted: 0,
+        },
+        503,
+      );
+    }
 
     if (articles.length === 0) {
-      return c.json({ success: true, message: 'No news available', posted: 0 });
+      return c.json({
+        success: true,
+        message: 'No news available',
+        feeds_attempted: feedsAttempted,
+        feeds_succeeded: feedsSucceeded,
+        posted: 0,
+      });
     }
 
     let posted: PostResult | null = null;
@@ -269,7 +357,13 @@ export async function pokerNews(c: Context) {
     }
 
     if (!posted) {
-      return c.json({ success: true, message: 'All articles recently shared', posted: 0 });
+      return c.json({
+        success: true,
+        message: 'All articles recently shared',
+        feeds_attempted: feedsAttempted,
+        feeds_succeeded: feedsSucceeded,
+        posted: 0,
+      });
     }
 
     return c.json({
@@ -279,6 +373,8 @@ export async function pokerNews(c: Context) {
       news_id: posted.news_id,
       method: posted.method,
       has_image: posted.has_image,
+      feeds_attempted: feedsAttempted,
+      feeds_succeeded: feedsSucceeded,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
