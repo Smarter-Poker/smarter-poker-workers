@@ -36,8 +36,10 @@ import {
   buildClubDigestDraft,
   buildLocalEventDraft,
   buildSeasonalDraft,
+  clubDigestPublicationKey,
   isJunkSourceText,
   placeKey,
+  seasonalReleaseDay,
   spreadLocalDrafts,
   type ClubPageRow,
   type ClubPeriodFacts,
@@ -55,6 +57,9 @@ const PREVIEW_LIMIT = 24;
 const PUBLISH_SUCCESS_LIMIT_PER_MODE = 1;
 /** Bound author-guard/write attempts after duplicate keys are removed in bulk. */
 const PUBLISH_ATTEMPT_LIMIT_PER_MODE = 20;
+/** Keep live cron_execution_log responses compact (well inside RESULT_MAX_BYTES). */
+const MAX_LIVE_HELD_DETAIL = 10;
+const MAX_LIVE_NOTES = 20;
 /** Ceilings for complete reads. Reaching one is a failure, never a truncation. */
 const CLUB_PAGES_MAX_ROWS = 5_000;
 const CLUB_STATS_MAX_ROWS = 50_000;
@@ -303,6 +308,8 @@ async function readClubPeriodFacts(
 export interface ClubReadOptions {
   /** Real-clock yesterday; a live run reports only on it. Null in preview. */
   requiredDay: string | null;
+  /** Skip expensive club_member_daily_stats scans for already-published keys in live mode. */
+  skipPublishedKeys?: boolean;
 }
 
 export async function readClubComposition(
@@ -345,10 +352,22 @@ export async function readClubComposition(
     CLUB_STATS_MAX_ROWS,
     out.notes,
   );
+
+  // Group stats by club once (O(N)) and filter stale/inactive clubs before
+  // touching club_member_daily_stats.
+  const statsByClub = new Map<string, ClubStatRow[]>();
+  for (const row of stats) {
+    const list = statsByClub.get(row.club_id) ?? [];
+    list.push(row);
+    statsByClub.set(row.club_id, list);
+  }
+
+  let inactiveClubs = 0;
+  const eligible: Array<{ page: ClubPageRow; own: ClubStatRow[]; key: string }> = [];
   for (const page of pages) {
-    const recent = stats.filter((row) => row.club_id === page.linked_entity_id);
+    const recent = statsByClub.get(page.linked_entity_id) ?? [];
     if (recent.length === 0) {
-      out.notes.push(`${page.id}: no club stats since ${since}`);
+      inactiveClubs += 1;
       continue;
     }
     const latest = recent.reduce((max, row) => (row.stat_date > max ? row.stat_date : max), '');
@@ -358,6 +377,25 @@ export async function readClubComposition(
       continue;
     }
     const own = recent.filter((row) => row.stat_date >= start);
+    const key = clubDigestPublicationKey(page.linked_entity_id, { start, end: through, weekly });
+    eligible.push({ page, own, key });
+  }
+  if (inactiveClubs > 0) {
+    out.notes.push(`${inactiveClubs} public clubs had no stats since ${since}`);
+  }
+
+  // On live runs, check whether each eligible club's digest key is already
+  // published BEFORE scanning tens of thousands of club_member_daily_stats
+  // rows. On 23 of 24 hourly fires the daily/weekly digest is already posted.
+  const alreadyPublished = options.skipPublishedKeys && eligible.length > 0
+    ? await publishedKeys(eligible.map((item) => item.key))
+    : new Set<string>();
+
+  for (const { page, own, key } of eligible) {
+    if (alreadyPublished.has(key)) {
+      out.skipped.duplicate += 1;
+      continue;
+    }
     const facts = await readClubPeriodFacts(page.linked_entity_id, start, through, roster, out.notes);
     const draft = buildClubDigestDraft(page, own, { start, end: through, weekly }, facts);
     if (!draft) {
@@ -395,21 +433,42 @@ export async function readLocalComposition(now: Date, horses: RosterHorse[]): Pr
   const photos = new Map<string, string>();
   for (let i = 0; i < venueIds.length; i += PROFILE_CHUNK) {
     const { data, error } = await supa.from('poker_venues')
-      .select('id, cover_photo_url').in('id', venueIds.slice(i, i + PROFILE_CHUNK));
+      .select('id, cover_photo_url, profile_photo_url').in('id', venueIds.slice(i, i + PROFILE_CHUNK));
     if (error) throw new Error(`associated venue photographs unreadable: ${error.message}`);
-    for (const venue of (data ?? []) as Array<{ id: string; cover_photo_url?: string | null }>) {
-      const photo = safeArticleImageUrl(venue.cover_photo_url);
+    for (const venue of (data ?? []) as Array<{
+      id: string;
+      cover_photo_url?: string | null;
+      profile_photo_url?: string | null;
+    }>) {
+      // Genuine room photograph only: cover_photo_url first, then
+      // profile_photo_url (268 venues carry real PokerAtlas room photos there
+      // while cover_photo_url is populated on 1). safeArticleImageUrl still
+      // rejects any logo/favicon/placeholder URL; logo_url is never selected.
+      const photo = safeArticleImageUrl(venue.cover_photo_url) ?? safeArticleImageUrl(venue.profile_photo_url);
       if (photo) photos.set(String(venue.id), photo);
     }
   }
-  for (const event of events) event.cover_photo_url = photos.get(String(event.venue_id)) ?? null;
+  const eventsByPlace = new Map<string, LocalEventRow[]>();
+  for (const event of events) {
+    event.cover_photo_url = photos.get(String(event.venue_id)) ?? null;
+    const key = placeKey(event.city, event.state);
+    if (!key) continue;
+    const list = eventsByPlace.get(key) ?? [];
+    list.push(event);
+    eventsByPlace.set(key, list);
+  }
   const homes = new Set(horses.map((horse) => placeKey(horse.city, horse.state)).filter(Boolean));
   out.skipped.junk = events.filter((event) => homes.has(placeKey(event.city, event.state))
     && (isJunkSourceText(event.event_name) || isJunkSourceText(event.venue_name))).length;
   out.notes.push(`window ${today}..${horizon}: ${events.length} listings read completely`);
   const factsCache = new Map<LocalEventRow, LocalEventFacts | null>();
   const candidates = horses
-    .map((horse) => buildLocalEventDraft(horse, events, today, horizon, now, factsCache))
+    .map((horse) => {
+      const home = placeKey(horse.city, horse.state);
+      const localEvents = home ? eventsByPlace.get(home) : undefined;
+      if (!localEvents || localEvents.length === 0) return null;
+      return buildLocalEventDraft(horse, localEvents, today, horizon, now, factsCache);
+    })
     .filter((draft): draft is Phase6Draft => Boolean(draft));
   const firstByKey = new Map<string, Phase6Draft>();
   for (const draft of candidates) if (!firstByKey.has(draft.publicationKey)) firstByKey.set(draft.publicationKey, draft);
@@ -417,7 +476,11 @@ export async function readLocalComposition(now: Date, horses: RosterHorse[]): Pr
   return out;
 }
 
-export function readSeasonalComposition(now: Date, horses: RosterHorse[]): ModeComposition {
+export function readSeasonalComposition(
+  now: Date,
+  horses: RosterHorse[],
+  options: { preview?: boolean } = {},
+): ModeComposition {
   const out = emptyComposition();
   const byKey = new Map<string, Phase6Draft[]>();
   for (const horse of horses) {
@@ -426,8 +489,21 @@ export function readSeasonalComposition(now: Date, horses: RosterHorse[]): ModeC
     if (!byKey.has(draft.publicationKey)) byKey.set(draft.publicationKey, []);
     byKey.get(draft.publicationKey)!.push(draft);
   }
+  const dayOfMonth = now.getUTCDate();
+  let staggeredDeferred = 0;
   // One post per city and month; the author rotates among that city's horses.
-  for (const [key, group] of byKey) out.drafts.push(group[fleetHash(key, 'phase6-season-author') % group.length]!);
+  // In live mode, unlock cities progressively across days 1..20 of the month
+  // instead of dumping all ~24 cities on Day 1.
+  for (const [key, group] of byKey) {
+    if (!options.preview && seasonalReleaseDay(key) > dayOfMonth) {
+      staggeredDeferred += 1;
+      continue;
+    }
+    out.drafts.push(group[fleetHash(key, 'phase6-season-author') % group.length]!);
+  }
+  if (staggeredDeferred > 0) {
+    out.notes.push(`${staggeredDeferred} seasonal city drafts scheduled for later days this month`);
+  }
   return out;
 }
 
@@ -559,7 +635,11 @@ async function publishHorseDraft(draft: Phase6Draft): Promise<PublishOutcome> {
     .maybeSingle();
   if (error?.code === UNIQUE_VIOLATION) return { status: 'duplicate' };
   if (error || !data?.id) return { status: 'failed', error: `horse Phase 6 post failed: ${error?.message ?? 'missing id'}` };
-  await recordPhrase(normalizePhrase(draft.content), draft.authorId, data.id);
+  try {
+    await recordPhrase(normalizePhrase(draft.content), draft.authorId, data.id);
+  } catch (phraseErr) {
+    console.warn('[phase6-content] phrase ledger write failed after post commit:', message(phraseErr));
+  }
   return { status: 'posted', id: data.id };
 }
 
@@ -601,7 +681,9 @@ async function publishMode(mode: Phase6Mode, composition: ModeComposition): Prom
     if (existing.has(draft.publicationKey)) continue;
     if (draft.mode === 'local_event' && (!draft.linkUrl || !safeArticleImageUrl(draft.linkImage))) {
       result.skipped.media_unavailable += 1;
-      result.held.push({ reason: 'media_unavailable', detail: `${draft.sourceId}: associated destination and genuine venue photograph required` });
+      if (result.held.length < MAX_LIVE_HELD_DETAIL) {
+        result.held.push({ reason: 'media_unavailable', detail: `${draft.sourceId}: associated destination and genuine venue photograph required` });
+      }
       continue;
     }
     if (freshAttempts >= PUBLISH_ATTEMPT_LIMIT_PER_MODE) break;
@@ -640,6 +722,15 @@ async function publishMode(mode: Phase6Mode, composition: ModeComposition): Prom
       result.skipped.failed += 1;
       result.errors.push(outcome.error);
     }
+  }
+  if (result.held.length > MAX_LIVE_HELD_DETAIL) {
+    const omitted = result.held.length - MAX_LIVE_HELD_DETAIL;
+    result.held = result.held.slice(0, MAX_LIVE_HELD_DETAIL);
+    result.notes.push(`${omitted} additional held entries omitted from live summary (see skipped counts)`);
+  }
+  if (result.notes.length > MAX_LIVE_NOTES) {
+    const omitted = result.notes.length - MAX_LIVE_NOTES;
+    result.notes = [...result.notes.slice(0, MAX_LIVE_NOTES - 1), `${omitted} additional notes omitted`];
   }
   return result;
 }
@@ -684,9 +775,10 @@ export async function composePhase6(
   const readers: Record<Phase6Mode, () => Promise<ModeComposition>> = {
     club_data_digest: () => readClubComposition(now, roster, {
       requiredDay: options.preview ? null : isoDay(addDays(clock(), -1)),
+      skipPublishedKeys: !options.preview,
     }),
     local_event: () => readLocalComposition(now, horses),
-    seasonal_local: async () => readSeasonalComposition(now, horses),
+    seasonal_local: async () => readSeasonalComposition(now, horses, { preview: options.preview }),
   };
   for (const mode of modes) {
     if (!enabled.get(mode)) continue;
@@ -713,8 +805,12 @@ function previewDraft(draft: Phase6Draft): Phase6Draft & { author_is_horse: bool
 export async function phase6Content(c: Context) {
   const preview = c.req.query('preview') === '1' || c.req.query('dry_run') === '1';
   const nowValue = c.req.query('at');
-  const now = nowValue ? new Date(nowValue) : new Date();
-  if (Number.isNaN(now.getTime())) return c.json({ success: false, error: 'invalid_at' }, 400);
+  if (nowValue && Number.isNaN(new Date(nowValue).getTime())) {
+    return c.json({ success: false, error: 'invalid_at' }, 400);
+  }
+  // Clock override via ?at= is preview-only; live runs always evaluate against
+  // the real clock so stale/future dates can never be spoofed into production.
+  const now = preview && nowValue ? new Date(nowValue) : new Date();
   try {
     if (!preview && !(await engineEnabled())) {
       return c.json({ success: true, skipped: 'engine_disabled', modes_checked: 0, posted: 0 });

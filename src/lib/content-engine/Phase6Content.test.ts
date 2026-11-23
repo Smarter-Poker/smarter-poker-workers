@@ -207,4 +207,8 @@ describe('Phase 6 content facts', () => {
     }
     expect(buildSeasonalDraft({ profile_id: 'h2', name: 'Horse', city: 'Reno', state: 'NV' }, new Date('2026-09-07T12:00:00Z'))).toBeNull();
   });
+
+  it('strips extended pictographs, variation selectors, and ZWJ from source text', () => {
+    expect(cleanSourceText('WSOP\uFE0F ⭐ Deepstack \u200D Event')).toBe('WSOP Deepstack Event');
+  });
 });

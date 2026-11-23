@@ -63,10 +63,12 @@ describe('readResultSummary', () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it('bounds a large body instead of writing it whole', async () => {
-    const big = json({ blob: 'x'.repeat(RESULT_MAX_BYTES * 2) });
+  it('bounds a large body instead of writing it whole while retaining top-level scalar metrics', async () => {
+    const big = json({ success: true, posted: 3, blob: 'x'.repeat(RESULT_MAX_BYTES * 2) });
     const r = await readResultSummary(big);
     expect(r.truncated).toBe(true);
+    expect(r.success).toBe(true);
+    expect(r.posted).toBe(3);
     expect(typeof r.bytes).toBe('number');
     expect(String(r.head).length).toBeLessThanOrEqual(500);
   });

@@ -43,6 +43,36 @@ function publicationSummary(value: unknown): Record<string, unknown> | null {
 export function isCronExecutionRequest(method: string, pathname: string, videoScope?: unknown): boolean {
   return pathname !== '/cron/video-library-scraper' || (method === 'POST' && videoScope === 'full');
 }
+const SCALAR_SUMMARY_KEYS = [
+  'success',
+  'posted',
+  'created',
+  'failed',
+  'skipped',
+  'healthy',
+  'checked',
+  'saved',
+  'commented',
+  'replied',
+  'reacted',
+  'liked',
+  'dm',
+] as const;
+
+function scalarSummaryFields(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const body = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of SCALAR_SUMMARY_KEYS) {
+    if (!Object.hasOwn(body, key)) continue;
+    const v = body[key];
+    if (typeof v === 'boolean' || typeof v === 'number' || (typeof v === 'string' && v.length <= 64)) {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
 export async function readResultSummary(res: Response | undefined): Promise<Record<string, unknown>> {
   try {
     if (!res) return {};
@@ -51,7 +81,13 @@ export async function readResultSummary(res: Response | undefined): Promise<Reco
     const text = await res.clone().text();
     const bytes = Buffer.byteLength(text, 'utf8');
     if (bytes > RESULT_MAX_BYTES) {
-      return publicationSummary(JSON.parse(text)) ?? { truncated: true, bytes, head: text.slice(0, 500) };
+      const parsed: unknown = JSON.parse(text);
+      return publicationSummary(parsed) ?? {
+        ...scalarSummaryFields(parsed),
+        truncated: true,
+        bytes,
+        head: text.slice(0, 500),
+      };
     }
     const parsed: unknown = JSON.parse(text);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
