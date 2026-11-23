@@ -36,6 +36,7 @@ import { getHorseActivityRate } from '../lib/content-engine/HorseScheduler.js';
 import { isOnlineNow } from '../lib/content-engine/FleetScheduler.js';
 import { loadFleet, engineEnabled, postModeEnabled } from '../lib/content-engine/Fleet.js';
 import { candidateClips } from '../lib/content-engine/ClipSupply.js';
+import { isQuoteCardVideoClip, quoteCardAllowedHorses } from '../lib/content-engine/VideoFeedBalance.js';
 import {
   assetKeyFor,
   filterUnusedAssets,
@@ -118,7 +119,11 @@ async function validateYouTubeThumbnail(videoId: string): Promise<boolean> {
   }
 }
 
-async function postVideoStory(horse: Horse): Promise<StoryOutcome> {
+async function postVideoStory(
+  horse: Horse,
+  allowedQuoteCardHorses: ReadonlySet<string>,
+  quoteCardRunState: { posted: number },
+): Promise<StoryOutcome> {
   try {
     if (!(await postModeEnabled('poker_video'))) {
       return { ok: false, reason: 'mode_disabled' };
@@ -127,11 +132,17 @@ async function postVideoStory(horse: Horse): Promise<StoryOutcome> {
     const { clips: rawPool } = await candidateClips('poker', horse.profile_id);
     if (rawPool.length === 0) return { ok: false, reason: 'no_clip' };
 
-    const keys = rawPool
+    const allowQuoteCard = allowedQuoteCardHorses.has(horse.profile_id) && quoteCardRunState.posted === 0;
+    const eligiblePool = allowQuoteCard
+      ? rawPool
+      : rawPool.filter((clip) => !isQuoteCardVideoClip(clip));
+    if (eligiblePool.length === 0) return { ok: false, reason: 'no_clip' };
+
+    const keys = eligiblePool
       .map((clip) => assetKeyFor(clip.source_url))
       .filter((k): k is string => Boolean(k));
     const unusedKeys = await filterUnusedAssets(keys, horse.profile_id);
-    const pool = rawPool.filter((clip) => {
+    const pool = eligiblePool.filter((clip) => {
       const key = assetKeyFor(clip.source_url);
       return Boolean(key && unusedKeys.has(key));
     });
@@ -181,6 +192,7 @@ async function postVideoStory(horse: Horse): Promise<StoryOutcome> {
     }
     // fn_create_story returns NULL instead of raising when it refuses a row.
     if (!storyId) return { ok: false, reason: 'rpc_refused' };
+    if (isQuoteCardVideoClip(validClip)) quoteCardRunState.posted += 1;
     try {
       const assetKey = assetKeyFor(validClip.source_url);
       if (assetKey) await recordAssetUse(assetKey, horse.profile_id, String(storyId));
@@ -277,6 +289,8 @@ export async function horsesStories(c: Context) {
 
     const results: Array<{ horse: string; type?: string; story_id?: string; success: boolean; reason?: string }> = [];
     const skipReasons: Record<string, number> = {};
+    const allowedQuoteCardHorses = quoteCardAllowedHorses(allHorses);
+    const quoteCardRunState = { posted: 0 };
 
     for (const horse of selectedHorses) {
       if (!(await engineEnabled())) {
@@ -285,7 +299,9 @@ export async function horsesStories(c: Context) {
       }
       await new Promise((r) => setTimeout(r, Math.random() * 2000 + 1000));
       const isVideoStory = Math.random() < CONFIG.VIDEO_STORY_PROBABILITY;
-      const outcome = isVideoStory ? await postVideoStory(horse) : await postTextStory(horse);
+      const outcome = isVideoStory
+        ? await postVideoStory(horse, allowedQuoteCardHorses, quoteCardRunState)
+        : await postTextStory(horse);
       if (outcome.ok) {
         results.push({ horse: horse.name, type: outcome.type, story_id: outcome.story_id, success: true });
       } else {

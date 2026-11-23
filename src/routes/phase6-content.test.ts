@@ -53,19 +53,37 @@ describe('GET/POST /cron/phase6-content fail-closed behavior', () => {
     expect(getSupabase).not.toHaveBeenCalled();
   });
 
-  it('touches no source data when every independent mode is off', async () => {
+  it('touches no source data when every active mode is off, and marks local_event retired', async () => {
     engineEnabled.mockResolvedValue(true);
     postModeEnabled.mockResolvedValue(false);
     const c = context();
     await phase6Content(c);
-    expect(postModeEnabled).toHaveBeenCalledTimes(3);
+    expect(postModeEnabled).toHaveBeenCalledTimes(2);
+    expect(postModeEnabled).not.toHaveBeenCalledWith('local_event');
     expect(getSupabase).not.toHaveBeenCalled();
     expect(c.captured.body).toMatchObject({
       success: true,
       posted: 0,
       results: {
         club_data_digest: { skipped: 'awaiting_approval', posted: 0 },
-        local_event: { skipped: 'awaiting_approval', posted: 0 },
+        local_event: { skipped: 'retired', posted: 0 },
+        seasonal_local: { skipped: 'awaiting_approval', posted: 0 },
+      },
+    });
+  });
+
+  it('keeps local_event permanently retired even if horse_post_modes returns true for it', async () => {
+    engineEnabled.mockResolvedValue(true);
+    postModeEnabled.mockImplementation(async (mode: string) => mode === 'local_event');
+    const c = context();
+    await phase6Content(c);
+    expect(getSupabase).not.toHaveBeenCalled();
+    expect(c.captured.body).toMatchObject({
+      success: true,
+      posted: 0,
+      results: {
+        club_data_digest: { skipped: 'awaiting_approval', posted: 0 },
+        local_event: { skipped: 'retired', posted: 0 },
         seasonal_local: { skipped: 'awaiting_approval', posted: 0 },
       },
     });

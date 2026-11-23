@@ -139,10 +139,13 @@ import {
   postedRecently,
   publishForHorse,
   publishVideoClip,
+  publishVideoForHorse,
   takeRandomCandidates,
   videoCaptionCandidatePriority,
   type FleetHorse,
+  type SharedHorseVideoSupply,
 } from './HorsePublisher.js';
+import { quoteCardAllowedHorses } from './VideoFeedBalance.js';
 import { fleetHash, isDueForPost } from './FleetScheduler.js';
 import { newsSources, sliceForHorse, type SupplyClip } from './ClipSupply.js';
 import {composeCaption} from './Composer.js';
@@ -868,5 +871,145 @@ describe('definitive bounded content exhaustion', () => {
     expect(result.error).toContain('No valid poker clips found after 1 bounded candidates');
     expect(result.error).toContain('All sports clips already posted');
     expect(db.inserts).toHaveLength(0);
+  });
+});
+
+describe('quote-card video cohort and anti-back-to-back enforcement in publisher', () => {
+  const galfondClip: SupplyClip = {
+    id: 'clip-galfond-1',
+    video_id: '7Lv6ffNSpAQ',
+    source_url: 'https://www.youtube.com/watch?v=7Lv6ffNSpAQ',
+    source: 'Phil Galfond',
+    title: "Don't Blame Luck for Your Poker Losses",
+    category: 'poker',
+    oembed_ok: true,
+    duration_seconds: 30,
+  };
+  const galfondClip2: SupplyClip = {
+    id: 'clip-galfond-2',
+    video_id: 'GG4MGvwjY1A',
+    source_url: 'https://www.youtube.com/watch?v=GG4MGvwjY1A',
+    source: 'Phil Galfond',
+    title: 'How Much Should You Adjust to a Poker Read?',
+    category: 'poker',
+    oembed_ok: true,
+    duration_seconds: 30,
+  };
+  const tableClip: SupplyClip = {
+    id: 'clip-mariano-1',
+    video_id: 'AbCdEfGhIjK',
+    source_url: 'https://www.youtube.com/watch?v=AbCdEfGhIjK',
+    source: 'Mariano',
+    title: 'The Nut Flush Draw Trap!',
+    category: 'poker',
+    oembed_ok: true,
+    duration_seconds: 45,
+  };
+  const fleet20 = Array.from({ length: 20 }, (_, i) => horse(horseId(i + 100)));
+
+  it('blocks non-cohort horses from ever publishing Phil Galfond quote-card clips', async () => {
+    const allowed = quoteCardAllowedHorses(fleet20);
+    expect(allowed.size).toBe(3);
+    const nonCohort = fleet20.find((h) => !allowed.has(h.profile_id))!;
+    const supply: SharedHorseVideoSupply = {
+      poker: [galfondClip],
+      sports: [],
+      recent: [],
+      recentStatus: 'ok',
+      quoteCardRunState: { posted: 0 },
+    };
+
+    const res = await publishVideoForHorse(nonCohort, {
+      fleet: fleet20,
+      now: NOW,
+      slot: SLOT,
+      skipGuard: true,
+      allowedTypes: ['poker'],
+      sharedSupply: supply,
+    });
+    expect(res.success).toBe(false);
+    expect(res.skipped).toBe('supply_exhausted');
+    expect(db.rpcCalls.filter((c) => c.name === 'publish_horse_video_reel')).toHaveLength(0);
+  });
+
+  it('allows an authorized cohort horse once, then immediately blocks back-to-back quote-card posts in the same run', async () => {
+    const allowedIds = [...quoteCardAllowedHorses(fleet20)];
+    const firstAllowed = fleet20.find((h) => h.profile_id === allowedIds[0])!;
+    const secondAllowed = fleet20.find((h) => h.profile_id === allowedIds[1])!;
+    const supply: SharedHorseVideoSupply = {
+      poker: [galfondClip, galfondClip2, tableClip],
+      sports: [],
+      recent: [],
+      recentStatus: 'ok',
+      quoteCardRunState: { posted: 0 },
+    };
+
+    // First cohort horse can publish Phil Galfond when supply only has Galfond clips
+    const galfondOnly: SharedHorseVideoSupply = {
+      poker: [galfondClip, galfondClip2],
+      sports: [],
+      recent: [],
+      recentStatus: 'ok',
+      quoteCardRunState: { posted: 0 },
+    };
+    const r1 = await publishVideoForHorse(firstAllowed, {
+      fleet: fleet20,
+      now: NOW,
+      slot: SLOT,
+      skipGuard: true,
+      allowedTypes: ['poker'],
+      sharedSupply: galfondOnly,
+    });
+    expect(r1.success).toBe(true);
+    expect(galfondOnly.quoteCardRunState?.posted).toBe(1);
+    expect(galfondOnly.recent?.[0]?.source).toBe('Phil Galfond');
+
+    // Second cohort horse in the same run MUST NOT post a second Galfond clip back-to-back
+    const r2 = await publishVideoForHorse(secondAllowed, {
+      fleet: fleet20,
+      now: NOW,
+      slot: SLOT,
+      skipGuard: true,
+      allowedTypes: ['poker'],
+      sharedSupply: galfondOnly,
+    });
+    expect(r2.success).toBe(false);
+    expect(r2.skipped).toBe('supply_exhausted');
+
+    // With a regular table clip also present and a recent Galfond post, the second cohort horse picks the regular clip
+    supply.recent = [{ title: galfondClip.title, source: 'Phil Galfond', topic: 'poker' }];
+    const r3 = await publishVideoForHorse(secondAllowed, {
+      fleet: fleet20,
+      now: NOW,
+      slot: SLOT,
+      skipGuard: true,
+      allowedTypes: ['poker'],
+      sharedSupply: supply,
+    });
+    expect(r3.success).toBe(true);
+    const lastVideoRpc = db.rpcCalls.filter((c) => c.name === 'publish_horse_video_reel').at(-1);
+    expect((lastVideoRpc?.args.p_metadata as Record<string, unknown>)?.clip_source).toBe('Mariano');
+  });
+
+  it('fails closed for quote-card clips when recent feed context is unknown', async () => {
+    const allowedId = [...quoteCardAllowedHorses(fleet20)][0]!;
+    const allowedHorse = fleet20.find((h) => h.profile_id === allowedId)!;
+    const supply: SharedHorseVideoSupply = {
+      poker: [galfondClip],
+      sports: [],
+      recent: [],
+      recentStatus: 'unknown',
+      quoteCardRunState: { posted: 0 },
+    };
+    const res = await publishVideoForHorse(allowedHorse, {
+      fleet: fleet20,
+      now: NOW,
+      slot: SLOT,
+      skipGuard: true,
+      allowedTypes: ['poker'],
+      sharedSupply: supply,
+    });
+    expect(res.success).toBe(false);
+    expect(res.skipped).toBe('supply_exhausted');
   });
 });

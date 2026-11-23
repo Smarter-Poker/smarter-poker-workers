@@ -32,7 +32,10 @@ vi.mock('../lib/content-engine/Fleet.js', () => ({
     { id: 2, name: 'Horse b', profile_id: 'pid-b', timezone: 'UTC' },
   ]),
 }));
-vi.mock('../lib/content-engine/FleetScheduler.js', () => ({ isOnlineNow: () => true }));
+vi.mock('../lib/content-engine/FleetScheduler.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/content-engine/FleetScheduler.js')>()),
+  isOnlineNow: () => true,
+}));
 vi.mock('../lib/content-engine/HorseScheduler.js', () => ({ getHorseActivityRate: () => 1 }));
 vi.mock('../lib/content-engine/VoiceWriter.js', () => ({ writeStory: m.writeStory, writeCaption: m.writeCaption }));
 vi.mock('../lib/content-engine/ClipSupply.js', () => ({ candidateClips: m.candidateClips }));
