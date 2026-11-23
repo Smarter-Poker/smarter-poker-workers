@@ -72,6 +72,15 @@ export const PREVIEW_WRITES_NOTE =
   'Preview makes no content writes: no posts, page posts or phrase-ledger rows. '
   + 'The only write is the cron middleware logging this request in cron_execution_log.';
 
+/**
+ * Permanently retired Phase 6 modes (owner direction 2026-11-23).
+ * Fail closed in code regardless of horse_post_modes state: retired modes
+ * never read source tables, never compose drafts, and never publish.
+ */
+export const RETIRED_PHASE6_MODES: ReadonlySet<Phase6Mode> = new Set(['local_event']);
+
+export const RETIRED_PHASE6_NOTE = 'local_event permanently retired by owner (2026-11-23)';
+
 export type SkipReason =
   | 'duplicate'
   | 'recent'
@@ -655,6 +664,18 @@ export interface ModeResult {
 }
 
 async function publishMode(mode: Phase6Mode, composition: ModeComposition): Promise<ModeResult> {
+  if (RETIRED_PHASE6_MODES.has(mode)) {
+    return {
+      posted: 0,
+      candidates: 0,
+      attempted: 0,
+      skipped: emptySkips(),
+      errors: [],
+      rollback_failed_page_posts: [],
+      held: [],
+      notes: [RETIRED_PHASE6_NOTE],
+    };
+  }
   const result: ModeResult = {
     posted: 0,
     candidates: composition.drafts.length,
@@ -751,8 +772,13 @@ export async function composePhase6(
 ): Promise<Phase6Composition> {
   const compositions = new Map<Phase6Mode, ModeComposition>();
   const modes: Phase6Mode[] = ['club_data_digest', 'local_event', 'seasonal_local'];
-  for (const mode of modes) compositions.set(mode, emptyComposition());
-  if (!modes.some((mode) => enabled.get(mode))) return { compositions, rosterNotHorse: 0 };
+  for (const mode of modes) {
+    const empty = emptyComposition();
+    if (RETIRED_PHASE6_MODES.has(mode)) empty.notes.push(RETIRED_PHASE6_NOTE);
+    compositions.set(mode, empty);
+  }
+  const activeModes = modes.filter((mode) => !RETIRED_PHASE6_MODES.has(mode));
+  if (!activeModes.some((mode) => enabled.get(mode))) return { compositions, rosterNotHorse: 0 };
 
   let roster: Map<string, RosterHorse>;
   let rosterNotHorse = 0;
@@ -761,7 +787,7 @@ export async function composePhase6(
     roster = read.horses;
     rosterNotHorse = read.notHorse;
   } catch (error) {
-    for (const mode of modes) {
+    for (const mode of activeModes) {
       if (!enabled.get(mode)) continue;
       const failed = emptyComposition();
       failed.skipped.failed = 1;
@@ -780,7 +806,7 @@ export async function composePhase6(
     local_event: () => readLocalComposition(now, horses),
     seasonal_local: async () => readSeasonalComposition(now, horses, { preview: options.preview }),
   };
-  for (const mode of modes) {
+  for (const mode of activeModes) {
     if (!enabled.get(mode)) continue;
     try {
       const composition = await readers[mode]();
@@ -818,10 +844,12 @@ export async function phase6Content(c: Context) {
 
     const modes: Phase6Mode[] = ['club_data_digest', 'local_event', 'seasonal_local'];
     const enabled = new Map<Phase6Mode, boolean>();
-    for (const mode of modes) enabled.set(mode, preview ? true : await postModeEnabled(mode));
+    for (const mode of modes) {
+      enabled.set(mode, RETIRED_PHASE6_MODES.has(mode) ? false : (preview ? true : await postModeEnabled(mode)));
+    }
 
-    // A disabled live mode is never composed. Preview is an explicit review
-    // surface with no content writes, and is the only exception.
+    // A disabled or retired live mode is never composed. Preview is an explicit
+    // review surface with no content writes, and retired modes stay empty there too.
     const { compositions, rosterNotHorse } = await composePhase6(now, enabled, { preview });
 
     if (preview) {
@@ -848,9 +876,11 @@ export async function phase6Content(c: Context) {
 
     const results: Record<string, unknown> = {};
     for (const mode of modes) {
-      results[mode] = enabled.get(mode)
-        ? await publishMode(mode, compositions.get(mode)!)
-        : { skipped: 'awaiting_approval', posted: 0 };
+      results[mode] = RETIRED_PHASE6_MODES.has(mode)
+        ? { skipped: 'retired', posted: 0 }
+        : enabled.get(mode)
+          ? await publishMode(mode, compositions.get(mode)!)
+          : { skipped: 'awaiting_approval', posted: 0 };
     }
     let posted = 0;
     for (const value of Object.values(results)) {

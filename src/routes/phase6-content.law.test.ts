@@ -45,6 +45,14 @@ describe('Phase 6 publishing laws', () => {
     expect(source).toContain('mirror_skipped_author_not_horse: 0');
   });
 
+  it('permanently retires local_event fail-closed in code regardless of DB mode state', () => {
+    expect(source).toContain("RETIRED_PHASE6_MODES: ReadonlySet<Phase6Mode> = new Set(['local_event'])");
+    const compose = source.slice(source.indexOf('export async function composePhase6'), source.indexOf('function previewDraft'));
+    expect(compose).toContain('RETIRED_PHASE6_MODES.has(mode)');
+    const publish = source.slice(source.indexOf('async function publishMode'), source.indexOf('export interface Phase6Composition'));
+    expect(publish).toContain('if (RETIRED_PHASE6_MODES.has(mode))');
+  });
+
   it('checks a page-post rollback and never claims it when the delete failed', () => {
     const club = source.slice(source.indexOf('async function publishClubDraft'), source.indexOf('async function publishHorseDraft'));
     expect(club).toMatch(/const \{ data: removed, error: rollbackError \} = await supa\s*\.from\('social_page_posts'\)\s*\.delete\(\)\s*\.eq\('id', pagePost\.id\)/);

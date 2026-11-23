@@ -76,7 +76,14 @@ import { publishHorseNewsAtomically } from './HorseNewsPublication.js';
 import { freshVideoCaptionCandidates } from './VideoCandidateFreshness.js';
 import {freshNewsCaptionCandidates} from './NewsCandidateFreshness.js';
 import { orderedNewsSources, type NewsFeedCandidate } from './NewsSourceFallback.js';
-import { balancedVideoPriority, balancedVideoTypes, readRecentVideoContext, type RecentVideoContext } from './VideoFeedBalance.js';
+import {
+  balancedVideoPriority,
+  balancedVideoTypes,
+  canPublishQuoteCardVideo,
+  isQuoteCardVideoClip,
+  readRecentVideoContext,
+  type RecentVideoContext,
+} from './VideoFeedBalance.js';
 import { readHorseVideoPublicationEvidence, type PublicationEvidence } from './PublicationEvidence.js';
 import { publishHorseGroundedAtomically, readHorseGroundedPublicationEvidence, type HorseGroundedPublicationInput } from './HorseGroundedPublication.js';
 
@@ -145,6 +152,10 @@ export interface SharedHorseVideoSupply {
   sports: SupplyClip[];
   /** Mutable run-local preference memory, not a dedup/verification authority. */
   recent?: RecentVideoContext[];
+  /** Status of the initial durable recent-video feed read (fail-closed for quote-card spacing). */
+  recentStatus?: 'ok' | 'unknown';
+  /** Shared mutable run-local counter capping quote-card videos to at most 1 per run. */
+  quoteCardRunState?: { posted: number };
 }
 
 export interface SharedHorseVideoSupplyCount {
@@ -405,12 +416,38 @@ async function freshSharedVideoRows(rows: readonly SupplyClip[], clipType: Horse
 
 /** Keep both approved categories' shorts ahead of any unknown/long format. */
 async function sharedVideoSupplyPasses(
-  kinds: readonly HorseVideoTopic[], supply: SharedHorseVideoSupply | undefined, profileId: string,
+  kinds: readonly HorseVideoTopic[],
+  supply: SharedHorseVideoSupply | undefined,
+  profileId: string,
+  fleet: readonly AuthorHorse[] = [],
 ): Promise<{status:'ok';passes:Array<{kind: HorseVideoTopic; supply: SharedHorseVideoSupply | undefined}>} | {status:'unknown';error:string}> {
   if (!supply) return {status:'ok',passes:kinds.map(kind => ({kind, supply}))};
-  const short: SharedHorseVideoSupply = {poker: [], sports: [], recent:supply.recent};
-  const other: SharedHorseVideoSupply = {poker: [], sports: [], recent:supply.recent};
+  const allowQuoteCard = canPublishQuoteCardVideo({
+    profileId,
+    fleet,
+    recent: supply.recent,
+    recentStatus: supply.recentStatus,
+    quoteCardPostedInRun: supply.quoteCardRunState?.posted ?? 0,
+  });
+  const short: SharedHorseVideoSupply = {
+    poker: [],
+    sports: [],
+    recent: supply.recent,
+    recentStatus: supply.recentStatus,
+    quoteCardRunState: supply.quoteCardRunState,
+  };
+  const other: SharedHorseVideoSupply = {
+    poker: [],
+    sports: [],
+    recent: supply.recent,
+    recentStatus: supply.recentStatus,
+    quoteCardRunState: supply.quoteCardRunState,
+  };
   for (const kind of kinds) for (const clip of supply[kind]) {
+    if (!allowQuoteCard && isQuoteCardVideoClip(clip)) {
+      bumpSupplyStat('quote_card_filtered');
+      continue;
+    }
     (clipFormatPriority(clip) <= 1 ? short : other)[kind].push(clip);
   }
   const passes:Array<{kind:HorseVideoTopic;supply:SharedHorseVideoSupply}>=[];
@@ -532,6 +569,8 @@ export async function prepareSharedHorseVideoSupply(
 
   const recent = await readRecentVideoContext();
   supply.recent = recent.items;
+  supply.recentStatus = recent.status;
+  supply.quoteCardRunState = { posted: 0 };
   bumpSupplyStat(`recent_video_context_${recent.status}`, 1);
   return {
     status: 'ok',
@@ -795,9 +834,22 @@ export async function publishVideoClip(
       error: `${clipType} caption attempt budget exhausted` };
   }
   let captionCandidates: Array<LibraryClip | SportsClipRow> = [];
+  const allowQuoteCard = canPublishQuoteCardVideo({
+    profileId: horse.profile_id,
+    fleet,
+    recent: sharedSupply?.recent,
+    recentStatus: sharedSupply ? sharedSupply.recentStatus : 'unknown',
+    quoteCardPostedInRun: sharedSupply?.quoteCardRunState?.posted ?? 0,
+  });
 
   if (sharedSupply) {
-    const verifiedCaptionable = sharedSupply[clipType];
+    const rawVerifiedCaptionable = sharedSupply[clipType];
+    const verifiedCaptionable = allowQuoteCard
+      ? rawVerifiedCaptionable
+      : rawVerifiedCaptionable.filter((clip) => !isQuoteCardVideoClip(clip));
+    if (verifiedCaptionable.length < rawVerifiedCaptionable.length) {
+      bumpSupplyStat('quote_card_filtered', rawVerifiedCaptionable.length - verifiedCaptionable.length);
+    }
     if (!verifiedCaptionable.length) {
       return {
         ...base,
@@ -842,7 +894,7 @@ export async function publishVideoClip(
     const usable = await filterUnusedAssets(keys, horse.profile_id);
     const fresh = pool.filter((c) => {
       const k = assetKeyFor(c.source_url);
-      return !!k && usable.has(k);
+      return !!k && usable.has(k) && (allowQuoteCard || !isQuoteCardVideoClip(c));
     });
     bumpSupplyStat(
       'poker_fresh_candidates_' + (fresh.length >= 50 ? '50plus' : fresh.length >= 10 ? '10to49' : 'under10'),
@@ -1082,10 +1134,16 @@ export async function publishVideoClip(
     const publicationEvidence = await readHorseVideoPublicationEvidence({postId:published.postId,
       reelId:published.reelId,authorId:horse.profile_id,caption:picked.text,assetKey:key});
     bumpSupplyStat(`publication_${publicationEvidence.status}`);
-    if (published.created !== false && sharedSupply?.recent) {
-      sharedSupply.recent.unshift({title:storedTitle,caption:picked.text,
-        source:(candidate as SportsClipRow).source ?? '',topic:clipType});
-      sharedSupply.recent.splice(12);
+    if (published.created !== false && sharedSupply) {
+      if (isQuoteCardVideoClip(candidate as SportsClipRow)) {
+        if (sharedSupply.quoteCardRunState) sharedSupply.quoteCardRunState.posted += 1;
+        else sharedSupply.quoteCardRunState = { posted: 1 };
+      }
+      if (sharedSupply.recent) {
+        sharedSupply.recent.unshift({title:storedTitle,caption:picked.text,
+          source:(candidate as SportsClipRow).source ?? '',topic:clipType});
+        sharedSupply.recent.splice(12);
+      }
     }
     return {
       ...base,
@@ -1202,7 +1260,12 @@ export async function publishVideoForHorse(
   const modelAttempt: ModelAttemptContext = {};
   const budgets = {poker:{remaining:MAX_VIDEO_CAPTION_CANDIDATES},sports:{remaining:MAX_VIDEO_CAPTION_CANDIDATES}};
   const disabled = new Set<HorseVideoTopic>();
-  const prepared = await sharedVideoSupplyPasses(videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved), opts.sharedSupply,horse.profile_id);
+  const prepared = await sharedVideoSupplyPasses(
+    videoKindOrder(horse.profile_id, opts.now ?? new Date(), approved),
+    opts.sharedSupply,
+    horse.profile_id,
+    opts.fleet ?? [],
+  );
   if(prepared.status==='unknown')return {...base,success:false,outcome:'unknown',publicationKey,error:prepared.error};
   const passes=prepared.passes;
   if (!passes.length) return { ...base, success:false, skipped:'supply_exhausted', publicationKey,
@@ -1643,7 +1706,7 @@ export async function publishForHorse(
 
   const videoBudgets = {poker:{remaining:MAX_VIDEO_CAPTION_CANDIDATES},sports:{remaining:MAX_VIDEO_CAPTION_CANDIDATES}};
   const disabledVideoKinds = new Set<HorseVideoTopic>();
-  const preparedVideoPasses=await sharedVideoSupplyPasses([preferred,other],opts.sharedVideoSupply,horse.profile_id);
+  const preparedVideoPasses=await sharedVideoSupplyPasses([preferred,other],opts.sharedVideoSupply,horse.profile_id,opts.fleet ?? []);
   if(preparedVideoPasses.status==='unknown')return {...base,success:false,outcome:'unknown',publicationKey,error:preparedVideoPasses.error};
   for (const {kind, supply} of preparedVideoPasses.passes) {
     if (disabledVideoKinds.has(kind)) continue;

@@ -171,10 +171,10 @@ describe('L-01: Phase 6 idempotency lives in metadata.publication_key', () => {
     enableOnly('club_data_digest', 'local_event', 'seasonal_local');
     const body = await live();
     expect(body.results.club_data_digest!.posted).toBe(1);
-    expect(body.results.local_event!.posted).toBe(1);
+    expect(body.results.local_event).toEqual({ skipped: 'retired', posted: 0 });
     expect(body.results.seasonal_local!.posted).toBe(1);
     const inserted = [...db.inserts('social_posts'), ...db.inserts('social_page_posts')];
-    expect(inserted).toHaveLength(4);
+    expect(inserted).toHaveLength(3);
     for (const row of inserted) {
       expect(Object.prototype.hasOwnProperty.call(row, 'publication_key')).toBe(false);
       expect(String((row.metadata as Row).publication_key)).toMatch(/^phase6:/);
@@ -186,13 +186,13 @@ describe('L-01: Phase 6 idempotency lives in metadata.publication_key', () => {
     enableOnly('club_data_digest', 'local_event', 'seasonal_local');
     await live();
     const feed = db.inserts('social_posts');
-    expect(feed).toHaveLength(3);
+    expect(feed).toHaveLength(2);
     for (const row of feed) {
       const mode = String((row.metadata as Row).phase6_mode);
       expect(row.topic).toBe('poker');
       expect(row.topics).toEqual(['poker', mode === 'club_data_digest' ? 'club' : 'local']);
     }
-    expect(feed.map((row) => (row.topics as string[])[1]).sort()).toEqual(['club', 'local', 'local']);
+    expect(feed.map((row) => (row.topics as string[])[1]).sort()).toEqual(['club', 'local']);
     for (const row of db.inserts('social_page_posts')) {
       expect(Object.prototype.hasOwnProperty.call(row, 'topic')).toBe(false);
       expect(Object.prototype.hasOwnProperty.call(row, 'topics')).toBe(false);
@@ -201,12 +201,12 @@ describe('L-01: Phase 6 idempotency lives in metadata.publication_key', () => {
 
   it('counts a 23505 unique violation on insert as a duplicate, not a failure', async () => {
     const db = world();
-    enableOnly('local_event');
+    enableOnly('seasonal_local');
     db.fail('social_posts', 'insert', {
       code: '23505',
       message: 'duplicate key value violates unique constraint "uq_social_posts_metadata_publication_key"',
     }, 1);
-    const result = (await live()).results.local_event!;
+    const result = (await live()).results.seasonal_local!;
     expect(result.skipped.duplicate).toBe(1);
     expect(result.skipped.failed).toBe(0);
     expect(result.posted).toBe(0);
@@ -214,9 +214,9 @@ describe('L-01: Phase 6 idempotency lives in metadata.publication_key', () => {
 
   it('lets exactly one of two overlapping runs publish a key; the other sees a duplicate', async () => {
     const db = world();
-    enableOnly('local_event');
+    enableOnly('seasonal_local');
     const [first, second] = await Promise.all([run(), run()]);
-    const results = [first, second].map((captured) => (captured.body as LiveBody).results.local_event!);
+    const results = [first, second].map((captured) => (captured.body as LiveBody).results.seasonal_local!);
     expect(results.reduce((sum, result) => sum + result.posted, 0)).toBe(1);
     expect(results.reduce((sum, result) => sum + result.skipped.duplicate, 0)).toBe(1);
     expect(results.reduce((sum, result) => sum + result.skipped.failed, 0)).toBe(0);
@@ -419,53 +419,24 @@ describe('P6C-05: a failed rollback is reported and caught next run', () => {
   });
 });
 
-describe('P6C-06/03: the whole event window, without junk', () => {
-  it('persists only associated event metadata and the exact venue destination', async () => {
-    const db=world();enableOnly('local_event');
-    expect((await live()).results.local_event!.posted).toBe(1);
-    expect(db.inserts('social_posts')[0]).toMatchObject({
-      link_url:'/hub/venues/venue-1?tab=tournaments',
-      link_title:"No Limit Hold'em",
-      link_image:'https://cdn.example/venues/bell-room-photograph.webp',
-      link_site_name:'Smarter.Poker',
-    });
-    expect(db.inserts('social_posts')[0]!.link_description).toContain('Bell Room');
-  });
-
-  it.each([null,'https://cdn.example/publisher-logo.png'])('holds event cards with missing/generic associated artwork: %s', async photo => {
-    const db=world();enableOnly('local_event');
-    db.tables.set('poker_venues',[{id:'venue-1',cover_photo_url:photo}]);
-    const result=(await live()).results.local_event!;
-    expect(result.posted).toBe(0);
-    expect(result.skipped.media_unavailable).toBeGreaterThan(0);
-    expect(result.held[0]?.reason).toBe('media_unavailable');
-    expect(db.writes()).toHaveLength(0);
-  });
-
-  it('uses genuine venue profile_photo_url when cover_photo_url is null, and still rejects logos', async () => {
+describe('P6C-RETIRED: local_event is permanently retired fail-closed (owner direction 2026-11-23)', () => {
+  it('never reads unified_events_calendar or publishes local_event even if horse_post_modes returns true', async () => {
     const db = world();
     enableOnly('local_event');
-    db.tables.set('poker_venues', [{
-      id: 'venue-1',
-      cover_photo_url: null,
-      profile_photo_url: 'https://cdn.example/venues/bell-room-profile.jpg',
-    }]);
-    const result = (await live()).results.local_event!;
-    expect(result.posted).toBe(1);
-    expect(db.inserts('social_posts')[0]).toMatchObject({
-      link_image: 'https://cdn.example/venues/bell-room-profile.jpg',
-    });
+    const body = await live();
+    expect(body.posted).toBe(0);
+    expect(body.results.local_event).toEqual({ skipped: 'retired', posted: 0 });
+    expect(db.writes()).toHaveLength(0);
+    expect(db.calls.some((call) => call.table === 'unified_events_calendar' || call.table === 'poker_venues')).toBe(false);
+  });
 
-    const dbLogo = world();
-    enableOnly('local_event');
-    dbLogo.tables.set('poker_venues', [{
-      id: 'venue-1',
-      cover_photo_url: null,
-      profile_photo_url: 'https://cdn.example/venues/bell-room-logo.png',
-    }]);
-    const logoResult = (await live()).results.local_event!;
-    expect(logoResult.posted).toBe(0);
-    expect(logoResult.skipped.media_unavailable).toBeGreaterThan(0);
+  it('returns zero drafts and retirement note for local_event in preview mode', async () => {
+    const db = world();
+    const body = await preview(TUESDAY);
+    expect(body.samples.local_event).toEqual([]);
+    expect(body.notes.local_event!.join(' ')).toContain('permanently retired');
+    expect(db.calls.some((call) => call.table === 'unified_events_calendar')).toBe(false);
+    expect(db.writes()).toHaveLength(0);
   });
 
   it('skips club_member_daily_stats scan on live runs when club digest key is already published', async () => {
@@ -477,81 +448,46 @@ describe('P6C-06/03: the whole event window, without junk', () => {
     expect(result.skipped.duplicate).toBe(1);
     expect(db.calls.filter((call) => call.table === 'club_member_daily_stats')).toHaveLength(0);
   });
-
-  it('finds a horse-city listing beyond the first 1,000 rows of the window', async () => {
-    const filler = Array.from({ length: 2500 }, (_, i) => event(`f${String(i).padStart(4, '0')}`, {
-      city: 'Elsewhere', state: 'ZZ', specific_date: i < 1250 ? '2026-09-22' : '2026-09-24',
-    }));
-    const db = world({ events: [...filler, event('vegas-late', { specific_date: '2026-10-01' })] });
-    enableOnly('local_event');
-    const result = (await live()).results.local_event!;
-    expect(result.posted).toBe(1);
-    expect((db.inserts('social_posts')[0]!.metadata as Row).publication_key).toBe('phase6:local:daily:vegas-late');
-    expect(db.inserts('social_posts')[0]).toMatchObject({ topic: 'poker', topics: ['poker', 'local'] });
-  });
-
-  it('rejects scraped class names before drafting and counts them as junk', async () => {
-    const db = world({ events: [event('junk', { event_name: 'slider-item slick-slide', venue_name: 'Casino Miami Jai-Alai Casino' })] });
-    enableOnly('local_event');
-    const result = (await live()).results.local_event!;
-    expect(result.skipped.junk).toBe(1);
-    expect(result.posted).toBe(0);
-    expect(db.writes()).toHaveLength(0);
-  });
 });
 
-describe('P6C-15: hourly fires spread approved drafts without starving behind duplicates', () => {
-  const extraHorses = Array.from({ length: 100 }, (_, index) => ({
-    id: `hourly-horse-${index}`,
-    city: 'Las Vegas',
-    state: 'NV',
+describe('P6C-15: hourly fires spread approved seasonal_local drafts without starving behind duplicates', () => {
+  const cities: Array<[string, string]> = [
+    ['Las Vegas', 'NV'], ['Chicago', 'IL'], ['Boston', 'MA'], ['Denver', 'CO'],
+    ['Phoenix', 'AZ'], ['Seattle', 'WA'], ['Tampa', 'FL'], ['Detroit', 'MI'],
+  ];
+  const extraHorses = cities.map(([city, state], index) => ({
+    id: `seasonal-horse-${index}`,
+    city,
+    state,
     is_horse: true,
-    display_name: `Hourly Horse ${index}`,
+    display_name: `Seasonal Horse ${index}`,
   }));
-  const events = Array.from({ length: 40 }, (_, index) => event(`hourly-event-${index}`));
 
-  it('publishes at most one fresh local-event draft per run and advances past prior keys', async () => {
-    const db = world({ events, extraPeople: extraHorses });
-    enableOnly('local_event');
+  it('publishes at most one fresh seasonal_local draft per run and advances past prior keys', async () => {
+    const db = world({ extraPeople: extraHorses });
+    enableOnly('seasonal_local');
 
-    const candidates = (await preview(TUESDAY)).samples.local_event!;
+    const candidates = (await preview(TUESDAY)).samples.seasonal_local!;
     expect(candidates.length).toBeGreaterThan(2);
 
-    const first = (await live()).results.local_event!;
+    const first = (await live()).results.seasonal_local!;
     expect(first.posted).toBe(1);
     expect(db.inserts('social_posts')).toHaveLength(1);
 
-    const second = (await live()).results.local_event!;
+    const second = (await live()).results.seasonal_local!;
     expect(second.posted).toBe(1);
     expect(second.skipped.duplicate).toBeGreaterThanOrEqual(1);
     expect(db.inserts('social_posts')).toHaveLength(2);
     expect(new Set(db.inserts('social_posts').map((row) => (row.metadata as Row).publication_key)).size).toBe(2);
-  });
-
-  it('reaches a fresh draft beyond twenty already-published keys', async () => {
-    const db = world({ events, extraPeople: extraHorses });
-    enableOnly('local_event');
-    const candidates = (await preview(TUESDAY)).samples.local_event!;
-    expect(candidates.length).toBeGreaterThan(20);
-    db.seed('social_posts', candidates.slice(0, 20).map((draft, index) => ({
-      id: `existing-${index}`,
-      author_id: draft.authorId,
-      metadata: { publication_key: draft.publicationKey },
-    })));
-
-    const result = (await live()).results.local_event!;
-    expect(result.posted).toBe(1);
-    expect(result.skipped.duplicate).toBe(20);
-    expect((db.inserts('social_posts')[0]!.metadata as Row).publication_key).toBe(candidates[20]!.publicationKey);
   });
 });
 
 describe('P6C-10: the 20-hour guard fails closed', () => {
   it('counts an unreadable guard as recent and does not post', async () => {
     const db = world();
-    enableOnly('local_event');
+    enableOnly('seasonal_local');
     h.postedRecently.mockRejectedValue(new Error('recent-post guard read failed'));
-    const result = (await live()).results.local_event!;
+    const result = (await live()).results.seasonal_local!;
     expect(result.skipped.recent).toBe(1);
     expect(result.skipped.failed).toBe(0);
     expect(db.writes()).toHaveLength(0);
@@ -576,7 +512,7 @@ describe('P6C-11/12 and telemetry', () => {
     expect(body.writes_note).toContain('cron_execution_log');
     expect(body).not.toHaveProperty('writes');
     expect(db.writes()).toHaveLength(0);
-    expect(body.samples.local_event!.every((draft) => draft.author_is_horse)).toBe(true);
+    expect(body.samples.seasonal_local!.every((draft) => draft.author_is_horse)).toBe(true);
   });
 
   it('never reads the removed completed-tournament path', async () => {
@@ -585,16 +521,17 @@ describe('P6C-11/12 and telemetry', () => {
     expect(db.calls.some((call) => call.table === 'tournaments' || call.table === 'tournament_players')).toBe(false);
   });
 
-  it('reports skip counts by reason for every mode on a live run', async () => {
+  it('reports skip counts by reason for every active mode on a live run and marks local_event retired', async () => {
     world({ extraPeople: [{ id: 'not-a-horse', city: 'Las Vegas', state: 'NV', is_horse: false, display_name: 'Profile' }] });
     enableOnly('club_data_digest', 'local_event', 'seasonal_local');
     const body = await live();
-    for (const mode of ['club_data_digest', 'local_event', 'seasonal_local']) {
+    expect(body.results.local_event).toEqual({ skipped: 'retired', posted: 0 });
+    for (const mode of ['club_data_digest', 'seasonal_local']) {
       expect(Object.keys(body.results[mode]!.skipped).sort()).toEqual([
         'author_not_horse', 'duplicate', 'failed', 'junk', 'media_unavailable', 'mirror_skipped_author_not_horse', 'recent', 'rollback_failed', 'stale_day',
       ]);
     }
-    expect(body.results.local_event!.skipped.author_not_horse).toBe(1);
+    expect(body.results.seasonal_local!.skipped.author_not_horse).toBe(1);
     const authors = [...(h.db as FakeDb).inserts('social_posts')].map((row) => row.author_id);
     expect(authors).not.toContain('not-a-horse');
   });
@@ -618,49 +555,38 @@ describe('L-13: a read the database cancels for running too long is repeated, bo
     expect(productionPauses[1]!).toBeGreaterThan(productionPauses[0]!);
   });
 
-  it('reads local events on the second attempt after one statement timeout, posts, and notes the repeat', async () => {
-    const db = world();
-    enableOnly('local_event');
-    db.fail('unified_events_calendar', 'select', TIMEOUT, 1);
-    const result = (await live()).results.local_event!;
-    expect(result.errors).toEqual([]);
-    expect(result.posted).toBe(1);
-    expect(result.skipped.failed).toBe(0);
-    expect(result.notes.filter((note) => note.startsWith('local events read timed out on attempt 1;'))).toHaveLength(1);
-    expect(db.calls.filter((call) => call.table === 'unified_events_calendar' && call.op === 'select').length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('gives up after the third timeout and reports which attempt failed', async () => {
-    const db = world();
-    enableOnly('local_event');
-    db.fail('unified_events_calendar', 'select', TIMEOUT, 3);
-    const result = (await live()).results.local_event!;
-    expect(result.posted).toBe(0);
-    expect(result.skipped.failed).toBe(1);
-    expect(result.errors).toEqual(['local events read failed on attempt 3: canceling statement due to statement timeout']);
-    // A composition that fails keeps no notes; the attempt count travels in the error text instead.
-    expect(db.calls.filter((call) => call.table === 'unified_events_calendar' && call.op === 'select')).toHaveLength(3);
-    expect(db.writes()).toHaveLength(0);
-  });
-
-  it('does not repeat a read that fails for any other reason', async () => {
-    const db = world();
-    enableOnly('local_event');
-    db.fail('unified_events_calendar', 'select', { code: '42501', message: 'permission denied for view unified_events_calendar' }, 1);
-    const result = (await live()).results.local_event!;
-    expect(result.posted).toBe(0);
-    expect(result.errors).toEqual(['local events read failed: permission denied for view unified_events_calendar']);
-    expect(result.notes.some((note) => note.includes('timed out'))).toBe(false);
-    expect(db.calls.filter((call) => call.table === 'unified_events_calendar' && call.op === 'select')).toHaveLength(1);
-  });
-
-  it('repeats a club stats read the same way, so the digest still posts', async () => {
+  it('repeats a club stats read on the second attempt after one statement timeout, posts, and notes the repeat', async () => {
     const db = world();
     enableOnly('club_data_digest');
     db.fail('club_hand_daily', 'select', TIMEOUT, 1);
     const result = (await live()).results.club_data_digest!;
     expect(result.errors).toEqual([]);
     expect(result.posted).toBe(1);
+    expect(result.skipped.failed).toBe(0);
     expect(result.notes.filter((note) => note.startsWith('club stats read timed out on attempt 1;'))).toHaveLength(1);
+    expect(db.calls.filter((call) => call.table === 'club_hand_daily' && call.op === 'select').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('gives up after the third timeout and reports which attempt failed', async () => {
+    const db = world();
+    enableOnly('club_data_digest');
+    db.fail('club_hand_daily', 'select', TIMEOUT, 3);
+    const result = (await live()).results.club_data_digest!;
+    expect(result.posted).toBe(0);
+    expect(result.skipped.failed).toBe(1);
+    expect(result.errors).toEqual(['club stats read failed on attempt 3: canceling statement due to statement timeout']);
+    expect(db.calls.filter((call) => call.table === 'club_hand_daily' && call.op === 'select')).toHaveLength(3);
+    expect(db.writes()).toHaveLength(0);
+  });
+
+  it('does not repeat a read that fails for any other reason', async () => {
+    const db = world();
+    enableOnly('club_data_digest');
+    db.fail('club_hand_daily', 'select', { code: '42501', message: 'permission denied for table club_hand_daily' }, 1);
+    const result = (await live()).results.club_data_digest!;
+    expect(result.posted).toBe(0);
+    expect(result.errors).toEqual(['club stats read failed: permission denied for table club_hand_daily']);
+    expect(result.notes.some((note) => note.includes('timed out'))).toBe(false);
+    expect(db.calls.filter((call) => call.table === 'club_hand_daily' && call.op === 'select')).toHaveLength(1);
   });
 });
