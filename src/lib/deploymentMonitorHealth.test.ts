@@ -51,7 +51,11 @@ describe('deployment credential health', () => {
     await recordDeploymentMonitorHealth('resolved', { deploymentsRead: 25 });
     const recovery = state.latest?.event_key;
     expect(recovery).not.toBe(first);
-    expect(state.rpc.mock.calls[2][1]).toMatchObject({ p_status: 'resolved', p_alertname: 'DeploymentMonitorUnavailable' });
+    expect(state.rpc.mock.calls[2][1]).toMatchObject({
+      p_status: 'resolved',
+      p_alertname: 'DeploymentMonitorUnavailable',
+      p_payload: { resolves: first },
+    });
     await recordDeploymentMonitorHealth('resolved', { deploymentsRead: 25 });
     expect(state.rpc).toHaveBeenCalledTimes(3);
     await recordDeploymentMonitorHealth('firing', { httpStatus: 403 });

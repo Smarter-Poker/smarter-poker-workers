@@ -1,4 +1,5 @@
 /** Scraper incidents are persisted for Codex; no owner SMS is sent. */
+import { resolveOpenOperationalAlerts } from './operationalAlertResolution.js';
 import { operationalEventKey, recordOperationalAlert } from './operationalAlerts.js';
 
 // Alert throttle: don't send same alert type more than once per 6 hours
@@ -174,6 +175,18 @@ export async function evaluateAndAlert(
       stats,
     );
   }
+
+  // No critical or warning condition: resolve any open firing alerts for this scraper.
+  await resolveOpenOperationalAlerts({
+    source: 'workers.scraper',
+    alertnames: ['ScraperCritical', 'ScraperWarning'],
+    shouldResolve: (row) => row.payload.scraper === scraperName,
+    buildPayload: (row) => ({
+      scraper: scraperName,
+      summary: `${row.alertname} cleared: ${scraperName} ran cleanly (${tours_updated}/${tours_scraped} tours updated, ${total_events} events)`,
+      stats,
+    }),
+  });
 
   if (pdf_events_found > 20) {
     return alertScraperInfo(

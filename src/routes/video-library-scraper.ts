@@ -16,6 +16,7 @@ import type { Context } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { getSupabase } from '../lib/supabase.js';
+import { resolveOpenOperationalAlerts } from '../lib/operationalAlertResolution.js';
 import { OperationalAlertDeliveryError, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
 export async function videoLibraryScraper(c: Context) {
@@ -77,6 +78,20 @@ export async function videoLibraryScraper(c: Context) {
         } catch (error) {
           if (!(error instanceof OperationalAlertDeliveryError)) throw error;
           return c.json({ success: false, accepted: false, error: 'Operational alert receipt unconfirmed' }, 503);
+        }
+      } else if (body.scope === 'full') {
+        try {
+          await resolveOpenOperationalAlerts({
+            source: 'video-library-scraper',
+            alertnames: ['VideoLibraryScrapeFailed'],
+            buildPayload: () => ({
+              resolved_by_run_id: body.run_id,
+              summary: `Video library full scrape succeeded (${body.processed} processed, ${body.total_new} new)`,
+            }),
+          });
+        } catch (error) {
+          if (!(error instanceof OperationalAlertDeliveryError)) throw error;
+          return c.json({ success: false, accepted: false, error: 'Operational alert resolution unconfirmed' }, 503);
         }
       }
       return c.json({ success: !failed, accepted: true, run_id: body.run_id, audit_id: body.run_id,

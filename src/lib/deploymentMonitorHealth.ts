@@ -39,7 +39,9 @@ export async function recordDeploymentMonitorHealth(
       alertname: ALERT_NAME,
       status,
       severity: status === 'firing' ? 'critical' : 'info',
-      payload,
+      payload: status === 'resolved' && previous
+        ? { ...payload, resolves: previous.event_key }
+        : payload,
     });
   } catch (error) {
     if (error instanceof OperationalAlertDeliveryError) throw error;
