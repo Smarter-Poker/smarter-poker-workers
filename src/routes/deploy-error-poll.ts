@@ -9,6 +9,7 @@
 import type { Context } from 'hono';
 import { recordDeploymentMonitorHealth } from '../lib/deploymentMonitorHealth.js';
 import { currentMainFailure } from '../lib/currentMainFailure.js';
+import { resolveOpenOperationalAlerts } from '../lib/operationalAlertResolution.js';
 import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from '../lib/operationalAlerts.js';
 
 const TEAM_ID = 'team_SVD8r7AOPH065G3usBxVvrBc';
@@ -70,6 +71,7 @@ interface VercelDeployment {
   uid: string;
   state: string;
   createdAt: number;
+  ready?: number;
   meta?: {
     githubCommitRef?: string;
     githubCommitSha?: string;
@@ -141,13 +143,52 @@ export async function deployErrorPoll(c: Context) {
     });
     // Vercel returns newest first. Only the newest settled main build speaks for
     // main: an in-progress build is not a reason to re-report an ERROR that a
-    // newer READY build already superseded (see currentMainFailure). Nothing
-    // here resolves an earlier incident: a READY successor is not a claim that
-    // historical incidents were fixed.
-    const verdict = currentMainFailure(data.deployments);
+    // newer READY build already superseded (see currentMainFailure).
+    //
+    // When main returns to READY, record a separate `status: 'resolved'` twin
+    // (with `payload.resolves = firing.event_key`) for any open firing
+    // VercelDeploymentFailed / AutofixRebuildFailed row superseded by this READY
+    // build. That notifies the Reliability Controller that main is READY again
+    // without mutating any firing row's `investigation_status` and without
+    // touching Vercel.
+    const deployments = data.deployments;
+    const verdict = currentMainFailure(deployments);
     if (verdict.kind === 'ready') {
-      return c.json({ action: 'ok', message: 'Latest settled main deployment is READY',
-        latestSha: verdict.deployment.meta?.githubCommitSha?.substring(0, 9) });
+      const ready = verdict.deployment;
+      const readySha = ready.meta?.githubCommitSha ?? '';
+      const readyIndex = deployments.findIndex((d) => d.uid === ready.uid);
+      const readyAtMs = typeof ready.ready === 'number' && Number.isFinite(ready.ready) && ready.ready >= ready.createdAt
+        ? ready.ready
+        : Date.now();
+      const readyAtIso = new Date(readyAtMs).toISOString();
+      const { resolvedKeys } = await resolveOpenOperationalAlerts({
+        source: 'workers.deploy-error-poll',
+        alertnames: ['VercelDeploymentFailed', 'AutofixRebuildFailed'],
+        shouldResolve: (row) => {
+          const failedId = typeof row.payload.deploymentId === 'string' ? row.payload.deploymentId : '';
+          if (failedId && failedId === ready.uid) return false;
+          if (failedId && readyIndex > 0) {
+            const failedIdx = deployments.findIndex((d) => d.uid === failedId);
+            if (failedIdx >= 0 && failedIdx < readyIndex) return false;
+          }
+          return true;
+        },
+        buildPayload: (row) => ({
+          resolved_at: readyAtIso,
+          deploymentId: typeof row.payload.deploymentId === 'string' ? row.payload.deploymentId : null,
+          successorDeploymentId: ready.uid,
+          successorCommitSha: readySha,
+          summary: `${row.alertname} cleared: newer main deployment ${ready.uid}${readySha ? ` (${readySha.substring(0, 9)})` : ''} is READY`,
+          note: 'Source observation only: main is READY again. Historical failure investigation state is preserved.',
+          repository: `${GITHUB_OWNER}/${GITHUB_REPO}`,
+        }),
+      });
+      return c.json({
+        action: 'ok',
+        message: 'Latest settled main deployment is READY',
+        latestSha: readySha ? readySha.substring(0, 9) : undefined,
+        resolvedAlerts: resolvedKeys.length,
+      });
     }
     if (verdict.kind === 'unsettled') {
       return c.json({ action: 'ok', message: 'No settled main deployment found', checked: verdict.checked });

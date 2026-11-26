@@ -20,6 +20,29 @@ export function operationalEventKey(...identity: Array<string | number>): string
   return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
 }
 
+const MAX_EVENT_KEY_LENGTH = 512;
+const RESOLVED_SUFFIX = ':resolved';
+
+/**
+ * Deterministic resolved-twin key for a firing event_key.
+ *
+ * `public.fn_record_operational_alert` has `UNIQUE (source, event_key)` and its
+ * `ON CONFLICT DO UPDATE` updates only `last_received_at` and `delivery_count` —
+ * never `status`. A resolved twin MUST therefore carry a distinct `event_key`
+ * (and `payload.resolves = firingEventKey`) so `smarter_private.reliability_ingest_alert`
+ * matches `v_member = p_source || ':' || (p_payload->>'resolves')` and resolves
+ * the exact firing member without mutating the original firing row.
+ */
+export function resolvedTwinEventKey(firingEventKey: string): string {
+  const trimmed = firingEventKey.trim();
+  if (!trimmed) {
+    throw new OperationalAlertDeliveryError('firing eventKey must be non-empty');
+  }
+  const suffixKey = `${trimmed}${RESOLVED_SUFFIX}`;
+  if (suffixKey.length <= MAX_EVENT_KEY_LENGTH) return suffixKey;
+  return `${operationalEventKey('resolved-twin', trimmed)}${RESOLVED_SUFFIX}`;
+}
+
 /**
  * Operational incidents belong to the service-only inbox consumed by Codex.
  * A durable receipt is the only acknowledgement. Never fall back to SMS and
@@ -33,9 +56,23 @@ export async function recordOperationalAlert(event: {
   severity: 'critical' | 'warning' | 'info';
   payload: Record<string, unknown>;
 }): Promise<string> {
+  if (!event.eventKey || event.eventKey.length > MAX_EVENT_KEY_LENGTH) {
+    throw new OperationalAlertDeliveryError('eventKey length out of bounds');
+  }
   const requested = event.payload.target_task_id;
   if (requested !== undefined && requested !== OPERATIONAL_ALERT_TARGET_TASK_ID) {
     throw new OperationalAlertDeliveryError('payload names a different target_task_id');
+  }
+  if (event.status === 'resolved' && event.payload.resolves !== undefined) {
+    const resolves = event.payload.resolves;
+    if (typeof resolves !== 'string' || !resolves.trim()) {
+      throw new OperationalAlertDeliveryError('resolved alert payload.resolves must be a non-empty string');
+    }
+    if (resolves === event.eventKey) {
+      throw new OperationalAlertDeliveryError(
+        'resolved alert eventKey must differ from payload.resolves (fn_record_operational_alert ignores status on conflict)',
+      );
+    }
   }
   try {
     const { data, error } = await getSupabase().rpc('fn_record_operational_alert', {

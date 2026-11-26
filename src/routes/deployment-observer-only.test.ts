@@ -2,8 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { deployErrorPoll } from './deploy-error-poll.js';
 
-const alerts = vi.hoisted(() => ({ record: vi.fn(), health: vi.fn() }));
+const alerts = vi.hoisted(() => ({
+  record: vi.fn(),
+  health: vi.fn(),
+  resolveOpen: vi.fn(),
+}));
 vi.mock('../lib/deploymentMonitorHealth.js', () => ({ recordDeploymentMonitorHealth: alerts.health }));
+vi.mock('../lib/operationalAlertResolution.js', () => ({ resolveOpenOperationalAlerts: alerts.resolveOpen }));
 vi.mock('../lib/operationalAlerts.js', async (original) => ({
   ...await original<typeof import('../lib/operationalAlerts.js')>(),
   recordOperationalAlert: alerts.record,
@@ -12,6 +17,7 @@ vi.mock('../lib/operationalAlerts.js', async (original) => ({
 beforeEach(() => {
   alerts.record.mockReset().mockResolvedValue('19');
   alerts.health.mockReset().mockResolvedValue(undefined);
+  alerts.resolveOpen.mockReset().mockResolvedValue({ resolvedKeys: [], receipts: [], skippedAlreadyResolved: 0 });
   vi.stubEnv('VERCEL_TOKEN', 'test-provider');
   vi.stubEnv('DEPLOY_INTERNAL_SECRET', 'test-retired-publisher');
   vi.stubEnv('GH_PAT', 'test-retired-github');

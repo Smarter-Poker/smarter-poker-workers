@@ -23,7 +23,13 @@
  */
 import type { Context } from 'hono';
 import { getSupabase } from '../lib/supabase.js';
-import { OperationalAlertDeliveryError, operationalEventKey, recordOperationalAlert } from '../lib/operationalAlerts.js';
+import { resolveOpenOperationalAlerts } from '../lib/operationalAlertResolution.js';
+import {
+  OperationalAlertDeliveryError,
+  operationalEventKey,
+  recordOperationalAlert,
+  resolvedTwinEventKey,
+} from '../lib/operationalAlerts.js';
 
 const STALE_THRESHOLD_MIN = 45;
 const DEAD_THRESHOLD_MIN = 60;
@@ -32,11 +38,17 @@ const TIER3_COOLDOWN_MS = 30 * 60 * 1000;
 
 type SupabaseClient = ReturnType<typeof getSupabase>;
 
+interface FiringAlertRecord {
+  event_key: string;
+  alertname: 'ScraperDead' | 'ScraperStale';
+}
+
 interface AlertState {
   last_alert_ms: number;
   was_alerting: boolean;
   last_severity?: string | null;
   last_message?: string | null;
+  firing_alerts?: FiringAlertRecord[];
 }
 
 interface Results {
@@ -135,22 +147,30 @@ async function sendSmartAlert(
   }
 
   const fullMessage = `SCRAPER ALERT\n${source.toUpperCase()}: ${message}\nCheck: smarter.poker/api/poker/scraper-health`;
+  const alertname: 'ScraperDead' | 'ScraperStale' = severity === 'dead' ? 'ScraperDead' : 'ScraperStale';
+  const firingEventKey = operationalEventKey(source, 'firing', severity, alertState.last_alert_ms || 0);
 
   const receipt = await recordOperationalAlert({
     source: 'workers.scraper-watchdog',
-    eventKey: operationalEventKey(source, 'firing', severity, alertState.last_alert_ms || 0),
-    alertname: severity === 'dead' ? 'ScraperDead' : 'ScraperStale',
+    eventKey: firingEventKey,
+    alertname,
     status: 'firing',
     severity: severity === 'dead' ? 'critical' : 'warning',
     payload: { source, summary: message, message: fullMessage, checkedAt: now.toISOString() },
   });
   results.alerts_sent.push({ source, type: 'operational_inbox', severity, sent: true, receipt });
 
+  const existingTracked = Array.isArray(alertState.firing_alerts) ? alertState.firing_alerts : [];
+  const firingAlerts: FiringAlertRecord[] = existingTracked.some((a) => a.event_key === firingEventKey)
+    ? existingTracked
+    : [...existingTracked, { event_key: firingEventKey, alertname }];
+
   await setAlertState(supabase, source, {
     last_alert_ms: nowMs,
     was_alerting: true,
     last_severity: severity,
     last_message: message,
+    firing_alerts: firingAlerts,
   });
   await appendAlertHistory(supabase, source, 'alert', fullMessage);
 }
@@ -163,15 +183,55 @@ async function sendRecoveryAlert(
 ): Promise<void> {
   const message = `ALL CLEAR\n${source.toUpperCase()} scraper recovered! Data is now ${minutesAgo} min fresh.`;
   const alertState = await getAlertState(supabase, source);
-  const receipt = await recordOperationalAlert({
-    source: 'workers.scraper-watchdog',
-    eventKey: operationalEventKey(source, 'resolved', alertState.last_alert_ms || 0),
-    alertname: alertState.last_severity === 'dead' ? 'ScraperDead' : 'ScraperStale',
-    status: 'resolved',
-    severity: 'info',
-    payload: { source, summary: message },
-  });
-  results.resolved.push({ source, type: 'operational_inbox', sent: true, receipt });
+  const tracked = Array.isArray(alertState.firing_alerts)
+    ? alertState.firing_alerts.filter(
+        (a): a is FiringAlertRecord =>
+          Boolean(a) && typeof a.event_key === 'string' && a.event_key.length > 0 &&
+          (a.alertname === 'ScraperDead' || a.alertname === 'ScraperStale'),
+      )
+    : [];
+
+  if (tracked.length > 0) {
+    for (const entry of tracked) {
+      const receipt = await recordOperationalAlert({
+        source: 'workers.scraper-watchdog',
+        eventKey: resolvedTwinEventKey(entry.event_key),
+        alertname: entry.alertname,
+        status: 'resolved',
+        severity: 'info',
+        payload: { source, summary: message, resolves: entry.event_key },
+      });
+      results.resolved.push({ source, type: 'operational_inbox', sent: true, receipt, resolves: entry.event_key });
+    }
+  } else {
+    // Legacy state row written before firing_alerts tracking: resolve any open
+    // firing inbox rows for this source first, falling back to the legacy key
+    // if none are present (e.g. already purged or synthetic state).
+    const { resolvedKeys, receipts } = await resolveOpenOperationalAlerts({
+      source: 'workers.scraper-watchdog',
+      alertnames: ['ScraperDead', 'ScraperStale'],
+      shouldResolve: (row) => row.payload.source === source,
+      buildPayload: () => ({ source, summary: message }),
+    });
+    if (resolvedKeys.length > 0) {
+      for (let i = 0; i < resolvedKeys.length; i += 1) {
+        results.resolved.push({
+          source, type: 'operational_inbox', sent: true, receipt: receipts[i], resolves: resolvedKeys[i],
+        });
+      }
+    } else {
+      const receipt = await recordOperationalAlert({
+        source: 'workers.scraper-watchdog',
+        eventKey: operationalEventKey(source, 'resolved', alertState.last_alert_ms || 0),
+        alertname: alertState.last_severity === 'dead' ? 'ScraperDead' : 'ScraperStale',
+        status: 'resolved',
+        severity: 'info',
+        payload: { source, summary: message },
+      });
+      results.resolved.push({ source, type: 'operational_inbox', sent: true, receipt });
+    }
+  }
+
   await setAlertState(supabase, source, {
     // Retain the previous occurrence identity so a new incident does not
     // collide with the first firing after every recovery.
@@ -179,6 +239,7 @@ async function sendRecoveryAlert(
     was_alerting: false,
     last_severity: null,
     last_message: null,
+    firing_alerts: [],
   });
   await appendAlertHistory(supabase, source, 'recovery', message);
 }
