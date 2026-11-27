@@ -71,3 +71,56 @@ describe('readVercelDeployments: one slow answer is not an outage', () => {
     expect(calls).toBe(VERCEL_READ_ATTEMPTS);
   });
 });
+
+describe('extractDeploymentDiagnostics and formatDeployFailureMessage', () => {
+  it('falls back to sanitized url when inspectorUrl is missing and bounds oversized error messages', async () => {
+    const { extractDeploymentDiagnostics, formatDeployFailureMessage } = await import('./deploy-error-poll.js');
+    const diagnostics = extractDeploymentDiagnostics({
+      uid: 'dpl_url_fallback',
+      state: 'BLOCKED',
+      createdAt: Date.now(),
+      url: 'hub-vanguard-fallback.vercel.app?token=should-strip&env=prod',
+      inspectorUrl: null,
+      errorCode: 'DEPLOYMENT_BLOCKED',
+      errorMessage: 'X'.repeat(1500),
+      meta: { githubCommitRef: 'main' },
+    });
+    expect(diagnostics.deploymentState).toBe('BLOCKED');
+    expect(diagnostics.inspectorUrl).toBeNull();
+    expect(diagnostics.url).toBe('hub-vanguard-fallback.vercel.app?env=prod');
+    expect(diagnostics.errorMessage?.length).toBe(1000);
+    expect(diagnostics.commitSha).toBeNull();
+    expect(diagnostics.commitMessage).toBeNull();
+
+    const message = formatDeployFailureMessage('dpl_url_fallback', diagnostics);
+    expect(message).toContain('Deployment dpl_url_fallback settled as BLOCKED.');
+    expect(message).toContain('Error [DEPLOYMENT_BLOCKED]:');
+    expect(message).toContain('URL: hub-vanguard-fallback.vercel.app?env=prod');
+    expect(message).not.toContain('should-strip');
+  });
+
+  it('formats cleanly when only errorCode or only errorMessage is present', async () => {
+    const { formatDeployFailureMessage } = await import('./deploy-error-poll.js');
+    const codeOnly = formatDeployFailureMessage('dpl_1', {
+      deploymentState: 'ERROR',
+      errorCode: 'BUILD_FAILED',
+      errorMessage: null,
+      inspectorUrl: null,
+      url: null,
+      commitSha: null,
+      commitMessage: null,
+    });
+    expect(codeOnly).toBe('Deployment dpl_1 settled as ERROR. Error [BUILD_FAILED].');
+
+    const msgOnly = formatDeployFailureMessage('dpl_2', {
+      deploymentState: 'ERROR',
+      errorCode: null,
+      errorMessage: 'Module not found.\n',
+      inspectorUrl: null,
+      url: null,
+      commitSha: 'abc1234',
+      commitMessage: null,
+    });
+    expect(msgOnly).toBe('Deployment dpl_2 settled as ERROR for commit abc1234. Error: Module not found.');
+  });
+});

@@ -26,10 +26,40 @@ describe('currentMainFailure', () => {
       .toMatchObject({ kind: 'failed', deployment: { uid: 'broken' } });
   });
 
-  it('ignores branch previews and canceled builds entirely', () => {
-    expect(currentMainFailure([branch('p1', 'ERROR'), main('c1', 'CANCELED'), main('good', 'READY')]))
+  it('reports the newest settled BLOCKED main deployment as a current failure', () => {
+    expect(currentMainFailure([main('blocked', 'BLOCKED'), main('good', 'READY')]))
+      .toMatchObject({ kind: 'failed', deployment: { uid: 'blocked', state: 'BLOCKED' } });
+  });
+
+  it('keeps reporting a BLOCKED main failure while a newer retry is unsettled or canceled', () => {
+    for (const unsettled of ['QUEUED', 'INITIALIZING', 'BUILDING', 'CANCELED']) {
+      const verdict = currentMainFailure([
+        main('retry', unsettled),
+        main('blocked', 'BLOCKED'),
+        main('good', 'READY'),
+      ]);
+      expect(verdict).toMatchObject({ kind: 'failed', deployment: { uid: 'blocked', state: 'BLOCKED' } });
+    }
+  });
+
+  it('never resurrects an older BLOCKED or ERROR deploy superseded by a newer READY deploy after QUEUED/BUILDING/CANCELED', () => {
+    for (const unsettled of ['QUEUED', 'INITIALIZING', 'BUILDING', 'CANCELED']) {
+      for (const olderFailure of ['BLOCKED', 'ERROR']) {
+        const verdict = currentMainFailure([
+          main('new', unsettled),
+          main('r1', 'READY'),
+          main('c1', 'CANCELED'),
+          main('old-failure', olderFailure),
+        ]);
+        expect(verdict).toMatchObject({ kind: 'ready', deployment: { uid: 'r1' } });
+      }
+    }
+  });
+
+  it('ignores branch previews (including BLOCKED) and canceled builds entirely', () => {
+    expect(currentMainFailure([branch('p1', 'ERROR'), branch('p2', 'BLOCKED'), main('c1', 'CANCELED'), main('good', 'READY')]))
       .toMatchObject({ kind: 'ready', deployment: { uid: 'good' } });
-    expect(currentMainFailure([branch('p1', 'ERROR'), main('c1', 'CANCELED'), main('b1', 'BUILDING')]))
+    expect(currentMainFailure([branch('p1', 'ERROR'), branch('p2', 'BLOCKED'), main('c1', 'CANCELED'), main('b1', 'BUILDING')]))
       .toEqual({ kind: 'unsettled', checked: 2 });
   });
 });

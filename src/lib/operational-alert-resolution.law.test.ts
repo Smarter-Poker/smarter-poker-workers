@@ -313,6 +313,121 @@ describe('reliability controller twin-event resolution law', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('deploy-error-poll fires for a BLOCKED main deployment, resolves it cleanly when a newer READY supersedes it, and stays idempotent', async () => {
+    const now = Date.now();
+    const blockedId = 'dpl_blocked_main_42';
+    const readyId = 'dpl_ready_main_43';
+    const expectedFiringKey = operationalEventKey(blockedId, 'Vercel Deployment Failed');
+    let phase: 'blocked' | 'ready' | 'ready_with_queued' = 'blocked';
+
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method && init.method !== 'GET') return new Response('{}', { status: 405 });
+      if (phase === 'blocked') {
+        return new Response(JSON.stringify({
+          deployments: [
+            {
+              uid: blockedId,
+              state: 'BLOCKED',
+              createdAt: now - 120_000,
+              inspectorUrl: `https://vercel.com/smarter-poker/hub-vanguard/${blockedId}`,
+              errorCode: 'DEPLOYMENT_BLOCKED',
+              errorMessage: 'Blocked due to deployment protection check',
+              meta: {
+                githubCommitRef: 'main',
+                githubCommitSha: '1111aaaa2222bbbb',
+                githubCommitMessage: 'chore: blocked deploy',
+              },
+            },
+            {
+              uid: 'dpl_old_ready',
+              state: 'READY',
+              createdAt: now - 300_000,
+              meta: { githubCommitRef: 'main', githubCommitSha: '0000oldready' },
+            },
+          ],
+        }), { status: 200 });
+      }
+      const deployments = [
+        ...(phase === 'ready_with_queued'
+          ? [{ uid: 'dpl_queued_next', state: 'QUEUED', createdAt: now, meta: { githubCommitRef: 'main' } }]
+          : []),
+        {
+          uid: readyId,
+          state: 'READY',
+          createdAt: now - 60_000,
+          ready: now - 30_000,
+          meta: { githubCommitRef: 'main', githubCommitSha: '9999cccc8888dddd' },
+        },
+        {
+          uid: blockedId,
+          state: 'BLOCKED',
+          createdAt: now - 120_000,
+          meta: { githubCommitRef: 'main', githubCommitSha: '1111aaaa2222bbbb' },
+        },
+      ];
+      return new Response(JSON.stringify({ deployments }), { status: 200 });
+    }));
+
+    const app = new Hono();
+    app.get('/cron/deploy-error-poll', deployErrorPoll);
+
+    // 1. Poll observes BLOCKED main deploy -> fires VercelDeploymentFailed with diagnostics.
+    const fireRes = await app.request('/cron/deploy-error-poll');
+    expect(fireRes.status).toBe(200);
+    expect(await fireRes.json()).toMatchObject({
+      action: 'reported',
+      deployId: blockedId,
+      deploymentState: 'BLOCKED',
+      releaseAction: 'none',
+    });
+    const firingCalls = state.rpcCalls.filter((c) => c.p_alertname === 'VercelDeploymentFailed' && c.p_status === 'firing');
+    expect(firingCalls).toHaveLength(1);
+    expect(firingCalls[0]).toMatchObject({
+      p_source: 'workers.deploy-error-poll',
+      p_event_key: expectedFiringKey,
+      p_alertname: 'VercelDeploymentFailed',
+      p_status: 'firing',
+      p_payload: {
+        deploymentId: blockedId,
+        deploymentState: 'BLOCKED',
+        errorCode: 'DEPLOYMENT_BLOCKED',
+        errorMessage: 'Blocked due to deployment protection check',
+        inspectorUrl: `https://vercel.com/smarter-poker/hub-vanguard/${blockedId}`,
+        commitSha: '1111aaaa2222bbbb',
+        commitMessage: 'chore: blocked deploy',
+      },
+    });
+
+    // 2. Newer READY deploy supersedes BLOCKED -> emits single resolved twin with payload.resolves.
+    phase = 'ready';
+    const resolveRes = await app.request('/cron/deploy-error-poll');
+    expect(resolveRes.status).toBe(200);
+    expect(await resolveRes.json()).toMatchObject({ action: 'ok', latestSha: '9999cccc8', resolvedAlerts: 1 });
+    const resolvedCalls = state.rpcCalls.filter((c) => c.p_alertname === 'VercelDeploymentFailed' && c.p_status === 'resolved');
+    expect(resolvedCalls).toHaveLength(1);
+    expect(resolvedCalls[0]).toMatchObject({
+      p_source: 'workers.deploy-error-poll',
+      p_event_key: `${expectedFiringKey}:resolved`,
+      p_alertname: 'VercelDeploymentFailed',
+      p_status: 'resolved',
+      p_severity: 'info',
+      p_payload: {
+        resolves: expectedFiringKey,
+        deploymentId: blockedId,
+        successorDeploymentId: readyId,
+        successorCommitSha: '9999cccc8888dddd',
+      },
+    });
+
+    // 3. Repeat READY poll (even with a newer QUEUED build in front) emits ZERO duplicates and never resurrects BLOCKED.
+    const callsAfterResolve = state.rpcCalls.length;
+    phase = 'ready_with_queued';
+    const repeatRes = await app.request('/cron/deploy-error-poll');
+    expect(repeatRes.status).toBe(200);
+    expect(await repeatRes.json()).toMatchObject({ action: 'ok', latestSha: '9999cccc8', resolvedAlerts: 0 });
+    expect(state.rpcCalls.length).toBe(callsAfterResolve);
+  });
+
   it('deploy-error-poll fails closed (503) if reading open firing alerts fails on a READY verdict', async () => {
     const now = Date.now();
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
