@@ -17,14 +17,172 @@ const PROJECT_ID = 'prj_op66GkZyZcygXQKm76iyycfVFAQx';
 const GITHUB_OWNER = 'Smarter-Poker';
 const GITHUB_REPO = 'Smarter-Poker-World-Hub';
 
-async function recordDeployAlert(deployId: string, title: string, message: string): Promise<void> {
+export interface DeploymentDiagnostics {
+  deploymentState: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  inspectorUrl: string | null;
+  url: string | null;
+  commitSha: string | null;
+  commitMessage: string | null;
+}
+
+const CONTROL_CHAR_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+const SENSITIVE_QUERY_KEY_RE =
+  /(?:^|_|-)(?:token|secret|key|apikey|password|passwd|auth|sig|signature|session|credential|jwt|bearer|code)(?:$|_|-)/i;
+
+function redactSecrets(input: string, runtimeSecrets: readonly string[] = []): string {
+  let out = input;
+  for (const secret of runtimeSecrets) {
+    if (secret.length >= 6 && out.includes(secret)) {
+      out = out.split(secret).join('[REDACTED]');
+    }
+  }
+  out = out
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [REDACTED]')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, '$1[REDACTED]@')
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{16,}\b/g, '[REDACTED]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[REDACTED]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
+    .replace(/\b(?:sk|pk|sb_secret|sbp|vcp|vck|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
+    .replace(
+      /\b(token|secret|password|passwd|api[_-]?key|apikey|service[_-]?role[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|private[_-]?key)\s*([:=])\s*(['"]?)[^\s'",;)}\]]{4,}\3/gi,
+      '$1$2[REDACTED]',
+    )
+    .replace(
+      /([?&](?:token|secret|api[_-]?key|apikey|key|password|passwd|auth|sig|signature|access_token|session)=)[^&\s#'"]+/gi,
+      '$1[REDACTED]',
+    );
+  return out;
+}
+
+function sanitizeTextField(value: unknown, maxLength: number, runtimeSecrets: readonly string[] = []): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value.replace(CONTROL_CHAR_RE, '').replace(/\r\n?/g, '\n').trim();
+  if (!cleaned) return null;
+  const redacted = redactSecrets(cleaned, runtimeSecrets).trim();
+  if (!redacted) return null;
+  return redacted.length > maxLength ? redacted.slice(0, maxLength).trimEnd() : redacted;
+}
+
+function stripSensitiveUrlParts(parsed: URL, runtimeSecrets: readonly string[]): void {
+  parsed.username = '';
+  parsed.password = '';
+  for (const key of Array.from(parsed.searchParams.keys())) {
+    if (SENSITIVE_QUERY_KEY_RE.test(key)) {
+      parsed.searchParams.delete(key);
+      continue;
+    }
+    const values = parsed.searchParams.getAll(key);
+    if (values.some((v) => redactSecrets(v, runtimeSecrets) !== v)) {
+      parsed.searchParams.delete(key);
+    }
+  }
+  if (parsed.hash && redactSecrets(parsed.hash, runtimeSecrets) !== parsed.hash) {
+    parsed.hash = '';
+  }
+}
+
+function sanitizeUrlField(value: unknown, runtimeSecrets: readonly string[] = []): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.replace(CONTROL_CHAR_RE, '').trim();
+  if (!trimmed || trimmed.length > 2048 || /\s/.test(trimmed)) return null;
+
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed);
+  if (hasScheme) {
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      stripSensitiveUrlParts(parsed, runtimeSecrets);
+      const result = redactSecrets(parsed.toString(), runtimeSecrets);
+      return result.length <= 512 ? result : `${parsed.origin}${parsed.pathname}`.slice(0, 512);
+    } catch {
+      return null;
+    }
+  }
+
+  // Vercel's `url` field is typically a bare deployment hostname (no scheme).
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}(?:[/?#].*)?$/.test(trimmed)) return null;
+  try {
+    const parsed = new URL(`https://${trimmed}`);
+    stripSensitiveUrlParts(parsed, runtimeSecrets);
+    const hasPath = trimmed.includes('/');
+    const pathname = parsed.pathname === '/' && !hasPath ? '' : parsed.pathname;
+    const result = redactSecrets(`${parsed.host}${pathname}${parsed.search}`, runtimeSecrets);
+    return result.length <= 512 ? result : result.slice(0, 512);
+  } catch {
+    return null;
+  }
+}
+
+function flattenInline(text: string, maxLength: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > maxLength ? flat.slice(0, maxLength).trimEnd() : flat;
+}
+
+export function extractDeploymentDiagnostics(
+  deployment: VercelDeployment,
+  runtimeSecrets: readonly string[] = [],
+): DeploymentDiagnostics {
+  return {
+    deploymentState: sanitizeTextField(deployment.state, 64, runtimeSecrets) ?? 'UNKNOWN',
+    errorCode: sanitizeTextField(deployment.errorCode, 128, runtimeSecrets),
+    errorMessage: sanitizeTextField(deployment.errorMessage, 1000, runtimeSecrets),
+    inspectorUrl: sanitizeUrlField(deployment.inspectorUrl, runtimeSecrets),
+    url: sanitizeUrlField(deployment.url, runtimeSecrets),
+    commitSha: sanitizeTextField(deployment.meta?.githubCommitSha, 64, runtimeSecrets),
+    commitMessage: sanitizeTextField(deployment.meta?.githubCommitMessage, 500, runtimeSecrets),
+  };
+}
+
+export function formatDeployFailureMessage(deployId: string, diagnostics: DeploymentDiagnostics): string {
+  let msg = `Deployment ${deployId} settled as ${diagnostics.deploymentState}`;
+  if (diagnostics.commitSha) {
+    msg += ` for commit ${diagnostics.commitSha}`;
+  }
+  if (diagnostics.commitMessage) {
+    msg += ` (${flattenInline(diagnostics.commitMessage, 160)})`;
+  }
+  msg += '.';
+
+  if (diagnostics.errorCode && diagnostics.errorMessage) {
+    const detail = flattenInline(diagnostics.errorMessage, 300).replace(/\.+$/, '');
+    msg += ` Error [${diagnostics.errorCode}]: ${detail}.`;
+  } else if (diagnostics.errorCode) {
+    msg += ` Error [${diagnostics.errorCode}].`;
+  } else if (diagnostics.errorMessage) {
+    const detail = flattenInline(diagnostics.errorMessage, 300).replace(/\.+$/, '');
+    msg += ` Error: ${detail}.`;
+  }
+
+  if (diagnostics.inspectorUrl) {
+    msg += ` Inspector: ${diagnostics.inspectorUrl}`;
+  } else if (diagnostics.url) {
+    msg += ` URL: ${diagnostics.url}`;
+  }
+  return msg;
+}
+
+async function recordDeployAlert(
+  deployId: string,
+  title: string,
+  message: string,
+  diagnostics: DeploymentDiagnostics,
+): Promise<void> {
   await recordOperationalAlert({
     source: 'workers.deploy-error-poll',
     eventKey: operationalEventKey(deployId, title),
     alertname: title.replace(/[^A-Za-z0-9]+/g, ''),
     status: 'firing',
     severity: 'critical',
-    payload: { deploymentId: deployId, summary: title, message, repository: `${GITHUB_OWNER}/${GITHUB_REPO}` },
+    payload: {
+      deploymentId: deployId,
+      summary: title,
+      message,
+      repository: `${GITHUB_OWNER}/${GITHUB_REPO}`,
+      ...diagnostics,
+    },
   });
 }
 
@@ -67,11 +225,15 @@ export async function readVercelDeployments(
   throw lastError;
 }
 
-interface VercelDeployment {
+export interface VercelDeployment {
   uid: string;
   state: string;
   createdAt: number;
   ready?: number;
+  url?: string | null;
+  inspectorUrl?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
   meta?: {
     githubCommitRef?: string;
     githubCommitSha?: string;
@@ -155,7 +317,7 @@ export async function deployErrorPoll(c: Context) {
     const verdict = currentMainFailure(deployments);
     if (verdict.kind === 'ready') {
       const ready = verdict.deployment;
-      const readySha = ready.meta?.githubCommitSha ?? '';
+      const readySha = sanitizeTextField(ready.meta?.githubCommitSha, 64, [vercelToken]) ?? '';
       const readyIndex = deployments.findIndex((d) => d.uid === ready.uid);
       const readyAtMs = typeof ready.ready === 'number' && Number.isFinite(ready.ready) && ready.ready >= ready.createdAt
         ? ready.ready
@@ -193,19 +355,34 @@ export async function deployErrorPoll(c: Context) {
     if (verdict.kind === 'unsettled') {
       return c.json({ action: 'ok', message: 'No settled main deployment found', checked: verdict.checked });
     }
-    const latestError = verdict.deployment;
-    const deployId = latestError.uid;
-    const commitSha = latestError.meta?.githubCommitSha ?? '';
-    const commitMsg = latestError.meta?.githubCommitMessage ?? '';
-    await recordDeployAlert(deployId, 'Vercel Deployment Failed',
-      `Deployment ${deployId} failed for commit ${commitSha}. ${commitMsg}`);
+    const latestFailure = verdict.deployment;
+    const deployId = latestFailure.uid;
+    const diagnostics = extractDeploymentDiagnostics(latestFailure, [vercelToken]);
+    const commitSha = diagnostics.commitSha ?? '';
+    const commitMsg = diagnostics.commitMessage ?? '';
+    await recordDeployAlert(
+      deployId,
+      'Vercel Deployment Failed',
+      formatDeployFailureMessage(deployId, diagnostics),
+      diagnostics,
+    );
     // Preserve the existing identity when an old autofix-created build fails.
     // Durable acknowledgement precedes success; no in-memory suppression.
     if (commitMsg.includes('[autofix]')) {
-      await recordDeployAlert(deployId, 'Autofix Rebuild Failed',
-        `The autofix commit ${commitSha.substring(0, 9)} itself failed to build. Manual intervention may be needed.`);
+      await recordDeployAlert(
+        deployId,
+        'Autofix Rebuild Failed',
+        `The autofix commit ${commitSha.substring(0, 9)} itself failed (${diagnostics.deploymentState}). Manual intervention may be needed.`,
+        diagnostics,
+      );
     }
-    return c.json({ action: 'reported', deployId, commitSha, releaseAction: 'none' });
+    return c.json({
+      action: 'reported',
+      deployId,
+      deploymentState: diagnostics.deploymentState,
+      commitSha,
+      releaseAction: 'none',
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn('[deploy-error-poll] Observation failed:', message);
